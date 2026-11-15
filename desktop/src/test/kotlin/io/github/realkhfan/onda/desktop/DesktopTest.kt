@@ -70,7 +70,7 @@ class DesktopTest {
         val scene = ImageComposeScene(1240, 800, Density(1f)) { OndaDesktop(state, player) }
         repeat(3) { scene.render(it * 16_000_000L) }
         File("build/screenshots").mkdirs()
-        File("build/screenshots/desktop-songs.png").writeBytes(scene.render(64_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes)
+        File("build/screenshots/desktop-home.png").writeBytes(scene.render(64_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes)
         scene.close()
     }
 }

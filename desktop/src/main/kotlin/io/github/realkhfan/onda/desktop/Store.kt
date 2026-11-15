@@ -74,7 +74,11 @@ object Store {
     data class Playlist(val id: String, val name: String, val trackIds: List<String>)
 
     /** Liked songs (ids), your playlists, and catalog songs saved to Want to listen. */
-    data class Collection(val liked: List<String> = emptyList(), val playlists: List<Playlist> = emptyList(), val want: List<RemoteTrack> = emptyList())
+    /** [remote]: catalog songs that Liked Songs or a playlist hold, so they can be shown and played. */
+    data class Collection(
+        val liked: List<String> = emptyList(), val playlists: List<Playlist> = emptyList(), val want: List<RemoteTrack> = emptyList(),
+        val remote: List<RemoteTrack> = emptyList(),
+    )
 
     fun collection(): Collection = runCatching {
         val o = JSONObject(File(data, "collection.json").readText())
@@ -82,6 +86,7 @@ object Store {
             liked = o.optJSONArray("liked").strings(),
             playlists = o.optJSONArray("playlists").objects().map { Playlist(it.getString("id"), it.getString("name"), it.optJSONArray("tracks").strings()) },
             want = o.optJSONArray("want").objects().map(::remote),
+            remote = o.optJSONArray("remote").objects().map(::remote),
         )
     }.getOrElse {
         File(data, "collection.json").takeIf { f -> f.exists() }?.let { f -> f.copyTo(File(data, "collection.json.bad"), true) } // never lose it silently
@@ -92,7 +97,18 @@ object Store {
         .put("liked", JSONArray(c.liked))
         .put("playlists", JSONArray(c.playlists.map { JSONObject().put("id", it.id).put("name", it.name).put("tracks", JSONArray(it.trackIds)) }))
         .put("want", JSONArray(c.want.map(::json)))
+        .put("remote", JSONArray(c.remote.filter { r -> r.key in c.liked || c.playlists.any { r.key in it.trackIds } }.map(::json)))
         .toString())
+
+    fun itemJson(i: Player.Item): JSONObject = JSONObject().put("id", i.id).put("title", i.title).put("artist", i.artist).put("album", i.album)
+        .put("art", i.art).put("uri", i.uri).put("preview", i.preview).put("dz", i.deezerId).put("dur", i.durationMs)
+
+    fun itemOf(o: JSONObject) = Player.Item(o.getString("id"), o.optString("title"), o.optString("artist"), o.optString("album"),
+        o.optString("art").ifBlank { null }, o.optString("uri"), o.optBoolean("preview"), o.optLong("dz"), o.optLong("dur"))
+
+    /** Recently played songs for Home, newest first. */
+    fun recent(): List<Player.Item> = runCatching { JSONArray(File(data, "recent.json").readText()).objects().map(::itemOf) }.getOrDefault(emptyList())
+    fun saveRecent(l: List<Player.Item>) = write("recent.json", JSONArray(l.map(::itemJson)).toString())
 
     fun json(r: RemoteTrack): JSONObject = JSONObject().put("id", r.id).put("title", r.title).put("artist", r.artist).put("album", r.album)
         .put("cover", r.cover).put("duration", r.durationSec).put("src", r.source.name).put("ref", r.ref)

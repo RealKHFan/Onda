@@ -1,5 +1,11 @@
 package io.github.realkhfan.onda.desktop
 
+import androidx.compose.material.icons.rounded.CloseFullscreen
+import androidx.compose.material.icons.rounded.OpenInFull
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.foundation.LocalContextMenuRepresentation
+import androidx.compose.foundation.DefaultContextMenuRepresentation
 import androidx.compose.foundation.ContextMenuArea
 import androidx.compose.foundation.ContextMenuItem
 import androidx.compose.foundation.background
@@ -130,6 +136,7 @@ private val ErrorRed = Color(0xFFFF6B6B)
 
 /** What the main area shows; detail views stack up so Back returns. */
 private sealed interface View {
+    data object Home : View
     data object Songs : View
     data object Albums : View
     data object Artists : View
@@ -149,11 +156,13 @@ private enum class Panel { NONE, QUEUE, LYRICS }
 @Composable
 fun OndaDesktop(state: AppState, player: Player?) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Raised, onPrimary = Color.Black)) {
-        val stack = remember { mutableStateListOf<View>(View.Songs) }
+      CompositionLocalProvider(LocalContextMenuRepresentation provides DefaultContextMenuRepresentation(Raised, TextMain, Color(0xFF2E2E38))) {
+        val stack = remember { mutableStateListOf<View>(View.Home) }
         fun go(v: View) { stack.clear(); stack.add(v) }
         fun push(v: View) { stack.add(v) }
         val back: (() -> Unit)? = if (stack.size > 1) ({ stack.removeAt(stack.lastIndex) }) else null
         var panel by remember { mutableStateOf(Panel.NONE) }
+        var lyricsBig by remember { mutableStateOf(false) }
         var naming by remember { mutableStateOf<Naming?>(null) }
         val scope = rememberCoroutineScope()
         val ctx = Ctx(state, player, ::push, { naming = it }) { name ->
@@ -164,7 +173,10 @@ fun OndaDesktop(state: AppState, player: Player?) {
                 Sidebar(state, stack.first(), ::go) { naming = Naming.New() }
                 Column(Modifier.weight(1f).fillMaxHeight()) {
                     if (player == null) Note("Onda needs GStreamer to play music. On Bazzite it's already there; on other systems install gstreamer1 and its plugins.")
-                    when (val v = stack.last()) {
+                    if (player != null && panel == Panel.LYRICS && lyricsBig) {
+                        LyricsFull(player, onCollapse = { lyricsBig = false }) { panel = Panel.NONE; lyricsBig = false }
+                    } else when (val v = stack.last()) {
+                        View.Home -> HomePage(ctx, ::push)
                         View.Songs -> Songs(ctx)
                         View.Albums -> Albums(state) { a -> push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }
                         View.Artists -> Artists(state) { a -> push(View.LocalList(a.name, "Artist", a.artUri, a.tracks)) }
@@ -188,11 +200,12 @@ fun OndaDesktop(state: AppState, player: Player?) {
                     }
                 }
                 if (player != null && panel == Panel.QUEUE) QueuePanel(player) { panel = Panel.NONE }
-                if (player != null && panel == Panel.LYRICS) LyricsPanel(player) { panel = Panel.NONE }
+                if (player != null && panel == Panel.LYRICS && !lyricsBig) LyricsPanel(player, onExpand = { lyricsBig = true }) { panel = Panel.NONE }
             }
             PlayerBar(ctx, panel) { panel = if (panel == it) Panel.NONE else it }
         }
         naming?.let { n -> NamingDialog(state, n) { naming = null } }
+      }
     }
 }
 
@@ -317,6 +330,7 @@ private fun TrackRow(ctx: Ctx, list: List<Track>, i: Int, numbered: Boolean, inP
         }
     }) {
         SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
+            note = if (s.isPreviewRow(t)) "Preview" else null,
             trailing = { if (s.isLiked(t.id)) Icon(Icons.Rounded.Favorite, "Liked", tint = Accent, modifier = Modifier.padding(12.dp)) }) { ctx.play(list, i) }
     }
 }
@@ -335,6 +349,9 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
                     add(ContextMenuItem("Add to queue") { p.enqueue(item) })
                 }
             }
+            add(ContextMenuItem(if (s.isLiked(r.key)) "Remove from Liked Songs" else "Add to Liked Songs") { s.remember(r); s.toggleLike(r.key) })
+            s.collection.playlists.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.remember(r); s.addToPlaylist(pl.id, r.key) }) }
+            add(ContextMenuItem("Add to new playlist…") { s.remember(r); ctx.dialog(Naming.New(r.key)) })
             add(ContextMenuItem(if (wanted) "Remove from Want to listen" else "Add to Want to listen") { s.toggleWant(r) })
             add(ContextMenuItem("Go to artist") { ctx.openArtistByName(r.artist) })
         }
@@ -355,27 +372,36 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
 @Composable
 private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, newPlaylist: () -> Unit) {
     @Composable
-    fun Entry(v: View, label: String, icon: ImageVector) {
+    fun Entry(v: View, label: String, icon: ImageVector, big: Boolean = false) {
         val on = top == v
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(if (on) Raised else Color.Transparent)
-            .clickable { go(v) }.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = if (on) Accent else TextDim, modifier = Modifier.size(20.dp))
+            .clickable { go(v) }.padding(horizontal = 10.dp, vertical = if (big) 10.dp else 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, tint = if (on) Accent else TextDim, modifier = Modifier.size(if (big) 24.dp else 20.dp))
             Spacer(Modifier.width(12.dp))
-            Text(label, color = if (on) TextMain else TextDim, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(label, color = if (on) TextMain else TextDim, fontWeight = FontWeight.SemiBold, fontSize = if (big) 16.sp else 14.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
-    Column(Modifier.width(230.dp).fillMaxHeight().background(Side).padding(12.dp)) {
-        Text("Onda", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 24.sp, modifier = Modifier.padding(8.dp, 4.dp, 8.dp, 12.dp))
-        Entry(View.Songs, "Songs", Icons.Rounded.MusicNote)
-        Entry(View.Albums, "Albums", Icons.Rounded.Album)
-        Entry(View.Artists, "Artists", Icons.Rounded.Person)
-        Entry(View.Search, "Search", Icons.Rounded.Search)
-        Entry(View.Settings, "Settings", Icons.Rounded.Settings)
-        Row(Modifier.padding(top = 18.dp, start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.width(240.dp).fillMaxHeight().background(Side).padding(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)) {
+            // Settings live behind your avatar, like on the phone.
+            IconButton(onClick = { go(View.Settings) }, Modifier.size(36.dp).clip(CircleShape).background(if (top == View.Settings) Accent else Raised)) {
+                Icon(Icons.Rounded.Person, "Settings", tint = if (top == View.Settings) Color.Black else TextMain)
+            }
+            Spacer(Modifier.width(10.dp))
+            Text("Onda", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+        }
+        Entry(View.Home, "Home", Icons.Rounded.Home, big = true)
+        Entry(View.Search, "Search", Icons.Rounded.Search, big = true)
+        Row(Modifier.padding(top = 18.dp, start = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Your library", color = TextDim, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             IconButton(onClick = newPlaylist, Modifier.size(32.dp)) { Icon(Icons.Rounded.Add, "New playlist", tint = TextDim) }
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Entry(View.Songs, "Songs", Icons.Rounded.MusicNote)
+            Entry(View.Albums, "Albums", Icons.Rounded.Album)
+            Entry(View.Artists, "Artists", Icons.Rounded.Person)
+            Spacer(Modifier.height(8.dp))
             Entry(View.Liked, "Liked Songs", Icons.Rounded.Favorite)
             Entry(View.Want, "Want to listen", Icons.Rounded.Bookmark)
             state.collection.playlists.forEach { Entry(View.Playlist(it.id), it.name, Icons.AutoMirrored.Rounded.QueueMusic) }
@@ -385,6 +411,56 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, newPlaylist:
             Text(if (state.scanning) "Scanning your folders…" else "Syncing your server…", color = TextDim, fontSize = 12.sp)
             LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp), color = Accent, trackColor = Raised)
         }
+    }
+}
+
+/* ---------- Home ---------- */
+
+@Composable
+private fun HomePage(ctx: Ctx, open: (View) -> Unit) {
+    val s = ctx.state
+    val hour = java.time.LocalTime.now().hour
+    val hello = when (hour) { in 5..11 -> "Good morning"; in 12..17 -> "Good afternoon"; else -> "Good evening" }
+    data class Tile(val label: String, val art: String?, val icon: ImageVector?, val onClick: () -> Unit)
+    val tiles = buildList {
+        add(Tile("Liked Songs", null, Icons.Rounded.Favorite) { open(View.Liked) })
+        add(Tile("Want to listen", null, Icons.Rounded.Bookmark) { open(View.Want) })
+        add(Tile("Shuffle all", null, Icons.Rounded.Shuffle) { s.library.shuffled().takeIf { it.isNotEmpty() }?.let { ctx.play(it, 0) } })
+        s.collection.playlists.forEach { pl -> add(Tile(pl.name, s.playlistTracks(pl.id).firstNotNullOfOrNull { it.artUri }, null) { open(View.Playlist(pl.id)) }) }
+        s.serverPlaylists.forEach { sp -> add(Tile(sp.name, s.serverPlaylistTracks(sp).firstNotNullOfOrNull { it.artUri }, null) { open(View.ServerPlaylist(sp)) }) }
+    }.take(8)
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        item { Text(hello, color = TextMain, fontSize = 30.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(24.dp, 24.dp, 24.dp, 16.dp)) }
+        items(tiles.chunked(4)) { row ->
+            Row(Modifier.padding(horizontal = 24.dp, vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                row.forEach { t ->
+                    Row(Modifier.weight(1f).height(60.dp).clip(RoundedCornerShape(6.dp)).background(Raised).clickable(onClick = t.onClick),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        if (t.icon != null) Box(Modifier.size(60.dp).background(Color(0xFF2B2140)), contentAlignment = Alignment.Center) { Icon(t.icon, null, tint = Accent) }
+                        else Art(t.art, 60)
+                        Text(t.label, color = TextMain, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 12.dp))
+                    }
+                }
+                repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+        if (s.recent.isNotEmpty()) {
+            item { Section("Recently played") }
+            item {
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(s.recent) { it -> Card(it.art, it.title, it.artist) { ctx.player?.play(listOf(it), 0) } }
+                }
+            }
+        }
+        if (s.recentlyAdded.isNotEmpty()) {
+            item { Section("Recently added") }
+            item {
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(s.recentlyAdded) { a -> Card(a.artUri, a.title, a.artist) { open(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) } }
+                }
+            }
+        }
+        if (s.library.isEmpty() && !s.scanning) item { Note("Add your music folder or your Navidrome server: tap the person icon at the top left.") }
     }
 }
 
@@ -481,7 +557,6 @@ private fun Search(ctx: Ctx) {
     var albums by remember { mutableStateOf<List<RemoteAlbum>>(emptyList()) }
     var free by remember { mutableStateOf<List<RemoteTrack>>(emptyList()) }
     var problem by remember { mutableStateOf<String?>(null) }
-    val mine = remember(state.library, q) { AutoTree.search(state.library, q, limit = 20) }
     LaunchedEffect(q) {
         online = emptyList(); artists = emptyList(); albums = emptyList(); free = emptyList(); problem = null
         if (q.trim().length < 2) return@LaunchedEffect
@@ -508,13 +583,24 @@ private fun Search(ctx: Ctx) {
                 problem?.let { Text(it, color = TextDim, modifier = Modifier.padding(top = 8.dp)) }
             }
         }
-        if (mine.isNotEmpty()) {
-            item { Section("In your library") }
-            items(mine.size) { i -> TrackRow(ctx, mine, i, numbered = false) }
+        // Your own songs are searched in Songs (the filter there); this is the online catalog.
+        artists.firstOrNull { Match.norm(it.name) == Match.norm(q) }?.let { top ->
+            item { Section("Top result") }
+            item {
+                Row(Modifier.padding(horizontal = 24.dp).width(420.dp).clip(RoundedCornerShape(10.dp)).background(Raised)
+                    .clickable { ctx.push(View.CatalogArtist(top)) }.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Art(top.picture, 92, round = true)
+                    Spacer(Modifier.width(18.dp))
+                    Column {
+                        Text(top.name, color = TextMain, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                        Text("Artist", color = TextDim)
+                    }
+                }
+            }
         }
         if (online.isNotEmpty()) {
             item { Section("Songs") }
-            items(online.size) { i -> RemoteRow(ctx, online, i) }
+            items(minOf(online.size, 8)) { i -> RemoteRow(ctx, online, i) }
         }
         if (artists.isNotEmpty()) {
             item { Section("Artists") }
@@ -721,9 +807,11 @@ private fun QueueRow(it: Player.Item, now: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** Synced lyrics from LRCLIB; the current line is bigger and follows the song. Click a line to jump there. */
+private class LyricsState(val full: Boolean, val lyrics: Lrclib.Lyrics?, val failed: Boolean)
+
+/** Synced lyrics from LRCLIB for the song playing (full songs only). */
 @Composable
-private fun LyricsPanel(player: Player, onClose: () -> Unit) = PanelFrame("Lyrics", onClose) {
+private fun rememberLyrics(player: Player): LyricsState {
     val cur = player.current
     val full = cur != null && (!cur.preview || player.fullFrom != null)
     var lyrics by remember(cur?.id, full) { mutableStateOf<Lrclib.Lyrics?>(null) }
@@ -734,26 +822,88 @@ private fun LyricsPanel(player: Player, onClose: () -> Unit) = PanelFrame("Lyric
         lyrics = runCatching { Lrclib.get(cur.title, cur.artist, cur.album, dur) }.getOrNull()
         failed = lyrics == null
     }
-    val lines = lyrics?.synced.orEmpty()
+    return LyricsState(full, lyrics, failed)
+}
+
+/** The lines; the current one is bigger and follows the song. Click a line to jump there. */
+@Composable
+private fun LyricsLines(player: Player, ls: LyricsState, big: Boolean) {
+    val lines = ls.lyrics?.synced.orEmpty()
     val active = if (lines.isEmpty()) -1 else Lrc.indexAt(lines, player.positionMs)
     val list = rememberLazyListState()
-    LaunchedEffect(active) { if (active >= 0) list.animateScrollToItem((active - 3).coerceAtLeast(0)) }
+    LaunchedEffect(active) { if (active >= 0) list.animateScrollToItem((active - if (big) 4 else 3).coerceAtLeast(0)) }
+    val (on, off) = if (big) 40.sp to 32.sp else 26.sp to 20.sp
     when {
-        cur == null -> Note("Nothing is playing.")
-        !full -> Note("Lyrics are shown for full songs.")
-        failed -> Note("Couldn't load lyrics. Check your connection.")
-        lyrics == null -> LinearProgressIndicator(Modifier.fillMaxWidth().padding(24.dp), color = Accent, trackColor = Raised)
-        lyrics!!.instrumental -> Note("Instrumental")
-        lines.isNotEmpty() -> LazyColumn(state = list, contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 200.dp)) {
+        player.current == null -> Note("Nothing is playing.")
+        !ls.full -> Note("Lyrics are shown for full songs.")
+        ls.failed -> Note("Couldn't load lyrics. Check your connection.")
+        ls.lyrics == null -> LinearProgressIndicator(Modifier.fillMaxWidth().padding(24.dp), color = Accent, trackColor = Raised)
+        ls.lyrics.instrumental -> Note("Instrumental")
+        lines.isNotEmpty() -> LazyColumn(state = list, contentPadding = PaddingValues(if (big) 48.dp else 16.dp, 8.dp, 16.dp, 240.dp)) {
             itemsIndexed(lines) { i, l ->
-                Text(l.text.ifBlank { "♪" }, color = if (i == active) TextMain else TextDim,
-                    fontSize = if (i == active) 26.sp else 20.sp, fontWeight = if (i == active) FontWeight.Bold else FontWeight.SemiBold,
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { player.seek(l.timeMs) }.padding(vertical = 6.dp, horizontal = 4.dp))
+                Text(l.text.ifBlank { "♪" }, color = if (i == active) TextMain else if (big) TextMain.copy(alpha = 0.45f) else TextDim,
+                    fontSize = if (i == active) on else off, fontWeight = if (i == active) FontWeight.Bold else FontWeight.SemiBold,
+                    lineHeight = (if (i == active) on else off) * 1.2f,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { player.seek(l.timeMs) }.padding(vertical = if (big) 10.dp else 6.dp, horizontal = 4.dp))
             }
         }
-        lyrics!!.plain != null -> Text(lyrics!!.plain!!, color = TextMain, fontSize = 18.sp, modifier = Modifier.padding(16.dp).verticalScroll(rememberScrollState()))
+        ls.lyrics.plain != null -> Text(ls.lyrics.plain, color = TextMain, fontSize = if (big) 28.sp else 18.sp,
+            modifier = Modifier.padding(if (big) 48.dp else 16.dp).verticalScroll(rememberScrollState()))
         else -> Note("No lyrics for this song.")
     }
+}
+
+@Composable
+private fun LyricsPanel(player: Player, onExpand: () -> Unit, onClose: () -> Unit) {
+    val ls = rememberLyrics(player)
+    Column(Modifier.width(360.dp).fillMaxHeight().background(Side)) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Lyrics", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+            IconButton(onClick = onExpand) { Icon(Icons.Rounded.OpenInFull, "Show lyrics full screen", tint = TextDim) }
+            IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Close lyrics", tint = TextDim) }
+        }
+        LyricsLines(player, ls, big = false)
+    }
+}
+
+/** Lyrics over the whole content area, on the cover's colour (like Spotify). */
+@Composable
+private fun LyricsFull(player: Player, onCollapse: () -> Unit, onClose: () -> Unit) {
+    val ls = rememberLyrics(player)
+    val cur = player.current
+    val tint = rememberArtTint(cur?.art)
+    Column(Modifier.fillMaxSize().background(tint)) {
+        Row(Modifier.padding(24.dp, 16.dp, 16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(cur?.title.orEmpty(), color = TextMain, fontWeight = FontWeight.Bold, fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(cur?.artist.orEmpty(), color = TextMain.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            IconButton(onClick = onCollapse) { Icon(Icons.Rounded.CloseFullscreen, "Back to the side panel", tint = TextMain) }
+            IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Close lyrics", tint = TextMain) }
+        }
+        LyricsLines(player, ls, big = true)
+    }
+}
+
+/** The cover's dominant colour, darkened for white text (the phone's ArtColor); the accent's dark violet while loading. */
+@Composable
+private fun rememberArtTint(art: String?): Color {
+    var c by remember(art) { mutableStateOf(Color(0xFF2B2140)) }
+    LaunchedEffect(art) {
+        if (art == null) return@LaunchedEffect
+        val argb = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val img = if (art.startsWith("/")) javax.imageio.ImageIO.read(File(art))
+                else java.net.URL(art).openConnection().apply { setRequestProperty("User-Agent", "Onda"); connectTimeout = 5000; readTimeout = 8000 }
+                    .getInputStream().use { javax.imageio.ImageIO.read(it) }
+                val small = java.awt.image.BufferedImage(24, 24, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+                small.createGraphics().apply { drawImage(img, 0, 0, 24, 24, null); dispose() }
+                io.github.realkhfan.onda.core.ArtColor.pick(small.getRGB(0, 0, 24, 24, null, 0, 24))
+            }.getOrNull()
+        }
+        if (argb != null) c = Color(argb)
+    }
+    return c
 }
 
 /* ---------- Player bar ---------- */
@@ -774,7 +924,7 @@ private fun PlayerBar(ctx: Ctx, panel: Panel, toggle: (Panel) -> Unit) {
                     Text(src + cur.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     player.error?.let { Text(it, color = ErrorRed, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                 }
-                if (state.byId.containsKey(cur.id)) {
+                if (state.canSave(cur.id)) {
                     val liked = state.isLiked(cur.id)
                     IconButton(onClick = { state.toggleLike(cur.id) }) {
                         Icon(if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (liked) "Remove from Liked Songs" else "Add to Liked Songs",

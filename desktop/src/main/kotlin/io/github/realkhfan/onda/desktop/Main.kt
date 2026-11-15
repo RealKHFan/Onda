@@ -1,5 +1,7 @@
 package io.github.realkhfan.onda.desktop
 
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -51,6 +53,7 @@ fun main() {
                 player.changeVolume(state.settings.volume)
                 // Back where you left off: same queue and song, paused at the same moment.
                 withContext(Dispatchers.IO) { Store.session() }?.let { player.restore(it.items, it.index, it.positionMs, it.shuffle, it.repeat) }
+                scope.launch { snapshotFlow { player.current }.collect { it?.let(state::played) } } // for Home's "Recently played"
                 val m = Mpris(player, scope, Dispatchers.Main, onRaise = { window.toFront() }, onQuit = ::quit)
                 withContext(Dispatchers.IO) { m.start() }
                 mpris[0] = m

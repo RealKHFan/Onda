@@ -44,7 +44,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Rpm)
             packageName = "Onda"
-            packageVersion = "0.2.0"
+            packageVersion = "0.2.1"
             description = "Privacy-first music player"
             modules("java.instrument", "jdk.unsupported", "jdk.security.auth", "jdk.crypto.ec", "java.naming", "java.sql")
             linux { iconFile.set(project.file("src/main/resources/onda.png")) }

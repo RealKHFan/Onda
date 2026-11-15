@@ -33,6 +33,10 @@ class AppState(private val scope: CoroutineScope) {
     var scanning by mutableStateOf(false); private set
     var syncing by mutableStateOf(false); private set
     var serverNote by mutableStateOf<String?>(null)
+    var recent by mutableStateOf(Store.recent()); private set
+
+    /** Catalog songs shown or played this run, so the heart and menus can save them. */
+    private val seen = HashMap<String, RemoteTrack>()
 
     init { Lrclib.init(Store.cache) }
 
@@ -43,6 +47,34 @@ class AppState(private val scope: CoroutineScope) {
 
     /** Every song by id, server copies of your files included, so saved ids always resolve. */
     val byId by derivedStateOf { (serverTracks + local).associateBy { it.id } }
+
+    /** Albums from your folders, newest files first. */
+    val recentlyAdded by derivedStateOf {
+        val added = localCache.values.associate { it.second.id to it.first }
+        io.github.realkhfan.onda.core.Grouping.albums(local).sortedByDescending { a -> a.tracks.maxOf { added[it.id] ?: 0L } }.take(14)
+    }
+
+    fun played(i: Player.Item) {
+        if (recent.firstOrNull()?.id == i.id) return
+        recent = (listOf(i) + recent.filterNot { it.id == i.id }).take(20)
+        Store.saveRecent(recent)
+    }
+
+    /** A saved catalog song as a list row: your own copy once you have it, else the preview. */
+    fun trackFor(id: String): Track? = byId[id] ?: collection.remote.firstOrNull { it.key == id }?.let { r -> own(r) ?: asTrack(r) }
+
+    private fun own(r: RemoteTrack) = library.firstOrNull { Match.same(it.title, it.artist, r.title, r.artist) }
+    fun asTrack(r: RemoteTrack) = Track(r.key, "", r.title, r.artist, r.album, r.artist, 0, r.durationSec * 1000L, PREVIEW, r.cover)
+    fun isPreviewRow(t: Track) = t.folderName == PREVIEW && t.uri.isEmpty()
+
+    /** Can the heart / playlists hold this id? (Your songs, or a catalog song seen this run.) */
+    fun remember(r: RemoteTrack) { seen[r.key] = r }
+    fun canSave(id: String) = byId.containsKey(id) || seen.containsKey(id) || collection.remote.any { it.key == id }
+
+    private fun withRemote(id: String, c: Store.Collection): Store.Collection {
+        val r = seen[id] ?: return c
+        return if (c.remote.any { it.key == id }) c else c.copy(remote = c.remote + r.copy(preview = null))
+    }
 
     fun start() {
         if (settings.folders.isNotEmpty()) rescan()
@@ -123,12 +155,14 @@ class AppState(private val scope: CoroutineScope) {
     /* ---------- Collection ---------- */
 
     fun isLiked(id: String) = id in collection.liked
-    fun toggleLike(id: String) = change(collection.copy(liked = if (isLiked(id)) collection.liked - id else listOf(id) + collection.liked))
-    val likedTracks: List<Track> get() = collection.liked.mapNotNull { byId[it] }
+    fun toggleLike(id: String) = change(withRemote(id, collection.copy(liked = if (isLiked(id)) collection.liked - id else listOf(id) + collection.liked)))
+    val likedTracks: List<Track> get() = collection.liked.mapNotNull(::trackFor)
 
     fun createPlaylist(name: String, first: List<String> = emptyList()): String {
         val id = UUID.randomUUID().toString()
-        change(collection.copy(playlists = collection.playlists + Store.Playlist(id, name.ifBlank { "New playlist" }, first)))
+        var c = collection.copy(playlists = collection.playlists + Store.Playlist(id, name.ifBlank { "New playlist" }, first))
+        first.forEach { c = withRemote(it, c) }
+        change(c)
         return id
     }
 
@@ -137,14 +171,14 @@ class AppState(private val scope: CoroutineScope) {
 
     fun deletePlaylist(id: String) = change(collection.copy(playlists = collection.playlists.filterNot { it.id == id }))
 
-    fun addToPlaylist(id: String, trackId: String) = change(collection.copy(playlists = collection.playlists.map {
+    fun addToPlaylist(id: String, trackId: String) = change(withRemote(trackId, collection.copy(playlists = collection.playlists.map {
         if (it.id == id && trackId !in it.trackIds) it.copy(trackIds = it.trackIds + trackId) else it
-    }))
+    })))
 
     fun removeFromPlaylist(id: String, trackId: String) =
         change(collection.copy(playlists = collection.playlists.map { if (it.id == id) it.copy(trackIds = it.trackIds - trackId) else it }))
 
-    fun playlistTracks(id: String): List<Track> = collection.playlists.firstOrNull { it.id == id }?.trackIds?.mapNotNull { byId[it] }.orEmpty()
+    fun playlistTracks(id: String): List<Track> = collection.playlists.firstOrNull { it.id == id }?.trackIds?.mapNotNull(::trackFor).orEmpty()
     fun serverPlaylistTracks(p: Subsonic.Playlist): List<Track> = p.songIds.mapNotNull { byId[Navidrome.PREFIX + it] }
 
     fun isWanted(r: RemoteTrack) = collection.want.any { it.key == r.key }
@@ -153,10 +187,14 @@ class AppState(private val scope: CoroutineScope) {
 
     /* ---------- Playing ---------- */
 
-    fun item(t: Track) = Player.Item(t.id, t.title, t.artist, t.album, t.artUri, t.uri, durationMs = t.durationMs)
+    fun item(t: Track): Player.Item {
+        if (isPreviewRow(t)) collection.remote.firstOrNull { it.key == t.id }?.let { r -> item(r)?.let { return it } }
+        return Player.Item(t.id, t.title, t.artist, t.album, t.artUri, t.uri, durationMs = t.durationMs)
+    }
 
     /** A catalog song: your own copy if you have one, a free full song, or a Deezer preview (link fetched when it plays). */
     fun item(r: RemoteTrack): Player.Item? {
+        seen[r.key] = r
         library.firstOrNull { Match.same(it.title, it.artist, r.title, r.artist) }?.let { return item(it) }
         if (r.source == Source.DEEZER) {
             return Player.Item(r.key, r.title, r.artist, r.album, r.cover, "", preview = true, deezerId = r.id, durationMs = r.durationSec * 1000L)
@@ -164,6 +202,8 @@ class AppState(private val scope: CoroutineScope) {
         val url = FreeCatalogs.stream(r) ?: r.preview ?: return null
         return Player.Item(r.key, r.title, r.artist, r.album, r.cover, url, preview = !r.source.full, durationMs = r.durationSec * 1000L)
     }
+
+    companion object { const val PREVIEW = "Preview" }
 
     private val fullCopies = HashMap<Long, Player.Resolved?>()
 
