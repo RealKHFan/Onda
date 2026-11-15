@@ -160,6 +160,54 @@ class FeaturesTest {
         }
     }
 
+    @Test fun albumLoudnessAndOutputsAndRecentlyAdded() {
+        assertEquals(null, Loudness.albumGain(listOf("unknown-1", "unknown-2")))
+        val list = listOf(t("a", "x", "A"), t("b", "y", "A"), t("c", "z", "A"))
+        assertEquals(listOf("b", "c", "a"), sorted(list, Sort.ADDED, emptyMap(), mapOf("a" to 1L, "b" to 3L, "c" to 2L)).map { it.id })
+        val sinks = Outputs.parse("""[{"index":1,"name":"alsa_output.usb-headset","description":"USB Headset"},{"index":2,"name":"alsa_output.hdmi","description":""}]""")
+        assertEquals(listOf("USB Headset", "alsa_output.hdmi"), sinks.map { it.label })
+        assertEquals("alsa_output.usb-headset", sinks[0].name)
+    }
+
+    @Test fun longSongsResumeWhereYouLeftThem() {
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        onUi { s.leftAt("mix", 30 * 60_000L, 60 * 60_000L); s.leftAt("song", 60_000L, 4 * 60_000L) }
+        assertEquals(30 * 60_000L, s.resumeAt("mix"))
+        assertEquals(0L, s.resumeAt("song")) // short songs always start at the beginning
+        onUi { s.leftAt("mix", 59 * 60_000L + 30_000L, 60 * 60_000L) }
+        assertEquals(0L, s.resumeAt("mix")) // left near the end: starts over next time
+
+        val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
+        var left: Pair<String, Long>? = null
+        onUi { p.resumeAt = { if (it.id == "1") 2000 else 0 }; p.onLeave = { i, pos, _ -> left = i.id to pos } }
+        onUi { p.play(listOf(Player.Item("1", "One", "A", "B", null, wav(4.0)), Player.Item("2", "Two", "A", "B", null, wav(4.0))), 0) }
+        Thread.sleep(1200)
+        assertTrue(onUi { p.positionMs } >= 1900) // started at the saved spot
+        onUi { p.next() }
+        assertEquals("1", left?.first)
+        onUi { p.close() }
+    }
+
+    @Test fun smartPlaylistsAndUndoingADelete() {
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        val mine = t("file:/tmp/onda-test/smart.mp3", "Smart Song", "Velvet Hours")
+        val preview = io.github.realkhfan.onda.core.RemoteTrack(515151, "Tides", "Lumen Trio", "Meadows", null, null, 200)
+        try {
+            onUi { s.local = listOf(mine); if (!s.isLiked(mine.id)) s.toggleLike(mine.id) }
+            assertTrue(onUi { s.smart(AppState.Smart.NEVER).any { it.id == mine.id } })
+            assertTrue(onUi { s.smart(AppState.Smart.FORGOTTEN).any { it.id == mine.id } })
+            val id = onUi { s.remember(preview); s.createPlaylist("Undo test", listOf(mine.id, preview.key)) }
+            val pl = s.collection.playlists.first { it.id == id }
+            val remotes = s.collection.remote.filter { it.key in pl.trackIds }
+            onUi { s.deletePlaylist(id) }
+            onUi { s.restorePlaylist(pl, remotes) }
+            assertEquals(2, onUi { s.playlistTracks(id).size }) // the preview comes back too
+            onUi { s.deletePlaylist(id) }
+        } finally {
+            onUi { if (s.isLiked(mine.id)) s.toggleLike(mine.id) }
+        }
+    }
+
     @Test fun equalizerIsInThePlaybackChain() {
         val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
         assertTrue(p.hasEqualizer)

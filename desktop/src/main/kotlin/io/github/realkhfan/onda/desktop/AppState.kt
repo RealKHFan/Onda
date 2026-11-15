@@ -35,7 +35,9 @@ import java.util.UUID
 /** Everything the window shows: settings, your files, your server, your collection. */
 class AppState(private val scope: CoroutineScope) {
     var settings by mutableStateOf(Store.settings()); private set
-    private var localCache = Store.localCache()
+    private var localCache by mutableStateOf(Store.localCache())
+    /** When each file was added (its modification time), for "Recently added". */
+    val addedAt by derivedStateOf { localCache.values.associate { it.second.id to it.first } }
     var local by mutableStateOf(localCache.values.map { it.second }); internal set
     var serverSongs by mutableStateOf(if (settings.server != null) Store.serverSongs() else emptyList()); private set
     var serverPlaylists by mutableStateOf(if (settings.server != null) Store.serverPlaylists() else emptyList()); private set
@@ -150,6 +152,45 @@ class AppState(private val scope: CoroutineScope) {
         found.forEach { seen[it.key] = it }
         recommended[playlistId] = found
         return found
+    }
+
+    fun setAlbumGain(on: Boolean) = update(settings.copy(albumGain = on))
+    fun setOutput(device: String?) = update(settings.copy(output = device))
+
+    /** Ids of the songs on the same album, for album-wide loudness. */
+    private val albumIds by derivedStateOf { library.groupBy { it.albumKey }.mapValues { e -> e.value.map { it.id } } }
+    fun albumMates(id: String): List<String> = if (!settings.albumGain) emptyList() else byId[id]?.let { albumIds[it.albumKey] }.orEmpty()
+
+    /** Where long songs (over 20 minutes) were left: id to ms, the newest 200. */
+    private val resumeFile = java.io.File(Store.data, "resume.json")
+    private val resume = runCatching { org.json.JSONObject(resumeFile.readText()).let { o -> o.keySet().associateWith { o.getLong(it) } } }.getOrDefault(emptyMap()).toMutableMap()
+    fun resumeAt(id: String): Long = resume[id] ?: 0
+    fun leftAt(id: String, pos: Long, dur: Long) {
+        if (dur < 20 * 60_000) return
+        if (pos in 60_000..(dur - 60_000)) resume[id] = pos else resume.remove(id) // near the start or end: start over next time
+        while (resume.size > 200) resume.remove(resume.keys.first())
+        runCatching { java.io.File(resumeFile.path + ".tmp").apply { writeText(org.json.JSONObject(resume as Map<*, *>).toString()) }.renameTo(resumeFile) }
+    }
+
+    /** Built-in playlists from your own library and history. */
+    enum class Smart(val title: String, val about: String) {
+        ADDED("Recently added", "The newest files in your music folders"),
+        TOP("Most played", "Your 100 most played songs"),
+        NEVER("Never played", "Songs in your library you haven't played yet"),
+        FORGOTTEN("Forgotten favourites", "Liked songs you haven't played in two months"),
+    }
+
+    fun smart(kind: Smart): List<Track> {
+        val counts = playCounts
+        val last = plays.groupBy { it.key }.mapValues { e -> e.value.maxOf { it.atMs } }
+        return when (kind) {
+            Smart.ADDED -> library.filter { it.id in addedAt }.sortedByDescending { addedAt[it.id] }.take(100)
+            Smart.TOP -> library.filter { (counts[it.id] ?: 0) > 0 }.sortedByDescending { counts[it.id] }.take(100)
+            Smart.NEVER -> library.filter { it.id !in counts }.sortedBy { it.title.lowercase() }
+            Smart.FORGOTTEN -> (System.currentTimeMillis() - 60 * 86_400_000L).let { since ->
+                collection.liked.mapNotNull(::trackFor).filter { (last[it.id] ?: 0) < since }.sortedBy { last[it.id] ?: 0 }
+            }
+        }
     }
 
     fun setGapless(on: Boolean) = update(settings.copy(gapless = on))
@@ -494,6 +535,11 @@ class AppState(private val scope: CoroutineScope) {
 
     fun renamePlaylist(id: String, name: String) =
         change(collection.copy(playlists = collection.playlists.map { if (it.id == id && name.isNotBlank()) it.copy(name = name) else it }))
+
+    /** Undo: puts a deleted playlist back, with the catalog songs only it held. */
+    fun restorePlaylist(pl: Store.Playlist, remotes: List<RemoteTrack>) = change(collection.copy(
+        playlists = collection.playlists + pl, remote = (collection.remote + remotes).distinctBy { it.key }))
+    fun setPlaylistTracks(id: String, ids: List<String>) = change(collection.copy(playlists = collection.playlists.map { if (it.id == id) it.copy(trackIds = ids) else it }))
 
     fun deletePlaylist(id: String) = change(collection.copy(playlists = collection.playlists.filterNot { it.id == id }))
 

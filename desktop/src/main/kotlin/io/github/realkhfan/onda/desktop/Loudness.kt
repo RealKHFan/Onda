@@ -38,10 +38,16 @@ object Loudness {
      * The volume factor for a song: turned to about -14 LUFS, and boosted only as far as its peak allows (never clipping).
      * Songs not measured (previews, free songs) get the typical gain of your measured songs, so they fit in too.
      */
-    fun factor(id: String): Double {
+    fun factor(id: String, album: List<String> = emptyList()): Double {
         val g = gains[id]
-        val db = g?.db ?: typical() ?: return 1.0
+        val db = albumGain(album) ?: g?.db ?: typical() ?: return 1.0
         return factorFor(db, g?.peak ?: 1.0)
+    }
+
+    /** One gain for a whole album (its average loudness), so quiet and loud songs keep their difference, as the artist meant. */
+    fun albumGain(ids: List<String>): Double? {
+        val dbs = ids.mapNotNull { gains[it]?.db }.takeIf { it.size >= 2 } ?: return null
+        return -10 * kotlin.math.log10(dbs.map { 10.0.pow(-it / 10) }.average()) // averaged as loudness (power), not as numbers
     }
 
     fun factorFor(db: Double, peak: Double): Double = minOf(10.0.pow((db + PREAMP) / 20), 1.0 / peak.coerceAtLeast(0.05)).coerceIn(0.05, 4.0)

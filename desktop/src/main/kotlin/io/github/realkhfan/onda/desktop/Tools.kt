@@ -391,3 +391,19 @@ object M3u {
         return name to ids.distinct()
     }
 }
+
+/** The system's speakers, headphones and HDMI outputs (PipeWire/PulseAudio sinks), listed by pactl. */
+object Outputs {
+    data class Device(val name: String, val label: String)
+
+    fun list(): List<Device> = runCatching {
+        val p = ProcessBuilder("pactl", "-f", "json", "list", "sinks").start()
+        val text = p.inputStream.bufferedReader().readText()
+        p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+        parse(text)
+    }.getOrDefault(emptyList())
+
+    fun parse(json: String): List<Device> = JSONArray(json).let { a ->
+        (0 until a.length()).map { a.getJSONObject(it) }.map { Device(it.getString("name"), it.optString("description").ifBlank { it.getString("name") }) }
+    }
+}

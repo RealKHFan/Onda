@@ -64,6 +64,11 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     /** Set on GStreamer's thread when the next song was queued up gaplessly; the switch shows once it plays. */
     @Volatile private var gaplessNext = -1
 
+    /** Long songs (DJ mixes) pick up where you left them: [resumeAt] gives the spot, [onLeave] hears where you stopped. */
+    var resumeAt: (Item) -> Long = { 0 }
+    var onLeave: ((Item, Long, Long) -> Unit)? = null
+    private var playingItem: Item? = null
+
     /** Sleep timer: pause at this time (ms since epoch), or 0. */
     var sleepAt by mutableLongStateOf(0L)
     /** Sleep timer: stop when the current song ends. */
@@ -241,6 +246,9 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     private fun load(seekTo: Long = -1) {
         val item = current ?: return
+        leaving()
+        playingItem = item
+        @Suppress("NAME_SHADOWING") val seekTo = if (seekTo >= 0) seekTo else resumeAt(item).takeIf { it > 0 } ?: -1
         val token = ++loadToken
         gaplessNext = -1
         error = null; fullFrom = null
@@ -291,7 +299,9 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     /** The handed-over song is playing now: show it, and do what starting a song does. */
     private fun switchGapless() {
+        leaving()
         index = gaplessNext
+        playingItem = current
         gaplessNext = -1
         val item = current ?: return
         error = null; fullFrom = null
@@ -299,6 +309,17 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         applyVolume()
         if (repeat == 0 && order.lastOrNull() == index) onLastSong?.invoke()
         upcoming().firstOrNull()?.second?.let { prefetch?.invoke(it) }
+    }
+
+    private fun leaving() { playingItem?.let { onLeave?.invoke(it, positionMs, durationMs) } }
+
+    /** Plays through another output (headphones, HDMI…; a PulseAudio/PipeWire sink name), or the system's default (null). */
+    fun setOutput(device: String?) {
+        val pos = positionMs
+        bin.stop()
+        bin.setAudioSink(if (device == null) ElementFactory.make("autoaudiosink", "out")
+            else ElementFactory.make("pulsesink", "out").also { it.set("device", device) })
+        if (current != null) load(seekTo = pos)
     }
 
     /** 10 bands (31 Hz to 16 kHz), each -12..+12 dB. */
@@ -309,5 +330,5 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     val hasEqualizer get() = eq != null
 
-    fun close() { bin.stop(); bin.dispose() }
+    fun close() { leaving(); bin.stop(); bin.dispose() }
 }

@@ -42,6 +42,8 @@ object Store {
         val gapless: Boolean = true, val pinned: List<String> = emptyList(), val picks: Map<String, Pair<Long, Long>> = emptyMap(),
         /** Last searches, newest first (on this PC only). */
         val searches: List<String> = emptyList(),
+        /** [albumGain]: normalise whole albums; [output]: the chosen speakers (a sink name), null = system default. */
+        val albumGain: Boolean = false, val output: String? = null,
     )
 
     fun settings(): Settings = runCatching {
@@ -59,6 +61,7 @@ object Store {
             software = o.optBoolean("software"), songNotify = o.optBoolean("songNotify"),
             zoom = o.optDouble("zoom", 1.0).toFloat().coerceIn(0.7f, 1.6f),
             gapless = o.optBoolean("gapless", true),
+            albumGain = o.optBoolean("albumGain"), output = o.optString("output").ifBlank { null },
             searches = o.optJSONArray("searches")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty(),
             pinned = o.optJSONArray("pinned")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty(),
             picks = o.optJSONObject("picks")?.let { p -> p.keySet().associateWith { k -> p.getJSONArray(k).let { it.getLong(0) to it.getLong(1) } } }.orEmpty(),
@@ -71,6 +74,7 @@ object Store {
         .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir).put("normalize", s.normalize)
         .put("eq", org.json.JSONArray(s.eq)).put("eqPreset", s.eqPreset).put("software", s.software).put("songNotify", s.songNotify).put("zoom", s.zoom.toDouble())
         .put("gapless", s.gapless).put("pinned", org.json.JSONArray(s.pinned)).put("searches", org.json.JSONArray(s.searches))
+        .put("albumGain", s.albumGain).put("output", s.output)
         .put("picks", JSONObject().apply { s.picks.forEach { (k, v) -> put(k, org.json.JSONArray().put(v.first).put(v.second)) } })
         .put("server", s.server?.let { JSONObject().put("url", it.url).put("user", it.user).put("salt", it.salt).put("token", it.token) })
         .toString())

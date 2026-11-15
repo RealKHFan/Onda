@@ -129,6 +129,9 @@ import io.github.realkhfan.onda.data.FreeCatalogs
 import io.github.realkhfan.onda.data.Lrclib
 import io.github.realkhfan.onda.data.Itunes
 import io.github.realkhfan.onda.data.Matcher
+import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Speaker
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
@@ -202,6 +205,8 @@ private sealed interface View {
     data object Match : View
     data object Rename : View
     data object Stats : View
+    data object Smart : View
+    data class SmartList(val kind: AppState.Smart) : View
     data object NowPlaying : View
     data object History : View
     data object Duplicates : View
@@ -221,11 +226,13 @@ fun OndaDesktop(state: AppState, player: Player?) {
         fun push(v: View) { stack.add(v) }
         val back: (() -> Unit)? = if (stack.size > 1) ({ stack.removeAt(stack.lastIndex) }) else null
         var quick by remember { mutableStateOf(false) } // Ctrl+K
+        var shortcuts by remember { mutableStateOf(false) } // F1
         LaunchedEffect(state.navRequest) {
             when (state.navRequest) {
                 "search" -> go(View.Search)
                 "settings" -> go(View.Settings)
                 "quick" -> quick = true
+                "keys" -> shortcuts = true
                 "back" -> if (stack.size > 1) stack.removeAt(stack.lastIndex)
             }
             state.navRequest = null
@@ -235,8 +242,9 @@ fun OndaDesktop(state: AppState, player: Player?) {
         var naming by remember { mutableStateOf<Naming?>(null) }
         val scope = rememberCoroutineScope()
         var toast by remember { mutableStateOf<String?>(null) }
-        LaunchedEffect(toast) { if (toast != null) { delay(3500); toast = null } }
-        val ctx = Ctx(state, player, ::push, { naming = it }, { toast = it }) { name ->
+        var undo by remember { mutableStateOf<(() -> Unit)?>(null) }
+        LaunchedEffect(toast) { if (toast != null) { delay(if (undo != null) 6000 else 3500); toast = null; undo = null } }
+        val ctx = Ctx(state, player, ::push, { naming = it }, { toast = it; undo = null }, { m, u -> toast = m; undo = u }) { name ->
             scope.launch { Deezer.searchArtists(name).firstOrNull { Match.norm(it.name) == Match.norm(name) }?.let { push(View.CatalogArtist(it)) } }
         }
         // Folders dropped on the window (from Dolphin, say) become music folders.
@@ -266,6 +274,8 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         View.Artists -> Artists(state, { a -> push(View.LibraryArtist(a.name)) }) { push(View.CatalogArtist(it)) }
                         is View.Mix -> MixPage(ctx, v.kind, back)
                         View.Stats -> StatsPage(ctx)
+                        View.Smart -> SmartPage(ctx)
+                        is View.SmartList -> SongList(ctx, v.kind.title, v.kind.about, state.smart(v.kind), back = back, mosaic = true)
                         View.NowPlaying -> NowPlayingPage(ctx, back)
                         View.History -> HistoryPage(ctx)
                         View.Duplicates -> DuplicatesPage(ctx, back)
@@ -304,14 +314,24 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         is View.CatalogAlbum -> CatalogAlbumPage(ctx, v.a, back)
                     }
                 }
-                if (player != null && panel == Panel.QUEUE) QueuePanel(player, onSave = { naming = Naming.New(null, player.queue.map { it.id }.filter(state::canSave).distinct()) }) { panel = Panel.NONE }
+                if (player != null && panel == Panel.QUEUE) QueuePanel(player, onClear = {
+                    val gone = player.upcoming().map { it.second }
+                    player.clearUpcoming()
+                    ctx.undoable("Queue cleared") { player.append(gone) }
+                }, onSave = { naming = Naming.New(null, player.queue.map { it.id }.filter(state::canSave).distinct()) }) { panel = Panel.NONE }
                 if (player != null && panel == Panel.LYRICS && !lyricsBig) LyricsPanel(state, player, onExpand = { lyricsBig = true }) { panel = Panel.NONE }
             }
             if (quick) QuickSearch(ctx) { quick = false }
-            toast?.let { Text(it, color = TextMain, modifier = Modifier.fillMaxWidth().background(Color(0xFF2E2E38)).padding(24.dp, 10.dp)) }
+            if (shortcuts) ShortcutsDialog { shortcuts = false }
+            toast?.let { m ->
+                Row(Modifier.fillMaxWidth().background(Color(0xFF2E2E38)).padding(24.dp, 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(m, color = TextMain, modifier = Modifier.weight(1f).padding(vertical = 6.dp))
+                    undo?.let { u -> TextButton(onClick = { u(); toast = null; undo = null }) { Text("Undo", color = Accent, fontWeight = FontWeight.Bold) } }
+                }
+            }
             PlayerBar(ctx, panel) { panel = if (panel == it) Panel.NONE else it }
         }
-        naming?.let { n -> NamingDialog(state, n) { naming = null } }
+        naming?.let { n -> NamingDialog(ctx, n) { naming = null } }
       }
     }
 }
@@ -326,8 +346,15 @@ private class Ctx(
     val dialog: (Naming) -> Unit,
     /** A short message above the player bar. */
     val toast: (String) -> Unit,
+    /** The same, with an Undo button for a few seconds. */
+    val undoable: (String, () -> Unit) -> Unit,
     val openArtistByName: (String) -> Unit,
 ) {
+    fun removeFromPlaylist(id: String, ids: List<String>) {
+        val before = state.collection.playlists.firstOrNull { it.id == id }?.trackIds ?: return
+        ids.forEach { state.removeFromPlaylist(id, it) }
+        undoable(if (ids.size == 1) "Removed from the playlist" else "${ids.size} songs removed") { state.setPlaylistTracks(id, before) }
+    }
     /** Plays the song now and fills the queue with similar songs as soon as they're found. */
     fun radio(first: Player.Item, artist: String) {
         val p = player ?: return
@@ -381,11 +408,19 @@ private sealed interface Naming {
 }
 
 @Composable
-private fun NamingDialog(state: AppState, n: Naming, close: () -> Unit) {
+private fun NamingDialog(ctx: Ctx, n: Naming, close: () -> Unit) {
+    val state = ctx.state
     if (n is Naming.Delete) {
         AlertDialog(onDismissRequest = close, title = { Text("Delete “${n.name}”?") },
             text = { Text("Only the playlist goes; your songs stay.", color = TextDim) },
-            confirmButton = { TextButton(onClick = { state.deletePlaylist(n.id); close() }) { Text("Delete", color = ErrorRed) } },
+            confirmButton = {
+                TextButton(onClick = {
+                    val pl = state.collection.playlists.firstOrNull { it.id == n.id }
+                    val remotes = state.collection.remote.filter { r -> pl?.trackIds?.contains(r.key) == true }
+                    state.deletePlaylist(n.id); close()
+                    if (pl != null) ctx.undoable("Deleted “${pl.name}”") { state.restorePlaylist(pl, remotes) }
+                }) { Text("Delete", color = ErrorRed) }
+            },
             dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
         return
     }
@@ -499,7 +534,7 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
         else if (canLike.isNotEmpty()) add(ContextMenuItem("Remove $n from Liked Songs") { canLike.forEach { s.toggleLike(it.id) } })
         s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add $n to “${pl.name}”") { many.forEach { s.addToPlaylist(pl.id, it.id) } }) }
         add(ContextMenuItem("Add $n to new playlist…") { ctx.dialog(Naming.New(null, many.map { it.id })) })
-        if (inPlaylist != null) add(ContextMenuItem("Remove $n from this playlist") { many.forEach { s.removeFromPlaylist(inPlaylist, it.id) } })
+        if (inPlaylist != null) add(ContextMenuItem("Remove $n from this playlist") { ctx.removeFromPlaylist(inPlaylist, many.map { it.id }) })
         many.mapNotNull { Downloads.forTrack(it, s.settings.server) }.takeIf { it.isNotEmpty() }?.let { d -> add(ContextMenuItem("Download ${d.size}") { ctx.download(d) }) }
         val editable = many.filterNot(s::isPreviewRow)
         if (editable.any { s.meta.containsKey(it.id) }) add(ContextMenuItem("Restore original tags") { editable.forEach { Overrides.restore(it.id) }; ctx.toast("Original tags restored") })
@@ -510,10 +545,14 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
             add(ContextMenuItem("Add to queue") { p.enqueue(s.item(t)) })
             add(ContextMenuItem("Start radio") { ctx.radio(s.item(t), t.artist) })
         }
-        add(ContextMenuItem(if (s.isLiked(t.id)) "Remove from Liked Songs" else "Add to Liked Songs") { s.toggleLike(t.id) })
+        add(ContextMenuItem(if (s.isLiked(t.id)) "Remove from Liked Songs" else "Add to Liked Songs") {
+            val was = s.isLiked(t.id)
+            s.toggleLike(t.id)
+            if (was) ctx.undoable("Removed from Liked Songs") { s.toggleLike(t.id) }
+        })
         s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.addToPlaylist(pl.id, t.id) }) }
         add(ContextMenuItem("Add to new playlist…") { ctx.dialog(Naming.New(t.id)) })
-        if (inPlaylist != null) add(ContextMenuItem("Remove from this playlist") { s.removeFromPlaylist(inPlaylist, t.id) })
+        if (inPlaylist != null) add(ContextMenuItem("Remove from this playlist") { ctx.removeFromPlaylist(inPlaylist, listOf(t.id)) })
         add(ContextMenuItem("Go to album") {
             Grouping.albums(s.library).firstOrNull { it.key == t.albumKey }?.let { a -> ctx.push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }
         })
@@ -664,6 +703,7 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, newPlaylist:
             if (state.settings.folders.isNotEmpty()) Entry(View.Folder(null), "Folders", Icons.Rounded.Folder)
             Spacer(Modifier.height(8.dp))
             Entry(View.Liked, "Liked Songs", Icons.Rounded.Favorite)
+            Entry(View.Smart, "Smart playlists", Icons.Rounded.AutoAwesome)
             Entry(View.Want, "Want to listen", Icons.Rounded.Bookmark)
             // Pinned playlists first (newest pin on top), then the rest; right-click to pin or unpin.
             val pins = state.settings.pinned
@@ -770,9 +810,10 @@ private fun Mosaic(arts: List<String?>, size: Int) {
 }
 
 /** How a song list is ordered; [CUSTOM] is the list's own order (a playlist's, an album's). */
-enum class Sort(val label: String) { CUSTOM("Custom order"), TITLE("Title"), ARTIST("Artist"), ALBUM("Album"), PLAYS("Most played"), LENGTH("Length") }
+enum class Sort(val label: String) { CUSTOM("Custom order"), TITLE("Title"), ARTIST("Artist"), ALBUM("Album"), PLAYS("Most played"), ADDED("Recently added"), LENGTH("Length") }
 
-internal fun sorted(tracks: List<Track>, sort: Sort, plays: Map<String, Int>): List<Track> = when (sort) {
+internal fun sorted(tracks: List<Track>, sort: Sort, plays: Map<String, Int>, added: Map<String, Long> = emptyMap()): List<Track> = when (sort) {
+    Sort.ADDED -> tracks.sortedByDescending { added[it.id] ?: 0 }
     Sort.CUSTOM -> tracks
     Sort.TITLE -> tracks.sortedBy { it.title.lowercase() }
     Sort.ARTIST -> tracks.sortedWith(compareBy({ it.artist.lowercase() }, { it.album.lowercase() }, { it.trackNo }))
@@ -802,7 +843,7 @@ private fun SongList(
     var anchor by remember(title) { mutableIntStateOf(-1) }
     val shown = remember(tracks, sort, ctx.state.playCounts, filter) {
         val f = filter?.let(Match::norm).orEmpty()
-        sorted(tracks, sort, ctx.state.playCounts).filter { f.isEmpty() || Match.norm("${it.title} ${it.artist} ${it.album}").contains(f) }
+        sorted(tracks, sort, ctx.state.playCounts, ctx.state.addedAt).filter { f.isEmpty() || Match.norm("${it.title} ${it.artist} ${it.album}").contains(f) }
     }
     val onSelect = { i: Int, ctrl: Boolean, shift: Boolean ->
         selected = select(selected, shown, anchor, i, ctrl, shift)
@@ -870,10 +911,27 @@ private fun Songs(ctx: Ctx) {
 
 @Composable
 private fun Albums(state: AppState, onOpen: (Album) -> Unit, onOpenSaved: (RemoteAlbum) -> Unit) {
-    val albums = remember(state.library) { Grouping.albums(state.library) }
+    var by by remember { mutableStateOf("Name") }
+    val albums = remember(state.library, by, state.playCounts, state.addedAt) {
+        val all = Grouping.albums(state.library)
+        when (by) {
+            "Artist" -> all.sortedWith(compareBy({ it.artist.lowercase() }, { it.title.lowercase() }))
+            "Recently added" -> all.sortedByDescending { a -> a.tracks.maxOf { state.addedAt[it.id] ?: 0 } }
+            "Most played" -> all.sortedByDescending { a -> a.tracks.sumOf { state.playCounts[it.id] ?: 0 } }
+            else -> all
+        }
+    }
+    Column {
+    Row(Modifier.padding(24.dp, 12.dp, 24.dp, 0.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf("Name", "Artist", "Recently added", "Most played").forEach { o ->
+            if (o == by) Button(onClick = {}, contentPadding = PaddingValues(14.dp, 4.dp)) { Text(o, fontSize = 13.sp) }
+            else OutlinedButton(onClick = { by = o }, contentPadding = PaddingValues(14.dp, 4.dp)) { Text(o, fontSize = 13.sp) }
+        }
+    }
     LazyVerticalGrid(GridCells.Adaptive(180.dp), Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         items(state.collection.albums) { a -> Card(a.cover, a.title, "Saved · ${a.artist}") { onOpenSaved(a) } }
         items(albums) { a -> Card(a.artUri, a.title, a.artist) { onOpen(a) } }
+    }
     }
 }
 
@@ -934,6 +992,7 @@ private fun Search(ctx: Ctx) {
     var albums by remember { mutableStateOf<List<RemoteAlbum>>(emptyList()) }
     var free by remember { mutableStateOf<List<RemoteTrack>>(emptyList()) }
     var problem by remember { mutableStateOf<String?>(null) }
+    var tab by remember { mutableStateOf("All") }
     LaunchedEffect(q) {
         online = emptyList(); artists = emptyList(); albums = emptyList(); free = emptyList(); problem = null
         if (q.trim().length < 2) return@LaunchedEffect
@@ -964,6 +1023,12 @@ private fun Search(ctx: Ctx) {
                 Spacer(Modifier.height(12.dp))
                 TextBox(q, { q = it }, placeholder = { Text("Songs, artists and albums, here and online") }, singleLine = true, modifier = Modifier.width(480.dp))
                 problem?.let { Text(it, color = TextDim, modifier = Modifier.padding(top = 8.dp)) }
+                if (q.isNotBlank()) Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("All", "Songs", "Artists", "Albums", "Free songs").forEach { t ->
+                        if (t == tab) Button(onClick = {}, contentPadding = PaddingValues(14.dp, 4.dp)) { Text(t, fontSize = 13.sp) }
+                        else OutlinedButton(onClick = { tab = t }, contentPadding = PaddingValues(14.dp, 4.dp)) { Text(t, fontSize = 13.sp) }
+                    }
+                }
                 if (q.isBlank() && state.settings.searches.isNotEmpty()) {
                     Row(Modifier.padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("Recent searches", color = TextMain, fontWeight = FontWeight.Bold)
@@ -980,7 +1045,7 @@ private fun Search(ctx: Ctx) {
             }
         }
         // Your own songs are searched in Songs (the filter there); this is the online catalog.
-        artists.firstOrNull { Match.norm(it.name) == Match.norm(q) }?.let { top ->
+        if (tab == "All") artists.firstOrNull { Match.norm(it.name) == Match.norm(q) }?.let { top ->
             item { Section("Top result") }
             item {
                 Row(Modifier.padding(horizontal = 24.dp).width(420.dp).clip(RoundedCornerShape(10.dp)).background(Raised)
@@ -994,11 +1059,11 @@ private fun Search(ctx: Ctx) {
                 }
             }
         }
-        if (online.isNotEmpty()) {
+        if (online.isNotEmpty() && tab in setOf("All", "Songs")) {
             item { Section("Songs") }
-            items(minOf(online.size, 8)) { i -> RemoteRow(ctx, online, i) }
+            items(if (tab == "Songs") online.size else minOf(online.size, 8)) { i -> RemoteRow(ctx, online, i) }
         }
-        if (artists.isNotEmpty()) {
+        if (artists.isNotEmpty() && tab in setOf("All", "Artists")) {
             item { Section("Artists") }
             item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1013,7 +1078,7 @@ private fun Search(ctx: Ctx) {
                 }
             }
         }
-        if (albums.isNotEmpty()) {
+        if (albums.isNotEmpty() && tab in setOf("All", "Albums")) {
             item { Section("Albums") }
             item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1021,7 +1086,7 @@ private fun Search(ctx: Ctx) {
                 }
             }
         }
-        if (free.isNotEmpty()) {
+        if (free.isNotEmpty() && tab in setOf("All", "Free songs")) {
             item { Section("Free full songs") }
             items(free.size) { i -> RemoteRow(ctx, free, i) }
         }
@@ -1052,6 +1117,10 @@ private fun CatalogArtistPage(ctx: Ctx, artist: RemoteArtist, back: (() -> Unit)
                 TextButton(onClick = { s.toggleBlocked(artist.name) }) { Text(if (s.isBlocked(artist.name)) "Suggest again" else "Don't suggest", color = TextDim) }
                 if (!s.onAiList(artist.name)) TextButton(onClick = { s.toggleAi(artist.name) }) { Text(if (s.isAi(artist.name)) "Not AI after all" else "This is AI", color = TextDim) }
                 Spacer(Modifier.width(6.dp))
+                popular.firstOrNull()?.let { s.item(it) }?.let { first ->
+                    OutlinedButton(onClick = { ctx.radio(first, artist.name) }) { Icon(Icons.Rounded.Radio, null, tint = Accent); Text(" Radio", color = TextMain) }
+                    Spacer(Modifier.width(6.dp))
+                }
                 if (popular.isNotEmpty()) Button(onClick = { ctx.playRemote(popular, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play popular") }
             }
         }
@@ -1271,6 +1340,10 @@ private fun SettingsPage(ctx: Ctx) {
                     color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp))
             }
         }
+        if (state.settings.normalize) item {
+            Toggle("Keep album dynamics", "Evens out whole albums instead of single songs, so an album's quiet intro stays quiet. Shuffled songs still match.",
+                state.settings.albumGain) { state.setAlbumGain(it); ctx.player?.refreshVolume() }
+        }
         item { Toggle("ListenBrainz suggestions", "Adds similar artists from ListenBrainz's open listening data to your mixes and similar songs. Only artist names are sent.", state.settings.listenBrainz, state::setListenBrainz) }
         item { Section("Backup") }
         item {
@@ -1317,7 +1390,7 @@ private fun SettingsPage(ctx: Ctx) {
         }
         item { Section("Keyboard") }
         item {
-            Text("Space play/pause · Ctrl+→ / Ctrl+← next / previous · → / ← seek 5 s · ↑ / ↓ volume · Ctrl+L like · Ctrl+F search · Ctrl+, settings · Ctrl + / Ctrl − size · Esc back · Ctrl+click or Shift+click selects several songs",
+            Text("Space play/pause · Ctrl+→ / Ctrl+← next / previous · → / ← seek 5 s · ↑ / ↓ volume · Ctrl+L like · Ctrl+F search · Ctrl+, settings · Ctrl + / Ctrl − size · Esc back · Ctrl+click or Shift+click selects several songs · F1 all shortcuts",
                 color = TextDim, fontSize = 13.sp)
         }
         item { Section("Privacy") }
@@ -1344,7 +1417,7 @@ private fun PanelFrame(title: String, onClose: () -> Unit, content: @Composable 
 }
 
 @Composable
-private fun QueuePanel(player: Player, onSave: () -> Unit, onClose: () -> Unit) = PanelFrame("Queue", onClose) {
+private fun QueuePanel(player: Player, onClear: () -> Unit, onSave: () -> Unit, onClose: () -> Unit) = PanelFrame("Queue", onClose) {
     val upcoming = player.upcoming()
     val reorder = remember { ReorderState() }
     LazyColumn {
@@ -1354,7 +1427,7 @@ private fun QueuePanel(player: Player, onSave: () -> Unit, onClose: () -> Unit) 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Section("Next")
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { player.clearUpcoming() }) { Text("Clear", color = Accent) }
+                TextButton(onClick = onClear) { Text("Clear", color = Accent) }
             }
         }
         items(upcoming.size) { k ->
@@ -1602,6 +1675,7 @@ private fun PlayerBar(ctx: Ctx, panel: Panel, toggle: (Panel) -> Unit) {
             }
         }
         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            OutputButton(state, player)
             SleepButton(player)
             IconButton(onClick = { state.mini = !state.mini }) { Icon(Icons.Rounded.PictureInPictureAlt, "Mini player", tint = if (state.mini) Accent else TextDim) }
             IconButton(onClick = { toggle(Panel.LYRICS) }) { Icon(Icons.Rounded.Lyrics, "Lyrics", tint = if (panel == Panel.LYRICS) Accent else TextDim) }
@@ -1661,6 +1735,13 @@ internal fun MiniPlayer(state: AppState, player: Player, openMain: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Text(cur?.title ?: "Nothing playing", color = TextMain, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(cur?.artist.orEmpty(), color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // The line being sung, when the song has synced lyrics.
+            val ls = rememberLyrics(state, player)
+            ls.lyrics?.synced?.takeIf { it.isNotEmpty() }?.let { lines ->
+                lines.getOrNull(Lrc.indexAt(lines, player.positionMs + ls.shift))?.text?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, color = Accent, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = player::previous) { Icon(Icons.Rounded.SkipPrevious, "Previous", tint = TextMain) }
                 IconButton(onClick = player::toggle, Modifier.size(40.dp).clip(CircleShape).background(Accent)) {
@@ -1697,6 +1778,67 @@ private fun qualityOf(item: Player.Item): String? {
         }.also { qualities[item.id] = it }
     }
     return q
+}
+
+/** Speakers, headphones, HDMI: where Onda plays (the rest of the system keeps its own output). */
+@Composable
+private fun OutputButton(state: AppState, player: Player?) {
+    if (player == null) return
+    var open by remember { mutableStateOf(false) }
+    var devices by remember { mutableStateOf<List<Outputs.Device>>(emptyList()) }
+    LaunchedEffect(open) { if (open) devices = withContext(kotlinx.coroutines.Dispatchers.IO) { Outputs.list() } }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.Rounded.Speaker, "Play on…", tint = if (state.settings.output != null) Accent else TextDim) }
+        DropdownMenu(open, { open = false }, modifier = Modifier.background(Color(0xFF2E2E38))) {
+            Text("Play on", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 4.dp))
+            DropdownMenuItem({ Text("System default", color = if (state.settings.output == null) Accent else TextMain) },
+                { state.setOutput(null); player.setOutput(null); open = false })
+            devices.forEach { d ->
+                DropdownMenuItem({ Text(d.label, color = if (state.settings.output == d.name) Accent else TextMain) },
+                    { state.setOutput(d.name); player.setOutput(d.name); open = false })
+            }
+            if (devices.isEmpty()) Text("No other outputs found (needs pactl).", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 4.dp))
+        }
+    }
+}
+
+/** Built-in playlists made from your library and listening. */
+@Composable
+private fun SmartPage(ctx: Ctx) {
+    val state = ctx.state
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { Header("Smart playlists", "Made from your library and what you play; they update by themselves") }
+        item {
+            Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                AppState.Smart.entries.forEach { k ->
+                    val tracks = state.smart(k)
+                    Column(Modifier.width(200.dp).clip(RoundedCornerShape(8.dp)).clickable { ctx.push(View.SmartList(k)) }.padding(8.dp)) {
+                        Mosaic(tracks.map { it.artUri }, 184)
+                        Text(k.title, color = TextMain, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+                        Text("${tracks.size} songs · ${k.about}", color = TextDim, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** F1 or Ctrl+/: every keyboard shortcut at a glance. */
+@Composable
+private fun ShortcutsDialog(close: () -> Unit) {
+    val keys = listOf(
+        "Space" to "Play / pause", "Ctrl + → / ←" to "Next / previous song", "→ / ←" to "Forward / back 5 seconds",
+        "↑ / ↓" to "Volume", "Ctrl + L" to "Like the song playing", "Ctrl + K" to "Go to anything in your library",
+        "Ctrl + F" to "Search online", "Ctrl + ," to "Settings", "Ctrl + + / − / 0" to "Bigger / smaller / normal size",
+        "Ctrl + click, Shift + click" to "Select several songs", "Esc" to "Back", "F1 or Ctrl + /" to "This list",
+    )
+    AlertDialog(onDismissRequest = close, title = { Text("Keyboard shortcuts") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                keys.forEach { (k, v) -> Row { Text(k, color = Accent, fontSize = 13.sp, modifier = Modifier.width(200.dp)); Text(v, color = TextMain, fontSize = 13.sp) } }
+            }
+        },
+        confirmButton = { TextButton(onClick = close) { Text("Close", color = Accent) } })
 }
 
 /** Sleep timer: pause after some minutes or when the song ends. */
@@ -1993,11 +2135,11 @@ private fun DuplicatesPage(ctx: Ctx, back: (() -> Unit)?) {
                 val where = if (t.id.startsWith("file:")) runCatching { java.io.File(java.net.URI(t.id)).path }.getOrDefault(t.fileName) else "On your music server"
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) {
-                        ContextMenuArea(items = { listOf(ContextMenuItem("Hide this copy") { state.toggleHidden(t.id) }) + trackMenu(ctx, g, t, null, emptySet()) }) {
+                        ContextMenuArea(items = { listOf(ContextMenuItem("Hide this copy") { state.toggleHidden(t.id); ctx.undoable("Hidden: ${t.title}") { state.toggleHidden(t.id) } }) + trackMenu(ctx, g, t, null, emptySet()) }) {
                             SongRow(null, t.album, where, "${ctx.state.playCounts[t.id] ?: 0} plays", t.durationMs, t.artUri, ctx.player?.current?.id == t.id) { ctx.play(listOf(t), 0) }
                         }
                     }
-                    TextButton(onClick = { state.toggleHidden(t.id) }, modifier = Modifier.padding(end = 16.dp)) { Text("Hide", color = TextDim) }
+                    TextButton(onClick = { state.toggleHidden(t.id); ctx.undoable("Hidden: ${t.title}") { state.toggleHidden(t.id) } }, modifier = Modifier.padding(end = 16.dp)) { Text("Hide", color = TextDim) }
                 }
             }
         }
@@ -2047,6 +2189,8 @@ private fun LibraryArtistPage(ctx: Ctx, name: String, back: (() -> Unit)?) {
         item {
             Header(a.name, "Artist · ${a.tracks.size} songs in your library", state.artistPics[a.name.lowercase()]?.ifBlank { null } ?: a.artUri, round = true, back = back) {
                 OutlinedButton(onClick = { ctx.openArtistByName(a.name) }) { Text("More from ${a.name}") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = { ctx.radio(ctx.state.item((top.firstOrNull() ?: a.tracks.random())), a.name) }) { Icon(Icons.Rounded.Radio, null, tint = Accent); Text(" Radio", color = TextMain) }
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = { ctx.play(a.tracks, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
             }

@@ -54,7 +54,9 @@ fun main(args: Array<String>) {
         val player = remember {
             runCatching { Player(scope) }.onFailure { System.err.println("Onda: GStreamer could not start: $it") }.getOrNull()
                 ?.also { p -> p.gapless = state.settings.gapless; p.resolver = state::resolve; p.onLastSong = { state.extend(p) }; p.prefetch = state::prefetch
-                    p.gain = { if (state.settings.normalize) Loudness.factor(it.id) else 1.0 } }
+                    p.gain = { if (state.settings.normalize) Loudness.factor(it.id, state.albumMates(it.id)) else 1.0 }
+                    p.resumeAt = { state.resumeAt(it.id) }; p.onLeave = { item, pos, dur -> state.leftAt(item.id, pos, dur) }
+                    state.settings.output?.let { o -> if (Outputs.list().any { it.name == o }) p.setOutput(o) } }
         }
         val mpris = remember { arrayOfNulls<Mpris>(1) }
         // Started with your desktop session: no window until you open Onda (from the app menu, or the media widget).
@@ -85,6 +87,7 @@ fun main(args: Array<String>) {
                 e.isCtrlPressed && e.key == Key.F -> state.navRequest = "search"
                 e.isCtrlPressed && e.key == Key.Comma -> state.navRequest = "settings"
                 e.isCtrlPressed && e.key == Key.K -> state.navRequest = "quick"
+                e.key == Key.F1 || (e.isCtrlPressed && e.key == Key.Slash) -> state.navRequest = "keys"
                 e.key == Key.Escape -> state.navRequest = "back"
                 else -> return false
             }
@@ -104,7 +107,7 @@ fun main(args: Array<String>) {
         val mainWindow = arrayOfNulls<java.awt.Frame>(1)
         if (state.mini && player != null) Window(
             onCloseRequest = { state.mini = false }, title = "Onda mini player", icon = painterResource("onda.png"), alwaysOnTop = true, resizable = false,
-            state = rememberWindowState(width = 440.dp, height = 132.dp, position = WindowPosition(Alignment.BottomEnd)), onKeyEvent = ::keys,
+            state = rememberWindowState(width = 440.dp, height = 150.dp, position = WindowPosition(Alignment.BottomEnd)), onKeyEvent = ::keys,
         ) { MiniPlayer(state, player) { mainWindow[0]?.let(::bringToFront) } }
         Window(
             // With "keep playing" on, closing hides the window; the app menu or the media widget brings it back.
