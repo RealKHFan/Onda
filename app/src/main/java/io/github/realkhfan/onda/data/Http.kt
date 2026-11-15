@@ -8,14 +8,15 @@ import java.net.URLEncoder
 
 /** Plain GETs for the catalog APIs. Call from Dispatchers.IO. */
 internal object Http {
-    fun get(url: String, readTimeoutMs: Int = 8000): String = getOrNull(url, readTimeoutMs) ?: throw IOException("HTTP 404")
+    fun get(url: String, readTimeoutMs: Int = 8000, agent: String = "Onda"): String =
+        getOrNull(url, readTimeoutMs, agent) ?: throw IOException("HTTP 404")
 
     /** Like [get], but "not found" (404) is null instead of an error. */
-    fun getOrNull(url: String, readTimeoutMs: Int = 8000): String? {
+    fun getOrNull(url: String, readTimeoutMs: Int = 8000, agent: String = "Onda"): String? {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 8000
         c.readTimeout = readTimeoutMs
-        c.setRequestProperty("User-Agent", "Onda") // the default agent would send the phone model
+        c.setRequestProperty("User-Agent", agent) // the default agent would send the phone model
         try {
             val code = c.responseCode
             if (code == 404) return null

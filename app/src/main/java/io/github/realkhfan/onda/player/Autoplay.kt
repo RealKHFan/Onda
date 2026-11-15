@@ -1,5 +1,7 @@
 package io.github.realkhfan.onda.player
 
+import io.github.realkhfan.onda.core.RemoteArtist
+import io.github.realkhfan.onda.data.ListenBrainz
 import androidx.media3.common.MediaItem
 import io.github.realkhfan.onda.core.Discovery
 import io.github.realkhfan.onda.core.Match
@@ -13,12 +15,14 @@ import io.github.realkhfan.onda.data.UserCollection
 object Autoplay {
 
     /** Up to [n] songs, at most 2 per artist, never one already in the list; songs you own play in full. */
-    suspend fun similar(lastArtists: List<String>, inList: Set<String>, library: List<Track>, n: Int = 10): List<MediaItem> {
+    suspend fun similar(lastArtists: List<String>, inList: Set<String>, library: List<Track>, n: Int = 10, listenBrainz: Boolean = false): List<MediaItem> {
         val seeds = lastArtists.filter { it.isNotBlank() && !UserCollection.isBlocked(it) && !UserCollection.isAi(it) }
             .distinctBy(Match::norm).take(5)
             .mapNotNull { name -> (ArtistIds.cached(name) ?: runCatching { ArtistIds.resolve(name) }.getOrDefault(0)).takeIf { it > 0 } }
         if (seeds.isEmpty()) return emptyList()
-        val related = seeds.flatMap { runCatching { Deezer.related(it, 4) }.getOrDefault(emptyList()) }
+        val lb = if (!listenBrainz) emptyList() else lastArtists.take(2).flatMap { ListenBrainz.similar(it, 4) }
+            .mapNotNull { name -> (ArtistIds.cached(name) ?: runCatching { ArtistIds.resolve(name) }.getOrDefault(0)).takeIf { it > 0 }?.let { RemoteArtist(it, name, null) } }
+        val related = (seeds.flatMap { runCatching { Deezer.related(it, 4) }.getOrDefault(emptyList()) } + lb)
             .distinctBy { it.id }.filterNot { UserCollection.isBlocked(it.name) || UserCollection.isAi(it.name) }.shuffled().take(8)
         val songs = (related.map { it.id } + seeds).distinct()
             .flatMap { id -> runCatching { Deezer.artistTop(id, 5) }.getOrDefault(emptyList()) }

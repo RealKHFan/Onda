@@ -29,6 +29,11 @@ object Server {
     private val _songs = MutableStateFlow<List<Subsonic.Song>>(emptyList())
     val songs: StateFlow<List<Subsonic.Song>> = _songs.asStateFlow()
 
+    /** The server's own playlists (read-only here). */
+    private val _playlists = MutableStateFlow<List<Subsonic.Playlist>>(emptyList())
+    val playlists: StateFlow<List<Subsonic.Playlist>> = _playlists.asStateFlow()
+    private var playlistCache: File? = null
+
     /** Max streaming kbps; 0 = original file. */
     private val _kbps = MutableStateFlow(0)
     val kbps: StateFlow<Int> = _kbps.asStateFlow()
@@ -49,6 +54,8 @@ object Server {
         _config.value = Prefs.server(ctx)
         _kbps.value = Prefs.streamKbps(ctx)
         _songs.value = if (_config.value != null) readCache() else emptyList()
+        playlistCache = File(ctx.filesDir, "server_playlists.json")
+        _playlists.value = if (_config.value != null) readPlaylists() else emptyList()
     }
 
     /** Logs in with a fresh salt; on success keeps only the token and lists the library. Returns an error message, or null. */
@@ -80,8 +87,10 @@ object Server {
         Prefs.clearServer(ctx)
         _config.value = null
         _songs.value = emptyList()
+        _playlists.value = emptyList()
         _problem.value = null
         cache?.delete()
+        playlistCache?.delete()
     }
 
     fun setKbps(ctx: Context, kbps: Int) {
@@ -112,6 +121,17 @@ object Server {
                 }
                 _songs.value = all.values.toList()
                 withContext(Dispatchers.IO) { writeCache(_songs.value) }
+                // Playlists: one request for the list, one per playlist (capped so a huge server can't stall the sync).
+                val lists = withContext(Dispatchers.IO) {
+                    Subsonic.parsePlaylistList(Subsonic.unwrap(Http.get(Subsonic.url(cfg, "getPlaylists"), readTimeoutMs = 30_000)))
+                        .take(200).map { (id, name) ->
+                            Subsonic.Playlist(id, name, Subsonic.parsePlaylistSongs(
+                                Subsonic.unwrap(Http.get(Subsonic.url(cfg, "getPlaylist", "id=${Http.enc(id)}"), readTimeoutMs = 30_000)),
+                            ))
+                        }
+                }
+                _playlists.value = lists
+                withContext(Dispatchers.IO) { writePlaylists(lists) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -152,6 +172,23 @@ object Server {
         }
     } catch (_: Exception) {
         emptyList() // only a cache: the next sync rebuilds it
+    }
+
+    private fun readPlaylists(): List<Subsonic.Playlist> = try {
+        val arr = JSONArray(playlistCache?.takeIf { it.exists() }?.readText() ?: "[]")
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            val ids = o.getJSONArray("songs")
+            Subsonic.Playlist(o.getString("id"), o.getString("name"), (0 until ids.length()).map { ids.getString(it) })
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    private fun writePlaylists(lists: List<Subsonic.Playlist>) {
+        val f = playlistCache ?: return
+        val arr = JSONArray(lists.map { JSONObject().put("id", it.id).put("name", it.name).put("songs", JSONArray(it.songIds)) })
+        File(f.path + ".tmp").apply { writeText(arr.toString()) }.renameTo(f)
     }
 
     private fun writeCache(songs: List<Subsonic.Song>) {

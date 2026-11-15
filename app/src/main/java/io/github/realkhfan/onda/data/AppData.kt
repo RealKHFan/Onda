@@ -23,6 +23,7 @@ object AppData {
         ArtistIds.load(c)
         Releases.load(c)
         UserCollection.load(c)
+        ListenBrainz.load(c)
     }
 
     /** Your library as shown: files and server songs (a local copy wins), with accepted matches applied. */

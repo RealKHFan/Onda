@@ -47,6 +47,10 @@ object Prefs {
     fun mobileDownloads(ctx: Context): Boolean = p(ctx).getBoolean("mobile_downloads", false)
     fun setMobileDownloads(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("mobile_downloads", on).apply()
 
+    /** On by default: ListenBrainz adds similar artists to Deezer's for mixes and autoplay. */
+    fun listenBrainz(ctx: Context): Boolean = p(ctx).getBoolean("listenbrainz", true)
+    fun setListenBrainz(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("listenbrainz", on).apply()
+
     /** On by default: when the queue runs out, similar songs keep playing. */
     fun autoplay(ctx: Context): Boolean = p(ctx).getBoolean("autoplay", true)
     fun setAutoplay(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("autoplay", on).apply()
@@ -58,7 +62,7 @@ object Prefs {
     fun setLastBackup(ctx: Context, at: Long) = p(ctx).edit().putLong("last_backup", at).apply()
 
     // Settings that go into a backup. Not the server login (it's a credential) and not folders (their access is per phone).
-    private val bools = listOf("apple_search", "free_search", "release_alerts", "keep_playing", "mobile_downloads", "autoplay")
+    private val bools = listOf("apple_search", "free_search", "release_alerts", "keep_playing", "mobile_downloads", "autoplay", "listenbrainz")
 
     fun export(ctx: Context): JSONObject = JSONObject().also { o ->
         val p = p(ctx)

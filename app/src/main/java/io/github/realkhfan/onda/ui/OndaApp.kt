@@ -2,6 +2,8 @@
 
 package io.github.realkhfan.onda.ui
 
+import androidx.compose.material.icons.rounded.Dns
+import io.github.realkhfan.onda.data.Subsonic
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.mutableLongStateOf
@@ -223,6 +225,7 @@ fun OndaApp(player: PlayerState?) {
     val liked by PlaylistStore.liked.collectAsState()
     val want by PlaylistStore.want.collectAsState()
     val followed by UserCollection.followed.collectAsState()
+    val serverPlaylists by Server.playlists.collectAsState()
     val savedAlbums by UserCollection.albums.collectAsState()
     val aiMarked by UserCollection.aiMarked.collectAsState()
     val hiddenSongs by UserCollection.hidden.collectAsState()
@@ -349,6 +352,7 @@ fun OndaApp(player: PlayerState?) {
                 .distinctBy { Match.norm(it) }.filterNot { UserCollection.isAi(it) || UserCollection.isBlocked(it) },
             known = (tracks.map { it.artist } + plays.map { it.artist } + likedTracks.map { it.artist }).map { Match.norm(it) }.toSet(),
             skip = { r -> r.key in played || localFor(r) != null || UserCollection.notWanted(r) },
+            audius = freeOn, jamendoId = jamendoId, listenBrainz = Prefs.listenBrainz(ctx),
         )
     }
     LaunchedEffect(taste.seeds.isNotEmpty(), java.time.LocalDate.now()) {
@@ -513,6 +517,11 @@ fun OndaApp(player: PlayerState?) {
                                 likedCount = likedTracks.size, wantCount = want.size,
                                 albums = albums, artists = artists, folders = folderGroups, songs = songs,
                                 savedAlbums = savedAlbums, followed = followed,
+                                serverPlaylists = serverPlaylists,
+                                onOpenServerPlaylist = { sp ->
+                                    val list = sp.songIds.mapNotNull { byId[Server.PREFIX + it] }
+                                    push(TracksRoute(sp.name, "Playlist · Music server · ${songCount(list.size)}", list.firstNotNullOfOrNull { it.artUri }, list, "Playlist"))
+                                },
                                 onOpenRemoteAlbum = { push(RemoteAlbumRoute(it)) },
                                 onOpenRemoteArtist = { push(RemoteArtistRoute(it)) },
                                 currentId = player?.currentId,
@@ -797,6 +806,8 @@ private fun LibraryScreen(
     onOpenFolder: (FolderGroup) -> Unit,
     savedAlbums: List<RemoteAlbum>,
     followed: List<RemoteArtist>,
+    serverPlaylists: List<Subsonic.Playlist>,
+    onOpenServerPlaylist: (Subsonic.Playlist) -> Unit,
     onOpenRemoteAlbum: (RemoteAlbum) -> Unit,
     onOpenRemoteArtist: (RemoteArtist) -> Unit,
     onPlaySongs: (List<Track>, Int) -> Unit,
@@ -878,6 +889,11 @@ private fun LibraryScreen(
                         items(playlists) { pl ->
                             GroupRow(pl.name, "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) }) {
                                 Art(playlistArt(pl), 52.dp)
+                            }
+                        }
+                        items(serverPlaylists) { sp ->
+                            GroupRow(sp.name, "Playlist · Music server · ${songCount(sp.songIds.size)}", { onOpenServerPlaylist(sp) }) {
+                                IconTile(Icons.Rounded.Dns, 52.dp)
                             }
                         }
                         if (playlists.isEmpty()) item {
@@ -1261,6 +1277,15 @@ private fun SettingsScreen(
                         "words and IP address.", color = TextDim, fontSize = 12.sp)
                 }
                 Switch(checked = freeOn, onCheckedChange = onFreeChange)
+            }
+            var lbOn by remember { mutableStateOf(Prefs.listenBrainz(ctx)) }
+            Row(Modifier.fillMaxWidth().clickable { lbOn = !lbOn; Prefs.setListenBrainz(ctx, lbOn) }, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Similar artists from ListenBrainz", color = TextMain)
+                    Text("Better mixes and autoplay. ListenBrainz and MusicBrainz then see artist names (no songs, no history) and your IP address.",
+                        color = TextDim, fontSize = 12.sp)
+                }
+                Switch(checked = lbOn, onCheckedChange = { lbOn = it; Prefs.setListenBrainz(ctx, it) })
             }
             OutlinedTextField(
                 value = jamendoId,

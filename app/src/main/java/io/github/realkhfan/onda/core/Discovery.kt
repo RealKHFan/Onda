@@ -61,6 +61,9 @@ object Discovery {
      * Versions left out of discovery: remixes, sped up / slowed / nightcore, live, karaoke.
      * Only words in brackets or after " - " count, so "Live Forever" or "Remix Me" stay in. Covers and singles stay too.
      */
+    /** The search words name a version kind ("remix", "live", "sped up"…), so such versions are wanted there. */
+    fun asksFor(query: String): Boolean = unwantedWords.containsMatchIn(query)
+
     fun isUnwanted(title: String, album: String): Boolean =
         tagged.findAll(title).any { m -> unwantedWords.containsMatchIn(m.value) } || liveAlbum.containsMatchIn(album)
 

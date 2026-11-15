@@ -1,5 +1,6 @@
 package io.github.realkhfan.onda.data
 
+import io.github.realkhfan.onda.core.Discovery
 import io.github.realkhfan.onda.core.Match
 import io.github.realkhfan.onda.core.RemoteResults
 import io.github.realkhfan.onda.core.RemoteTrack
@@ -31,14 +32,17 @@ object Catalog {
         val ov = openverse.await()
         val used = listOf(t, ar, al) + listOfNotNull(it.takeIf { apple }, au.takeIf { free }, ia.takeIf { free }, ov.takeIf { free }, ja.takeIf { jamendoId.isNotBlank() })
         if (used.all { r -> r.isFailure }) throw t.exceptionOrNull()!!
-        // AI-generated "artists" (community list + your own marks) never show up.
-        val ai = UserCollection::isAi
+        // AI-generated "artists" (community list + your own marks) never show up; remixes, sped-up, live and karaoke
+        // versions only when the search words ask for them.
+        val versionsWanted = Discovery.asksFor(query)
+        val ai = { a: String -> UserCollection.isAi(a) }
+        fun ok(t: RemoteTrack) = !ai(t.artist) && (versionsWanted || !Discovery.isUnwanted(t.title, t.album))
         RemoteResults(
-            tracks = Match.mergeTracks(t.getOrDefault(emptyList()), it.getOrDefault(emptyList())).filterNot { x -> ai(x.artist) },
+            tracks = Match.mergeTracks(t.getOrDefault(emptyList()), it.getOrDefault(emptyList())).filter(::ok),
             artists = ar.getOrDefault(emptyList()).filterNot { x -> ai(x.name) },
             albums = al.getOrDefault(emptyList()).filterNot { x -> ai(x.artist) },
             free = Match.mergeTracks(Match.mergeTracks(ja.getOrDefault(emptyList()), ov.getOrDefault(emptyList())), au.getOrDefault(emptyList()))
-                .distinctBy { x -> x.key }.filterNot { x -> ai(x.artist) },
+                .distinctBy { x -> x.key }.filter(::ok),
             freeAlbums = ia.getOrDefault(emptyList()).filterNot { x -> ai(x.artist) },
         )
     }

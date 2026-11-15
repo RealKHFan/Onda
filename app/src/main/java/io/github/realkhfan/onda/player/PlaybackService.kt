@@ -73,7 +73,7 @@ class PlaybackService : MediaLibraryService() {
         scope.launch {
             try {
                 val lib = AppData.library(MusicLibrary.tracks.value, AppData.serverTracks(), Overrides.meta.value)
-                val more = Autoplay.similar(artists, items.map { it.mediaId }.toSet(), lib)
+                val more = Autoplay.similar(artists, items.map { it.mediaId }.toSet(), lib, listenBrainz = Prefs.listenBrainz(this@PlaybackService))
                 // Still on the last song (nothing was added meanwhile)?
                 if (more.isNotEmpty() && p.currentMediaItemIndex == p.mediaItemCount - 1) p.addMediaItems(more)
             } catch (_: Exception) {

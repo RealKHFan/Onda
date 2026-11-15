@@ -21,6 +21,23 @@ object Subsonic {
         val coverArt: String?,
     )
 
+    /** A playlist on the server: its songs as server song ids, in order. */
+    data class Playlist(val id: String, val name: String, val songIds: List<String>)
+
+    /** getPlaylists: (id, name) of each playlist. */
+    fun parsePlaylistList(r: JSONObject): List<Pair<String, String>> {
+        val arr = r.optJSONObject("playlists")?.optJSONArray("playlist") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }.mapNotNull { o ->
+            o.optString("id").takeIf { it.isNotEmpty() }?.let { it to o.optString("name").ifBlank { "Playlist" } }
+        }
+    }
+
+    /** getPlaylist: the song ids. */
+    fun parsePlaylistSongs(r: JSONObject): List<String> {
+        val arr = r.optJSONObject("playlist")?.optJSONArray("entry") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("id")?.takeIf { id -> id.isNotEmpty() } }
+    }
+
     /** The server's own refusal. 40 = wrong login, 41 = token login not supported (LDAP/proxy setups). */
     class ApiError(val code: Int, message: String) : IOException(message)
 

@@ -32,7 +32,11 @@ object Mixes {
     data class Mix(val kind: Discovery.Kind, val period: String, val tracks: List<RemoteTrack>, val basedOn: List<String>)
 
     /** [seeds]: your artists, strongest first. [known]: artists you already have or play (normalised). */
-    class Taste(val seeds: List<String>, val known: Set<String>, val skip: (RemoteTrack) -> Boolean)
+    class Taste(
+        val seeds: List<String>, val known: Set<String>, val skip: (RemoteTrack) -> Boolean,
+        /** Free sources for full copies (the "Free full songs" switch, Jamendo ID) and ListenBrainz on/off. */
+        val audius: Boolean = false, val jamendoId: String = "", val listenBrainz: Boolean = false,
+    )
 
     private val _mixes = MutableStateFlow<Map<Discovery.Kind, Mix>>(emptyMap())
     val mixes: StateFlow<Map<Discovery.Kind, Mix>> = _mixes.asStateFlow()
@@ -102,6 +106,18 @@ object Mixes {
                 .take(perSeed)
                 .forEach { related.putIfAbsent(it.id, it) }
         }
+        // ListenBrainz's similar artists for the strongest seeds, as Deezer artists (it can't sink the mix: errors are ignored).
+        if (taste.listenBrainz) {
+            for (name in seeds.take(4)) {
+                for (similar in ListenBrainz.similar(name, perSeed * 2)) {
+                    if (UserCollection.isBlocked(similar) || UserCollection.isAi(similar)) continue
+                    if (kind.newArtistsOnly && Match.norm(similar) in taste.known) continue
+                    val id = ArtistIds.cached(similar) ?: soft { ArtistIds.resolve(similar) } ?: 0
+                    if (id > 0) related.putIfAbsent(id, RemoteArtist(id, similar, null))
+                    if (related.size >= seedIds.size * perSeed * 2) break
+                }
+            }
+        }
         // Daily also brings songs you don't have yet from your own artists; Weekly is new artists only.
         val sources = ((if (kind.newArtistsOnly) emptyList() else seedIds) + related.keys).distinct().take(30)
         val topPerArtist = if (sources.size < 12) 10 else 5
@@ -109,7 +125,12 @@ object Mixes {
         for (id in sources) candidates += soft { Deezer.artistTop(id, topPerArtist) }.orEmpty()
         if (calls > 0 && failures == calls) throw IOException("offline")
         val picked = Discovery.pick(candidates, kind, period, Discovery.perArtistFor(kind, candidates), taste.skip)
-        return Mix(kind, period, picked, seeds.take(3))
+        // Playable first: songs with a free full copy become that copy and lead the mix.
+        val withFull = if (!taste.audius && taste.jamendoId.isBlank()) picked else picked.map { t ->
+            if (t.source != Source.DEEZER) t
+            else runCatching { FullCopies.find(t.id, taste.audius, taste.jamendoId) }.getOrNull()?.also { delay(120) } ?: t
+        }
+        return Mix(kind, period, withFull.sortedBy { !it.source.full }, seeds.take(3))
     }
 
     private fun read() {
@@ -127,11 +148,8 @@ object Mixes {
                     kind, o.getString("period"),
                     (0 until ts.length()).map { j ->
                         val t = ts.getJSONObject(j)
-                        RemoteTrack(
-                            t.getLong("id"), t.getString("title"), t.optString("artist"), t.optString("album"),
-                            t.optString("cover").ifBlank { null }, t.optString("preview").ifBlank { null }, t.optInt("dur"),
-                            Source.entries.firstOrNull { it.name == t.optString("src") } ?: Source.DEEZER,
-                        )
+                        // Mixes saved before 0.14.0 used "dur"; now the same format as playlists.
+                        remoteFromJson(t).let { r -> if (r.durationSec == 0) r.copy(durationSec = t.optInt("dur")) else r }
                     },
                     (0 until based.length()).map { based.getString(it) },
                 )
@@ -148,10 +166,7 @@ object Mixes {
             _mixes.value.values.forEach { m ->
                 val ts = JSONArray()
                 // The preview link is stored only as "has a preview": the player fetches a fresh one when it plays.
-                m.tracks.forEach { t ->
-                    ts.put(JSONObject().put("id", t.id).put("title", t.title).put("artist", t.artist).put("album", t.album)
-                        .put("cover", t.cover).put("preview", t.preview).put("dur", t.durationSec).put("src", t.source.name))
-                }
+                m.tracks.forEach { t -> ts.put(t.toJson()) }
                 arr.put(JSONObject().put("kind", m.kind.name).put("period", m.period).put("tracks", ts).put("basedOn", JSONArray(m.basedOn)))
             }
             val tmp = File(f.path + ".tmp")

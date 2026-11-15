@@ -1,5 +1,6 @@
 package io.github.realkhfan.onda.player
 
+import io.github.realkhfan.onda.data.Server
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -119,6 +120,10 @@ class AutoLibrary(private val context: Context, private val scope: CoroutineScop
                 Mixes.mixes.value[k]?.tracks?.takeIf { it.isNotEmpty() }?.let { add(menu("mix:${k.name}", k.label, art = it.firstNotNullOfOrNull(ArtProvider::uriFor))) }
             }
             val ids = byId()
+            Server.playlists.value.forEach { sp ->
+                add(menu("spl:${sp.id}", sp.name, subtitle = "Music server",
+                    art = sp.songIds.firstNotNullOfOrNull { ids[Server.PREFIX + it]?.let(ArtProvider::uriFor) }))
+            }
             PlaylistStore.playlists.value.forEach { pl ->
                 add(menu("pl:${pl.id}", pl.name, art = pl.trackIds.firstNotNullOfOrNull {
                     ids[it]?.let(ArtProvider::uriFor) ?: PlaylistStore.remote.value[it]?.let(ArtProvider::uriFor)
@@ -151,6 +156,8 @@ class AutoLibrary(private val context: Context, private val scope: CoroutineScop
             parent == AutoTree.ALL -> library().shuffled()
             parent.startsWith("pl:") -> PlaylistStore.playlists.value.firstOrNull { it.id == parent.removePrefix("pl:") }
                 ?.trackIds?.mapNotNull { ids[it] ?: PlaylistStore.remote.value[it]?.takeIf { r -> r.toPreviewItem() != null } }
+            parent.startsWith("spl:") -> Server.playlists.value.firstOrNull { it.id == parent.removePrefix("spl:") }
+                ?.songIds?.mapNotNull { ids[Server.PREFIX + it] }
             parent.startsWith("mix:") -> Discovery.Kind.entries.firstOrNull { it.name == parent.removePrefix("mix:") }
                 ?.let { Mixes.mixes.value[it]?.tracks?.filter { r -> r.toPreviewItem() != null } }
             parent.startsWith("al:") -> Grouping.albums(library()).firstOrNull { it.key == parent.removePrefix("al:") }?.tracks
