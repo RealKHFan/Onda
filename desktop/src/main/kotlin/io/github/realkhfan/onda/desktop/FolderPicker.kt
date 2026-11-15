@@ -27,6 +27,21 @@ object FolderPicker {
         Result.NoPicker
     }
 
+    /** A file to open, or a place to save one ([save]); same pickers as for folders. */
+    suspend fun file(save: Boolean, start: String, title: String): Result = withContext(Dispatchers.IO) {
+        val tries = listOf(
+            listOf("kdialog", "--title", title, if (save) "--getsavefilename" else "--getopenfilename", start),
+            listOfNotNull("zenity", "--file-selection", "--title=$title", if (save) "--save" else null, "--filename=$start"),
+        )
+        for (cmd in tries) {
+            val p = try { ProcessBuilder(cmd).start() } catch (_: Exception) { continue }
+            val out = p.inputStream.bufferedReader().readText().trim()
+            val code = p.waitFor()
+            return@withContext if (code == 0 && out.isNotEmpty() && (save || File(out).isFile)) Result.Picked(out) else Result.Cancelled
+        }
+        Result.NoPicker
+    }
+
     /** "~/Music" or a pasted path -> an existing folder, or null. */
     fun resolve(typed: String): String? {
         val t = typed.trim().removeSurrounding("\"").removePrefix("file://")

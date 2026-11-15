@@ -1,6 +1,7 @@
 package io.github.realkhfan.onda.desktop
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -106,5 +107,49 @@ class PlayerFeaturesTest {
         assertTrue(prop("PlaybackStatus").contains("\"Playing\""))
         assertTrue(send("org.freedesktop.DBus.Properties.Get", "string:org.mpris.MediaPlayer2", "string:Identity").contains("\"Onda\""))
         m.close(); onUi { p.close() }
+    }
+}
+
+class QueueEditingTest {
+    private val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    private fun <T> onUi(block: () -> T): T = runBlocking { withContext(ui) { block() } }
+    private fun item(n: Int) = Player.Item("id$n", "Song $n", "Artist", "Album", null, "file:///nowhere/$n.mp3")
+
+    @Test fun removeMoveAppendAndClear() {
+        val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
+        var lastSongCalls = 0
+        onUi { p.onLastSong = { lastSongCalls++ }; p.play((1..4).map(::item), 0) }
+        fun next() = onUi { p.upcoming().map { it.second.id } }
+        assertEquals(listOf("id2", "id3", "id4"), next())
+        onUi { p.moveUpcoming(2, 0) }
+        assertEquals(listOf("id4", "id2", "id3"), next())
+        onUi { p.removeAt(1) } // id2
+        assertEquals(listOf("id4", "id3"), next())
+        onUi { p.append(listOf(item(5))) }
+        assertEquals(listOf("id4", "id3", "id5"), next())
+        onUi { p.clearUpcoming() }
+        assertEquals(emptyList<String>(), next())
+        assertEquals("id1", onUi { p.current?.id })
+        onUi { p.close() }
+    }
+}
+
+class CollectionRulesTest {
+    @Test fun notInterestedAndPlaylistMoves() = runBlocking {
+        val s = AppState(CoroutineScope(Dispatchers.Default))
+        val r = io.github.realkhfan.onda.core.RemoteTrack(77, "Night Drive", "Lumen Trio", "", null, "x", 180)
+        if (s.isBlocked("Lumen Trio")) s.toggleBlocked("Lumen Trio")
+        if (s.isHidden(r.key)) s.toggleHidden(r.key)
+        assertFalse(s.notWanted(r))
+        s.toggleHidden(r.key); assertTrue(s.notWanted(r)); s.toggleHidden(r.key)
+        s.toggleBlocked("LUMEN TRIO"); assertTrue(s.notWanted(r)); s.toggleBlocked("Lumen Trio")
+        // A playlist holding a song that can't be shown: moves follow what you see.
+        s.remember(r)
+        val pl = s.createPlaylist("Test moves", listOf("gone-1", r.key, "gone-2"))
+        s.remember(r.copy(id = 78, title = "Paper Moon")); s.addToPlaylist(pl, "dz:78")
+        assertEquals(listOf("Night Drive", "Paper Moon"), s.playlistTracks(pl).map { it.title })
+        s.movePlaylistTrack(pl, 1, 0)
+        assertEquals(listOf("Paper Moon", "Night Drive"), s.playlistTracks(pl).map { it.title })
+        s.deletePlaylist(pl)
     }
 }

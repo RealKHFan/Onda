@@ -1,5 +1,10 @@
 package io.github.realkhfan.onda.desktop
 
+import io.github.realkhfan.onda.core.SpotifyImport
+import io.github.realkhfan.onda.core.RemoteArtist
+import io.github.realkhfan.onda.core.RemoteAlbum
+import io.github.realkhfan.onda.core.NewReleases
+import io.github.realkhfan.onda.core.Discovery
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +39,16 @@ class AppState(private val scope: CoroutineScope) {
     var syncing by mutableStateOf(false); private set
     var serverNote by mutableStateOf<String?>(null)
     var recent by mutableStateOf(Store.recent()); private set
+    var mixes by mutableStateOf(Store.mixes()); private set
+    var building by mutableStateOf(setOf<Discovery.Kind>()); private set
+    var releases by mutableStateOf(Store.releases()); private set
+    private var plays = Store.plays()
+
+    /** Community list of AI-generated "artists" (CennoxX/spotify-ai-blocker, MIT), shipped with the app. */
+    private val aiList: Set<String> = runCatching {
+        SpotifyImport.parseCsv(javaClass.getResourceAsStream("/ai_artists.csv")!!.bufferedReader().readText()).drop(1)
+            .mapNotNull { r -> r.firstOrNull()?.let(Match::norm)?.takeIf { it.isNotEmpty() } }.toSet()
+    }.getOrDefault(emptySet())
 
     /** Catalog songs shown or played this run, so the heart and menus can save them. */
     private val seen = HashMap<String, RemoteTrack>()
@@ -58,6 +73,136 @@ class AppState(private val scope: CoroutineScope) {
         if (recent.firstOrNull()?.id == i.id) return
         recent = (listOf(i) + recent.filterNot { it.id == i.id }).take(20)
         Store.saveRecent(recent)
+        plays = (plays + Discovery.Play(i.id, i.artist, i.title, System.currentTimeMillis())).takeLast(3000)
+        Store.savePlays(plays)
+    }
+
+    /* ---------- Taste, filters, follows ---------- */
+
+    fun onAiList(name: String) = Match.norm(name) in aiList
+    fun isAi(name: String) = Match.norm(name).let { it.isNotEmpty() && (it in aiList || it in collection.ai) }
+    fun toggleAi(name: String) = Match.norm(name).let { k -> change(collection.copy(ai = if (k in collection.ai) collection.ai - k else collection.ai + k)) }
+    fun isBlocked(name: String) = Match.norm(name) in collection.blocked
+    fun toggleBlocked(name: String) = Match.norm(name).let { k -> change(collection.copy(blocked = if (k in collection.blocked) collection.blocked - k else collection.blocked + k)) }
+    fun isHidden(key: String) = key in collection.hidden
+    fun toggleHidden(key: String) = change(collection.copy(hidden = if (key in collection.hidden) collection.hidden - key else collection.hidden + key))
+    /** Left out of suggestions: a hidden song, an artist you don't want suggested, or an AI "artist". */
+    fun notWanted(r: RemoteTrack) = isHidden(r.key) || isBlocked(r.artist) || isAi(r.artist)
+
+    fun isFollowed(a: RemoteArtist) = collection.followed.any { it.id == a.id }
+    fun toggleFollow(a: RemoteArtist) = change(collection.copy(followed = if (isFollowed(a)) collection.followed.filterNot { it.id == a.id } else listOf(a) + collection.followed))
+    fun isSaved(a: RemoteAlbum) = collection.albums.any { it.id == a.id && it.source == a.source && it.ref == a.ref }
+    fun toggleAlbum(a: RemoteAlbum) = change(collection.copy(albums = if (isSaved(a)) collection.albums.filterNot { it.id == a.id && it.ref == a.ref } else listOf(a) + collection.albums))
+
+    fun setAutoplay(on: Boolean) = update(settings.copy(autoplay = on))
+    fun setBackground(on: Boolean) = update(settings.copy(background = on))
+    fun setReleaseAlerts(on: Boolean) = update(settings.copy(releaseAlerts = on))
+
+    /** Your artists, strongest first: followed ones, then plays, likes and your library (the phone's rule). */
+    fun seeds(): List<String> =
+        (collection.followed.map { it.name } + Discovery.seedArtists(plays, likedTracks.filterNot(::isPreviewRow), collection.want, library, System.currentTimeMillis()))
+            .distinctBy(Match::norm).filterNot { isAi(it) || isBlocked(it) }
+
+    /** Builds each mix whose day / week has changed (or all, with [force]). */
+    fun refreshMixes(force: Boolean = false) {
+        val today = java.time.LocalDate.now()
+        val due = Discovery.Kind.entries.filter { k -> force || mixes[k]?.period != Discovery.period(k, today) }.filter { it !in building }
+        if (due.isEmpty()) return
+        val seeds = seeds()
+        if (seeds.isEmpty()) return
+        val known = (library.map { it.artist } + plays.map { it.artist }).map(Match::norm).toSet()
+        val playedKeys = plays.map { it.key }.toSet()
+        building = building + due
+        scope.launch {
+            for (k in due) {
+                try {
+                    val m = Discover.mix(k, Discovery.period(k, today), seeds, known) { r -> r.key in playedKeys || own(r) != null || notWanted(r) }
+                    if (m.tracks.isNotEmpty()) { mixes = mixes + (k to m); withContext(Dispatchers.IO) { Store.saveMixes(mixes) } }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                } finally {
+                    building = building - k
+                }
+            }
+        }
+    }
+
+    /** New releases of your artists (every 6 hours at most); a notification on release day if allowed. */
+    fun checkReleases() {
+        val r = releases
+        if (System.currentTimeMillis() - r.lastCheck < 6 * 3_600_000L) return
+        val artists = seeds()
+        if (artists.isEmpty()) return
+        scope.launch {
+            val today = java.time.LocalDate.now()
+            val found = runCatching { Discover.releases(artists) }.getOrNull() ?: return@launch
+            val recent = NewReleases.recent(found, today).filterNot { isAi(it.artist) || isBlocked(it.artist) }
+            if (settings.releaseAlerts) {
+                NewReleases.toNotify(recent, r.seen, today, firstCheck = r.lastCheck == 0L).take(5).forEach {
+                    Discover.notify("New from ${it.artist}", "${it.title} (${it.type ?: "release"})")
+                }
+            }
+            releases = Store.Releases(recent, recent.map { it.id }.toSet(), System.currentTimeMillis())
+            withContext(Dispatchers.IO) { Store.saveReleases(releases) }
+        }
+    }
+
+    /** On the last song: add about 10 similar songs (your own copies in full, others as previews or free full copies). */
+    fun extend(player: Player) {
+        if (!settings.autoplay) return
+        val inQueue = player.queue.map { it.id }.toSet()
+        val last = player.queue.takeLast(5).reversed().map { it.artist }
+        scope.launch {
+            val more = runCatching { Discover.similar(last, skip = { it.key in inQueue || notWanted(it) }) }.getOrDefault(emptyList()).mapNotNull(::item)
+            if (more.isNotEmpty() && player.index == player.queue.lastIndex) player.append(more)
+        }
+    }
+
+    /* ---------- Backup ---------- */
+
+    private val backupFiles = listOf("collection.json", "plays.json", "recent.json")
+
+    /** One ZIP with playlists, likes, history and settings; not your server login or folders (they belong to this PC). */
+    fun backup(to: java.io.File) {
+        java.util.zip.ZipOutputStream(to.outputStream()).use { z ->
+            backupFiles.map { java.io.File(Store.data, it) }.filter { it.isFile }.forEach { f ->
+                z.putNextEntry(java.util.zip.ZipEntry(f.name)); f.inputStream().use { it.copyTo(z) }; z.closeEntry()
+            }
+            val s = settings
+            z.putNextEntry(java.util.zip.ZipEntry("settings.json"))
+            z.write(org.json.JSONObject().put("kbps", s.kbps).put("volume", s.volume).put("autoplay", s.autoplay)
+                .put("background", s.background).put("releaseAlerts", s.releaseAlerts).toString().toByteArray())
+            z.closeEntry()
+        }
+    }
+
+    /** Replaces playlists, likes, history and settings with the backup's (a copy of the current ones is kept). Returns false if it isn't one. */
+    fun restore(from: java.io.File): Boolean {
+        val found = HashMap<String, String>()
+        java.util.zip.ZipInputStream(from.inputStream()).use { z ->
+            while (true) {
+                val e = z.nextEntry ?: break
+                if (e.name !in backupFiles && e.name != "settings.json") continue
+                val bytes = z.readNBytes(32 shl 20)
+                val text = String(bytes)
+                if (runCatching { org.json.JSONTokener(text).nextValue() }.isSuccess) found[e.name] = text
+            }
+        }
+        if (found.isEmpty()) return false
+        backup(java.io.File(Store.data, "before-restore.zip"))
+        found.forEach { (name, text) ->
+            if (name == "settings.json") {
+                val o = org.json.JSONObject(text)
+                update(settings.copy(kbps = o.optInt("kbps", settings.kbps), volume = o.optDouble("volume", settings.volume),
+                    autoplay = o.optBoolean("autoplay", settings.autoplay), background = o.optBoolean("background", settings.background),
+                    releaseAlerts = o.optBoolean("releaseAlerts", settings.releaseAlerts)))
+            } else {
+                java.io.File(Store.data, "$name.tmp").apply { writeText(text) }.renameTo(java.io.File(Store.data, name))
+            }
+        }
+        collection = Store.collection(); plays = Store.plays(); recent = Store.recent()
+        return true
     }
 
     /** A saved catalog song as a list row: your own copy once you have it, else the preview. */
@@ -174,6 +319,19 @@ class AppState(private val scope: CoroutineScope) {
     fun addToPlaylist(id: String, trackId: String) = change(withRemote(trackId, collection.copy(playlists = collection.playlists.map {
         if (it.id == id && trackId !in it.trackIds) it.copy(trackIds = it.trackIds + trackId) else it
     })))
+
+    /** [from] / [to] are positions as shown (songs that can't be shown right now are skipped there). */
+    fun movePlaylistTrack(id: String, from: Int, to: Int) = change(collection.copy(playlists = collection.playlists.map { pl ->
+        val shown = pl.trackIds.filter { trackFor(it) != null }
+        if (pl.id != id || from !in shown.indices || to !in shown.indices) return@map pl
+        val ids = pl.trackIds.toMutableList()
+        val target = ids.indexOf(shown[to])
+        ids.add(target, ids.removeAt(ids.indexOf(shown[from]))) // lands where the target was; the target moves aside
+        pl.copy(trackIds = ids)
+    }))
+
+    /** Keyboard shortcuts that change the page ("search", "back"); the window picks them up. */
+    var navRequest by mutableStateOf<String?>(null)
 
     fun removeFromPlaylist(id: String, trackId: String) =
         change(collection.copy(playlists = collection.playlists.map { if (it.id == id) it.copy(trackIds = it.trackIds - trackId) else it }))

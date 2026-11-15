@@ -1,5 +1,13 @@
 package io.github.realkhfan.onda.desktop
 
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.material.icons.rounded.DragHandle
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
+import io.github.realkhfan.onda.core.NewReleases
+import io.github.realkhfan.onda.core.Discovery
 import androidx.compose.material.icons.rounded.CloseFullscreen
 import androidx.compose.material.icons.rounded.OpenInFull
 import androidx.compose.material.icons.rounded.Home
@@ -149,6 +157,7 @@ private sealed interface View {
     data class LocalList(val title: String, val subtitle: String, val art: String?, val tracks: List<Track>) : View
     data class CatalogArtist(val a: RemoteArtist) : View
     data class CatalogAlbum(val a: RemoteAlbum) : View
+    data class Mix(val kind: Discovery.Kind) : View
 }
 
 private enum class Panel { NONE, QUEUE, LYRICS }
@@ -161,6 +170,13 @@ fun OndaDesktop(state: AppState, player: Player?) {
         fun go(v: View) { stack.clear(); stack.add(v) }
         fun push(v: View) { stack.add(v) }
         val back: (() -> Unit)? = if (stack.size > 1) ({ stack.removeAt(stack.lastIndex) }) else null
+        LaunchedEffect(state.navRequest) {
+            when (state.navRequest) {
+                "search" -> go(View.Search)
+                "back" -> if (stack.size > 1) stack.removeAt(stack.lastIndex)
+            }
+            state.navRequest = null
+        }
         var panel by remember { mutableStateOf(Panel.NONE) }
         var lyricsBig by remember { mutableStateOf(false) }
         var naming by remember { mutableStateOf<Naming?>(null) }
@@ -178,8 +194,9 @@ fun OndaDesktop(state: AppState, player: Player?) {
                     } else when (val v = stack.last()) {
                         View.Home -> HomePage(ctx, ::push)
                         View.Songs -> Songs(ctx)
-                        View.Albums -> Albums(state) { a -> push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }
-                        View.Artists -> Artists(state) { a -> push(View.LocalList(a.name, "Artist", a.artUri, a.tracks)) }
+                        View.Albums -> Albums(state, { a -> push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }) { push(View.CatalogAlbum(it)) }
+                        View.Artists -> Artists(state, { a -> push(View.LocalList(a.name, "Artist", a.artUri, a.tracks)) }) { push(View.CatalogArtist(it)) }
+                        is View.Mix -> MixPage(ctx, v.kind, back)
                         View.Search -> Search(ctx)
                         View.Settings -> SettingsPage(state)
                         View.Liked -> SongList(ctx, "Liked Songs", "Playlist", state.likedTracks, back = back)
@@ -187,7 +204,8 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         is View.Playlist -> {
                             val pl = state.collection.playlists.firstOrNull { it.id == v.id }
                             if (pl == null) LaunchedEffect(Unit) { go(View.Songs) } else {
-                                SongList(ctx, pl.name, "Playlist", state.playlistTracks(pl.id), back = back, inPlaylist = pl.id) {
+                                SongList(ctx, pl.name, "Playlist", state.playlistTracks(pl.id), back = back, inPlaylist = pl.id,
+                                    onMove = { from, to -> state.movePlaylistTrack(pl.id, from, to) }) {
                                     IconButton(onClick = { naming = Naming.Rename(pl.id, pl.name) }) { Icon(Icons.Rounded.Edit, "Rename playlist", tint = TextDim) }
                                     IconButton(onClick = { naming = Naming.Delete(pl.id, pl.name) }) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) }
                                 }
@@ -353,6 +371,8 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
             s.collection.playlists.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.remember(r); s.addToPlaylist(pl.id, r.key) }) }
             add(ContextMenuItem("Add to new playlist…") { s.remember(r); ctx.dialog(Naming.New(r.key)) })
             add(ContextMenuItem(if (wanted) "Remove from Want to listen" else "Add to Want to listen") { s.toggleWant(r) })
+            add(ContextMenuItem(if (s.isHidden(r.key)) "Suggest this song again" else "Not interested in this song") { s.toggleHidden(r.key) })
+            add(ContextMenuItem(if (s.isBlocked(r.artist)) "Suggest ${r.artist} again" else "Don't suggest ${r.artist}") { s.toggleBlocked(r.artist) })
             add(ContextMenuItem("Go to artist") { ctx.openArtistByName(r.artist) })
         }
     }) {
@@ -444,6 +464,32 @@ private fun HomePage(ctx: Ctx, open: (View) -> Unit) {
                 repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
+        item { Section("Made for you") }
+        item {
+            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(Discovery.Kind.entries) { k ->
+                    Column(Modifier.width(180.dp).clip(RoundedCornerShape(8.dp)).clickable { open(View.Mix(k)) }.padding(8.dp)) {
+                        Box(Modifier.size(164.dp).clip(RoundedCornerShape(8.dp))
+                            .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color(0xFF2B2140), Accent))), contentAlignment = Alignment.BottomStart) {
+                            Text(k.label, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.padding(12.dp))
+                        }
+                        val m = s.mixes[k]
+                        Text(when { k in s.building -> "Making your mix…"; m == null -> "Play some music first"
+                            else -> m.tracks.take(3).joinToString(", ") { it.artist } }, color = TextDim, fontSize = 12.sp, maxLines = 2,
+                            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+                    }
+                }
+            }
+        }
+        if (s.releases.items.isNotEmpty()) {
+            item { Section("New releases") }
+            item {
+                val today = java.time.LocalDate.now()
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(s.releases.items) { a -> Card(a.cover, a.title, "${a.artist} · ${NewReleases.ago(a, today)}") { open(View.CatalogAlbum(a)) } }
+                }
+            }
+        }
         if (s.recent.isNotEmpty()) {
             item { Section("Recently played") }
             item {
@@ -469,8 +515,9 @@ private fun HomePage(ctx: Ctx, open: (View) -> Unit) {
 @Composable
 private fun SongList(
     ctx: Ctx, title: String, subtitle: String, tracks: List<Track>, art: String? = null, back: (() -> Unit)? = null,
-    inPlaylist: String? = null, actions: @Composable () -> Unit = {},
+    inPlaylist: String? = null, onMove: ((Int, Int) -> Unit)? = null, actions: @Composable () -> Unit = {},
 ) {
+    val reorder = remember { ReorderState() }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             Header(title, "$subtitle · ${tracks.size} songs", art, back = back) {
@@ -480,7 +527,13 @@ private fun SongList(
             }
         }
         if (tracks.isEmpty()) item { Note("Nothing here yet. Right-click a song to add it.") }
-        items(tracks.size) { i -> TrackRow(ctx, tracks, i, numbered = true, inPlaylist = inPlaylist) }
+        items(tracks.size) { i ->
+            if (onMove == null) TrackRow(ctx, tracks, i, numbered = true, inPlaylist = inPlaylist)
+            else Row(Modifier.reorderRow(reorder, i, tracks.size), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { TrackRow(ctx, tracks, i, numbered = true, inPlaylist = inPlaylist) }
+                DragHandle(reorder, i, tracks.size, tracks[i].title, onMove)
+            }
+        }
     }
 }
 
@@ -500,9 +553,10 @@ private fun Songs(ctx: Ctx) {
 }
 
 @Composable
-private fun Albums(state: AppState, onOpen: (Album) -> Unit) {
+private fun Albums(state: AppState, onOpen: (Album) -> Unit, onOpenSaved: (RemoteAlbum) -> Unit) {
     val albums = remember(state.library) { Grouping.albums(state.library) }
     LazyVerticalGrid(GridCells.Adaptive(180.dp), Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        items(state.collection.albums) { a -> Card(a.cover, a.title, "Saved · ${a.artist}") { onOpenSaved(a) } }
         items(albums) { a -> Card(a.artUri, a.title, a.artist) { onOpen(a) } }
     }
 }
@@ -517,10 +571,17 @@ private fun Card(art: String?, title: String, subtitle: String, onClick: () -> U
 }
 
 @Composable
-private fun Artists(state: AppState, onOpen: (ArtistGroup) -> Unit) {
+private fun Artists(state: AppState, onOpen: (ArtistGroup) -> Unit, onOpenFollowed: (RemoteArtist) -> Unit) {
     val artists = remember(state.library) { Grouping.artists(state.library) }
     LazyColumn(Modifier.fillMaxSize()) {
-        item { Header("Artists", "${artists.size} artists") }
+        item { Header("Artists", "${artists.size} in your library · ${state.collection.followed.size} followed") }
+        items(state.collection.followed) { a ->
+            Row(Modifier.fillMaxWidth().clickable { onOpenFollowed(a) }.padding(horizontal = 24.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Art(a.picture, 48, round = true)
+                Spacer(Modifier.width(14.dp))
+                Column { Text(a.name, color = TextMain); Text("Following", color = Accent, fontSize = 12.sp) }
+            }
+        }
         items(artists) { a ->
             Row(Modifier.fillMaxWidth().clickable { onOpen(a) }.padding(horizontal = 24.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Art(a.artUri, 48, round = true)
@@ -567,10 +628,13 @@ private fun Search(ctx: Ctx) {
             val al = async { runCatching { Deezer.searchAlbums(q) } }
             val ov = async { runCatching { FreeCatalogs.openverse(q) } }
             val au = async { runCatching { FreeCatalogs.audius(q) } }
-            online = dz.await().getOrDefault(emptyList())
-            artists = ar.await().getOrDefault(emptyList())
-            albums = al.await().getOrDefault(emptyList())
-            free = (ov.await().getOrDefault(emptyList()) + au.await().getOrDefault(emptyList())).take(10)
+            // AI "artists" never show; remixes, sped-up, live and karaoke only when the search words ask for them.
+            val versions = Discovery.asksFor(q)
+            fun ok(t: RemoteTrack) = !state.isAi(t.artist) && (versions || !Discovery.isUnwanted(t.title, t.album))
+            online = dz.await().getOrDefault(emptyList()).filter(::ok)
+            artists = ar.await().getOrDefault(emptyList()).filterNot { state.isAi(it.name) }
+            albums = al.await().getOrDefault(emptyList()).filterNot { state.isAi(it.artist) }
+            free = (ov.await().getOrDefault(emptyList()) + au.await().getOrDefault(emptyList())).filter(::ok).take(10)
             if (dz.await().isFailure && ov.await().isFailure && au.await().isFailure) problem = "No connection to the online catalogs."
         }
     }
@@ -648,7 +712,14 @@ private fun CatalogArtistPage(ctx: Ctx, artist: RemoteArtist, back: (() -> Unit)
     val popular = top.orEmpty()
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            Header(artist.name, "Artist", picture, round = true, back = back) {
+            val s = ctx.state
+            Header(artist.name, if (s.isAi(artist.name)) "Artist · marked as AI (hidden from suggestions)" else "Artist", picture, round = true, back = back) {
+                val following = s.isFollowed(artist)
+                OutlinedButton(onClick = { s.toggleFollow(artist.copy(picture = picture)) }) { Text(if (following) "Following" else "Follow", color = if (following) Accent else TextMain) }
+                Spacer(Modifier.width(6.dp))
+                TextButton(onClick = { s.toggleBlocked(artist.name) }) { Text(if (s.isBlocked(artist.name)) "Suggest again" else "Don't suggest", color = TextDim) }
+                if (!s.onAiList(artist.name)) TextButton(onClick = { s.toggleAi(artist.name) }) { Text(if (s.isAi(artist.name)) "Not AI after all" else "This is AI", color = TextDim) }
+                Spacer(Modifier.width(6.dp))
                 if (popular.isNotEmpty()) Button(onClick = { ctx.playRemote(popular, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play popular") }
             }
         }
@@ -677,6 +748,8 @@ private fun CatalogAlbumPage(ctx: Ctx, album: RemoteAlbum, back: (() -> Unit)?) 
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             Header(info.title, listOfNotNull("Album · ${info.artist}", info.date).joinToString(" · "), info.cover, back = back) {
+                val saved = ctx.state.isSaved(info)
+                TextButton(onClick = { ctx.state.toggleAlbum(info) }) { Text(if (saved) "Saved to your library" else "Save to your library", color = if (saved) Accent else TextDim) }
                 if (info.artistId > 0) TextButton(onClick = { ctx.push(View.CatalogArtist(RemoteArtist(info.artistId, info.artist, null))) }) { Text("Go to artist", color = Accent) }
                 if (list.isNotEmpty()) Button(onClick = { ctx.playRemote(list, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
             }
@@ -763,6 +836,45 @@ private fun SettingsPage(state: AppState) {
                 }
             }
         }
+        item { Section("Playback and discovery") }
+        item { Toggle("Similar songs when the queue ends", "Keeps the music going with songs like the last ones.", state.settings.autoplay, state::setAutoplay) }
+        item { Toggle("Keep playing when the window is closed", "Reopen Onda from the app menu or your desktop's media controls.", state.settings.background, state::setBackground) }
+        item { Toggle("New release notifications", "A desktop notification when an artist you listen to releases something.", state.settings.releaseAlerts, state::setReleaseAlerts) }
+        item { Section("Backup") }
+        item {
+            var note by remember { mutableStateOf<String?>(null) }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Playlists, likes, history, follows, saved albums and settings in one file. Not your server login or folders.", color = TextDim, fontSize = 13.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            val name = "onda-backup-${java.time.LocalDate.now()}.zip"
+                            val path = when (val r = FolderPicker.file(true, System.getProperty("user.home") + "/" + name, "Save backup")) {
+                                is FolderPicker.Result.Picked -> r.path
+                                FolderPicker.Result.Cancelled -> return@launch
+                                FolderPicker.Result.NoPicker -> System.getProperty("user.home") + "/" + name
+                            }
+                            note = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { state.backup(File(path)) }; "Saved to $path" }
+                                .getOrElse { "Couldn't save the backup." }
+                        }
+                    }) { Text("Back up now") }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            val r = FolderPicker.file(false, System.getProperty("user.home"), "Restore a backup")
+                            if (r is FolderPicker.Result.Picked) note = if (runCatching { state.restore(File(r.path)) }.getOrDefault(false))
+                                "Restored. Your previous data is kept in before-restore.zip." else "That file isn't an Onda backup."
+                            if (r is FolderPicker.Result.NoPicker) note = "No file picker found on this system."
+                        }
+                    }) { Text("Restore") }
+                }
+                note?.let { Text(it, color = TextMain, fontSize = 13.sp) }
+            }
+        }
+        item { Section("Keyboard") }
+        item {
+            Text("Space play/pause · Ctrl+→ / Ctrl+← next / previous · → / ← seek 5 s · ↑ / ↓ volume · Ctrl+L like · Ctrl+F search · Esc back",
+                color = TextDim, fontSize = 13.sp)
+        }
         item { Section("Privacy") }
         item {
             Text("Search and previews come from Deezer's public API, free full songs from Openverse and Audius, lyrics from LRCLIB. They see " +
@@ -788,22 +900,36 @@ private fun PanelFrame(title: String, onClose: () -> Unit, content: @Composable 
 @Composable
 private fun QueuePanel(player: Player, onClose: () -> Unit) = PanelFrame("Queue", onClose) {
     val upcoming = player.upcoming()
+    val reorder = remember { ReorderState() }
     LazyColumn {
-        player.current?.let { c -> item { Section("Now playing") }; item { QueueRow(c, true) {} } }
-        if (upcoming.isNotEmpty()) item { Section("Next") }
-        items(upcoming) { (i, it) -> QueueRow(it, false) { player.jumpTo(i) } }
+        player.current?.let { c -> item { Section("Now playing") }; item { QueueRow(c, true, onClick = {}) } }
+        if (upcoming.isNotEmpty()) item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Section("Next")
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { player.clearUpcoming() }) { Text("Clear", color = Accent) }
+            }
+        }
+        items(upcoming.size) { k ->
+            val (i, it) = upcoming[k]
+            QueueRow(it, false, Modifier.reorderRow(reorder, k, upcoming.size), onRemove = { player.removeAt(i) },
+                handle = { DragHandle(reorder, k, upcoming.size, it.title) { from, to -> player.moveUpcoming(from, to) } }) { player.jumpTo(i) }
+        }
     }
 }
 
 @Composable
-private fun QueueRow(it: Player.Item, now: Boolean, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun QueueRow(it: Player.Item, now: Boolean, modifier: Modifier = Modifier, onRemove: (() -> Unit)? = null,
+                     handle: (@Composable () -> Unit)? = null, onClick: () -> Unit) {
+    Row(modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, top = 4.dp, bottom = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Art(it.art, 36)
         Spacer(Modifier.width(10.dp))
-        Column {
+        Column(Modifier.weight(1f)) {
             Text(it.title, color = if (now) Accent else TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
             Text(it.artist, color = TextDim, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp)
         }
+        if (onRemove != null) IconButton(onClick = onRemove, Modifier.size(36.dp)) { Icon(Icons.Rounded.Close, "Remove ${it.title} from the queue", tint = TextDim) }
+        handle?.invoke()
     }
 }
 
@@ -988,4 +1114,72 @@ private fun ThinSlider(value: Float, label: String, onChange: (Float) -> Unit, o
         Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(Raised))
         Box(Modifier.fillMaxWidth(v).height(4.dp).clip(CircleShape).background(TextMain))
     }
+}
+
+@Composable
+private fun Toggle(title: String, detail: String, on: Boolean, set: (Boolean) -> Unit) {
+    Row(Modifier.width(620.dp).clip(RoundedCornerShape(8.dp)).clickable { set(!on) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, color = TextMain)
+            Text(detail, color = TextDim, fontSize = 12.sp)
+        }
+        androidx.compose.material3.Switch(checked = on, onCheckedChange = set)
+    }
+}
+
+@Composable
+private fun MixPage(ctx: Ctx, kind: Discovery.Kind, back: (() -> Unit)?) {
+    val s = ctx.state
+    val list = s.mixes[kind]?.tracks.orEmpty().filterNot(s::notWanted)
+    LazyColumn(Modifier.fillMaxSize()) {
+        item {
+            Header(kind.label, if (kind == Discovery.Kind.DAILY) "Fresh picks for today" else "New artists for this week", back = back) {
+                TextButton(onClick = { s.refreshMixes(force = true) }, enabled = kind !in s.building) { Text("Make a new one", color = Accent) }
+                if (list.isNotEmpty()) Button(onClick = { ctx.playRemote(list, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
+            }
+        }
+        if (kind in s.building) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(24.dp), color = Accent, trackColor = Raised) }
+        if (list.isEmpty() && kind !in s.building) item { Note("Play, like or follow some music first: mixes are made from your artists.") }
+        items(list.size) { i -> RemoteRow(ctx, list, i, numbered = true) }
+    }
+}
+
+/** Drag-to-reorder: the dragged row follows the pointer, the rows it passes make room. */
+private class ReorderState {
+    var dragging by mutableIntStateOf(-1)
+    var offset by mutableFloatStateOf(0f)
+    var rowPx = 0f
+    fun target(count: Int) = if (rowPx <= 0f) dragging else (dragging + kotlin.math.round(offset / rowPx).toInt()).coerceIn(0, count - 1)
+}
+
+private fun Modifier.reorderRow(s: ReorderState, index: Int, count: Int): Modifier = this
+    .zIndex(if (index == s.dragging) 1f else 0f)
+    .onSizeChanged { if (s.rowPx == 0f || index == s.dragging) s.rowPx = it.height.toFloat() }
+    .graphicsLayer {
+        val d = s.dragging
+        translationY = when {
+            d < 0 -> 0f
+            index == d -> s.offset
+            else -> s.target(count).let { t -> if (d < t && index in d + 1..t) -s.rowPx else if (t < d && index in t until d) s.rowPx else 0f }
+        }
+    }
+
+@Composable
+private fun DragHandle(s: ReorderState, index: Int, count: Int, label: String, onMove: (Int, Int) -> Unit) {
+    Icon(Icons.Rounded.DragHandle, "Move $label", tint = TextDim,
+        modifier = Modifier.size(40.dp).padding(8.dp)
+            .semantics {
+                customActions = listOfNotNull(
+                    if (index > 0) CustomAccessibilityAction("Move up") { onMove(index, index - 1); true } else null,
+                    if (index < count - 1) CustomAccessibilityAction("Move down") { onMove(index, index + 1); true } else null,
+                )
+            }
+            .pointerInput(index, count) {
+                detectDragGestures(
+                    onDragStart = { s.dragging = index; s.offset = 0f },
+                    onDrag = { c, d -> c.consume(); s.offset += d.y },
+                    onDragEnd = { val f = s.dragging; val t = s.target(count); s.dragging = -1; s.offset = 0f; if (f >= 0 && t != f) onMove(f, t) },
+                    onDragCancel = { s.dragging = -1; s.offset = 0f },
+                )
+            })
 }

@@ -51,7 +51,10 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     var fullFrom by mutableStateOf<String?>(null); private set
     var error by mutableStateOf<String?>(null)
 
-    private var order: List<Int> = emptyList()
+    private var order by mutableStateOf<List<Int>>(emptyList())
+
+    /** Called when the last song starts (repeat off): "similar songs when the queue ends" adds more. */
+    var onLastSong: (() -> Unit)? = null
     private var loadToken = 0
     private var pendingSeek = -1L
     private val bin: PlayBin
@@ -159,6 +162,37 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     fun shuffleOn(on: Boolean) { if (on != shuffle) toggleShuffle() }
     fun repeatMode(r: Int) { repeat = r.coerceIn(0, 2) }
 
+    /** Adds songs at the end (similar songs after the queue). */
+    fun append(items: List<Item>) {
+        if (items.isEmpty()) return
+        val start = queue.size
+        queue = queue + items
+        order = order + items.indices.map { start + it }
+    }
+
+    /** Takes a waiting song out of the queue (never the one playing). */
+    fun removeAt(i: Int) {
+        if (i == index || i !in queue.indices) return
+        queue = queue.filterIndexed { k, _ -> k != i }
+        order = order.filter { it != i }.map { if (it > i) it - 1 else it }
+        if (index > i) index--
+    }
+
+    /** Moves a song within "Next" ([from] and [to] count from the first waiting song). */
+    fun moveUpcoming(from: Int, to: Int) {
+        val cur = order.indexOf(index) + 1
+        val up = order.drop(cur).toMutableList()
+        if (from !in up.indices || to !in up.indices) return
+        up.add(to, up.removeAt(from))
+        order = order.take(cur) + up
+    }
+
+    /** Keeps only the song playing. */
+    fun clearUpcoming() {
+        val cur = current ?: return
+        queue = listOf(cur); order = listOf(0); index = 0
+    }
+
     /** Songs still to come, in play order. */
     fun upcoming(): List<Pair<Int, Item>> = order.drop(order.indexOf(index) + 1).map { it to queue[it] }
 
@@ -190,6 +224,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
                 return@launch next(auto = true, afterError = true)
             }
             fullFrom = r.fullFrom
+            if (repeat == 0 && order.lastOrNull() == index) onLastSong?.invoke()
             bin.setURI(URI(r.uri))
             applyVolume()
             pendingSeek = seekTo
