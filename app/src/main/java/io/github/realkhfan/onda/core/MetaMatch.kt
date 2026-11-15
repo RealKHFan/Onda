@@ -31,6 +31,15 @@ object MetaMatch {
     /** Both titles name the same version: a remix, live or sped-up take never stands in for the original. */
     fun sameVersion(a: String, b: String): Boolean = versionOf(a) == versionOf(b)
 
+    /**
+     * A free whole song may stand in for a catalog preview only if it's clearly the same recording from the artist's
+     * own account: same title and version, exactly the same artist name, and about the same length.
+     */
+    fun isFullCopy(preview: RemoteTrack, c: RemoteTrack): Boolean =
+        Match.norm(preview.title).let { it.isNotEmpty() && it == Match.norm(c.title) } &&
+            Match.norm(preview.artist) == Match.norm(c.artist) && sameVersion(preview.title, c.title) &&
+            (preview.durationSec == 0 || c.durationSec == 0 || abs(preview.durationSec - c.durationSec) <= 8)
+
     /** "Other Artist - Song" posted by someone else is almost always a re-upload, so free catalogs skip it. */
     fun namesOtherArtist(title: String, uploader: String): Boolean {
         if (" - " !in title) return false

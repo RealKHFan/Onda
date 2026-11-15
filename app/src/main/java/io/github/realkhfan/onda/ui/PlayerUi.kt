@@ -163,7 +163,7 @@ internal fun MiniPlayer(player: PlayerState, tint: Color, onOpen: () -> Unit) {
 
 private fun artistLine(p: PlayerState) = when {
     p.isPreview -> "Preview · ${p.artist}"
-    p.catalog != null -> "${p.catalog!!.label} · ${p.artist}"
+    p.fullFrom != null -> "${p.fullFrom!!.label} · ${p.artist}"
     else -> p.artist
 }
 

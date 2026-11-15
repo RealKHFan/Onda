@@ -377,6 +377,11 @@ internal fun RemoteArtistScreen(
                         OutlinedButton(onClick = { UserCollection.toggleFollow(artist.copy(picture = picture)) }) {
                             Text(if (following) "Following" else "Follow", color = if (following) Accent else TextMain)
                         }
+                        val blockedNow by UserCollection.blocked.collectAsState()
+                        val noSuggest = remember(blockedNow) { UserCollection.isBlocked(artist.name) }
+                        TextButton(onClick = { UserCollection.toggleBlocked(artist.name) }) {
+                            Text(if (noSuggest) "Suggest again" else "Don't suggest", color = TextDim)
+                        }
                         if (!UserCollection.onCommunityList(artist.name)) {
                             TextButton(onClick = { UserCollection.toggleAi(artist.name) }) {
                                 Text(if (ai) "Not AI after all" else "This is AI", color = TextDim)

@@ -29,6 +29,25 @@ object UserCollection {
     /** Community list of AI-generated "artists" (CennoxX/spotify-ai-blocker, MIT), shipped with the app. */
     private var aiList: Set<String> = emptySet()
 
+    /** "Not interested": songs (keys) and artists (normalised names) that mixes and suggestions skip. */
+    private val _hidden = MutableStateFlow<Set<String>>(emptySet())
+    val hidden: StateFlow<Set<String>> = _hidden.asStateFlow()
+    private val _blocked = MutableStateFlow<Set<String>>(emptySet())
+    val blocked: StateFlow<Set<String>> = _blocked.asStateFlow()
+
+    fun toggleHidden(key: String) {
+        _hidden.value = if (key in _hidden.value) _hidden.value - key else _hidden.value + key
+        write()
+    }
+    fun isBlocked(name: String) = Match.norm(name) in _blocked.value
+    fun toggleBlocked(name: String) {
+        val k = Match.norm(name)
+        _blocked.value = if (k in _blocked.value) _blocked.value - k else _blocked.value + k
+        write()
+    }
+    /** A suggestion to leave out: hidden song, artist you don't want suggested, or an AI "artist". */
+    fun notWanted(r: io.github.realkhfan.onda.core.RemoteTrack) = r.key in _hidden.value || isBlocked(r.artist) || isAi(r.artist)
+
     private var file: File? = null
 
     fun load(context: Context) {
@@ -77,6 +96,8 @@ object UserCollection {
             }
             val ai = root.optJSONArray("ai") ?: JSONArray()
             _aiMarked.value = (0 until ai.length()).map { ai.getString(it) }.toSet()
+            _hidden.value = strings(root.optJSONArray("hidden"))
+            _blocked.value = strings(root.optJSONArray("blocked"))
         } catch (_: Exception) {
             runCatching { f.copyTo(File(f.path + ".bad"), overwrite = true) } // never silently lose the user's collection
         }
@@ -92,11 +113,15 @@ object UserCollection {
                         .put("type", it.type).put("artistId", it.artistId).put("src", it.source.name).put("ref", it.ref)
                 }))
                 .put("ai", JSONArray(_aiMarked.value.toList()))
+                .put("hidden", JSONArray(_hidden.value.toList()))
+                .put("blocked", JSONArray(_blocked.value.toList()))
             val tmp = File(f.path + ".tmp")
             tmp.writeText(root.toString())
             tmp.renameTo(f)
         }
     }
+
+    private fun strings(a: JSONArray?): Set<String> = if (a == null) emptySet() else (0 until a.length()).map { a.getString(it) }.toSet()
 
     private fun objects(a: JSONArray?): List<JSONObject> = if (a == null) emptyList() else (0 until a.length()).mapNotNull { a.optJSONObject(it) }
 }

@@ -1,5 +1,9 @@
 package io.github.realkhfan.onda.ui
 
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
+import io.github.realkhfan.onda.data.UserCollection
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -98,8 +102,11 @@ internal fun MixScreen(
     onBack: () -> Unit,
     onPlayList: (List<RemoteTrack>, Int) -> Unit,
     onRetry: () -> Unit,
+    onMenu: (RemoteTrack) -> Unit = {},
 ) {
-    val list = mix?.tracks.orEmpty()
+    val hidden by UserCollection.hidden.collectAsState()
+    val blocked by UserCollection.blocked.collectAsState()
+    val list = remember(mix, hidden, blocked) { mix?.tracks.orEmpty().filterNot(UserCollection::notWanted) }
     Column(Modifier.fillMaxSize()) {
         BackTopBar(kind.label, onBack)
         LazyColumn(Modifier.fillMaxSize()) {
@@ -140,7 +147,7 @@ internal fun MixScreen(
                     Text("Nothing new to suggest right now. Try again tomorrow.", color = TextDim, modifier = Modifier.padding(24.dp))
                 }
             }
-            itemsIndexed(list) { i, t -> RemoteRow(t, row, onPlay = { onPlayList(list, i) }, number = i + 1) }
+            itemsIndexed(list) { i, t -> RemoteRow(t, row, onPlay = { onPlayList(list, i) }, number = i + 1, onMenu = { onMenu(t) }) }
         }
     }
 }

@@ -2,6 +2,9 @@
 
 package io.github.realkhfan.onda.ui
 
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.PersonOff
+import androidx.compose.material.icons.rounded.Block
 import io.github.realkhfan.onda.data.UserCollection
 import io.github.realkhfan.onda.data.AppData
 import androidx.compose.material.icons.rounded.Download
@@ -217,6 +220,8 @@ fun OndaApp(player: PlayerState?) {
     val followed by UserCollection.followed.collectAsState()
     val savedAlbums by UserCollection.albums.collectAsState()
     val aiMarked by UserCollection.aiMarked.collectAsState()
+    val hiddenSongs by UserCollection.hidden.collectAsState()
+    var renaming by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
     val remoteSongs by PlaylistStore.remote.collectAsState()
 
     val byId = remember(everyTrack) { everyTrack.associateBy { it.id } }
@@ -336,9 +341,9 @@ fun OndaApp(player: PlayerState?) {
         Mixes.Taste(
             // Artists you follow come first; AI "artists" never seed anything.
             seeds = (followed.map { it.name } + Discovery.seedArtists(plays, likedTracks, want, tracks, System.currentTimeMillis()))
-                .distinctBy { Match.norm(it) }.filterNot { UserCollection.isAi(it) },
+                .distinctBy { Match.norm(it) }.filterNot { UserCollection.isAi(it) || UserCollection.isBlocked(it) },
             known = (tracks.map { it.artist } + plays.map { it.artist } + likedTracks.map { it.artist }).map { Match.norm(it) }.toSet(),
-            skip = { r -> r.key in played || localFor(r) != null || UserCollection.isAi(r.artist) },
+            skip = { r -> r.key in played || localFor(r) != null || UserCollection.notWanted(r) },
         )
     }
     LaunchedEffect(taste.seeds.isNotEmpty(), java.time.LocalDate.now()) {
@@ -409,6 +414,7 @@ fun OndaApp(player: PlayerState?) {
                             row = rowCtx, onBack = { pop() },
                             onPlayList = { list, i -> playRemoteList(list, i, "Playlist", d.kind.label) },
                             onRetry = { Mixes.refresh(taste) },
+                            onMenu = { remoteMenu = it },
                         )
                         QueueRoute -> QueueScreen(player) { pop() }
                         LikedRoute -> TrackListScreen(
@@ -437,14 +443,17 @@ fun OndaApp(player: PlayerState?) {
                                 LaunchedEffect(Unit) { pop() }
                             } else {
                                 // Imported catalog songs you've since added play in full; the rest are previews.
-                                val (owned, previews) = remember(pl, byId, remoteSongs, localFor) {
-                                    val own = LinkedHashSet<Track>()
+                                val (ownedPairs, previews) = remember(pl, byId, remoteSongs, localFor) {
+                                    val own = LinkedHashMap<String, Pair<String, Track>>() // track id -> (saved id, track)
                                     val pre = ArrayList<RemoteTrack>()
                                     pl.trackIds.forEach { id ->
-                                        byId[id]?.let { own += it } ?: remoteSongs[id]?.let { r -> localFor(r)?.let { own += it } ?: pre.add(r) }
+                                        val t = byId[id] ?: remoteSongs[id]?.let { r -> localFor(r) ?: run { pre.add(r); null } }
+                                        if (t != null) own.putIfAbsent(t.id, id to t)
                                     }
-                                    own.toList() to pre.toList()
+                                    own.values.toList() to pre.toList()
                                 }
+                                val owned = ownedPairs.map { it.second }
+                                val ownedIds = ownedPairs.map { it.first }
                                 TrackListScreen(
                                     title = pl.name, subtitle = "Playlist · ${songCount(pl.trackIds.size)}", art = playlistArt(pl),
                                     tracks = owned, kind = "Playlist", sourceId = pl.id, player = player,
@@ -454,6 +463,10 @@ fun OndaApp(player: PlayerState?) {
                                     emptyText = "This playlist is empty. Add songs with Add to playlist in any song's ⋮ menu.",
                                     onBack = { pop() }, onMenu = { menuFor = MenuFor(it, pl.id, false) }, onQueue = ::queue,
                                     onDelete = { confirmDelete = pl },
+                                    onRename = { renaming = pl },
+                                    onMove = { from, to ->
+                                        PlaylistStore.moveInPlaylist(pl.id, pl.trackIds.indexOf(ownedIds[from]), pl.trackIds.indexOf(ownedIds[to]))
+                                    },
                                     onDownload = downloadAll(owned, previews),
                                 )
                             }
@@ -604,6 +617,15 @@ fun OndaApp(player: PlayerState?) {
             MenuAction(if (wanted) "Remove from Want to listen" else "Add to Want to listen",
                 if (wanted) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder) { PlaylistStore.toggleWant(r) },
             Downloads.forRemote(r)?.let { item -> MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) } },
+            // "Not interested": shapes Daily/Weekly, and the artist page can undo the artist part.
+            (r.key in hiddenSongs).let { h ->
+                MenuAction(if (h) "Suggest this song again" else "Not interested in this song", Icons.Rounded.Block) { UserCollection.toggleHidden(r.key) }
+            },
+            UserCollection.isBlocked(r.artist).let { b ->
+                MenuAction(if (b) "Suggest ${r.artist} again" else "Don't suggest ${r.artist}", Icons.Rounded.PersonOff) {
+                    UserCollection.toggleBlocked(r.artist)
+                }
+            },
             inPlaylist?.let { pl ->
                 MenuAction("Remove from this playlist", Icons.Rounded.RemoveCircleOutline) { PlaylistStore.removeFromPlaylist(pl, r.key) }
             },
@@ -644,6 +666,14 @@ fun OndaApp(player: PlayerState?) {
             title = { Text("Delete “${pl.name}”?") },
             text = { Text("Only the playlist is removed. Your music files stay untouched.", color = TextDim) },
             containerColor = CardBg,
+        )
+    }
+
+    renaming?.let { pl ->
+        CreatePlaylistDialog(
+            onDismiss = { renaming = null },
+            onCreate = { name -> if (name.isNotBlank()) PlaylistStore.renamePlaylist(pl.id, name); renaming = null },
+            heading = "Rename playlist", initial = pl.name, confirm = "Rename",
         )
     }
 
@@ -891,9 +921,13 @@ private fun TrackListScreen(
     onPlayPreview: (index: Int) -> Unit = {},
     onPreviewMenu: (RemoteTrack) -> Unit = {},
     onDownload: (() -> Unit)? = null,
+    onRename: (() -> Unit)? = null,
+    onMove: ((from: Int, to: Int) -> Unit)? = null,
 ) {
+    val reorder = rememberReorder()
     Column(Modifier.fillMaxSize()) {
         BackTopBar(title, onBack) {
+            if (onRename != null) IconButton(onClick = onRename) { Icon(Icons.Rounded.Edit, "Rename playlist", tint = TextDim) }
             if (onDownload != null) IconButton(onClick = onDownload) { Icon(Icons.Rounded.Download, "Download $title", tint = TextDim) }
             if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) }
         }
@@ -921,8 +955,18 @@ private fun TrackListScreen(
         if (tracks.isEmpty() && previews.isEmpty() && emptyText != null) Text(emptyText, color = TextDim, modifier = Modifier.padding(24.dp))
         LazyColumn(Modifier.fillMaxSize()) {
             itemsIndexed(tracks) { i, t ->
-                SwipeTrackRow(t, player?.currentId == t.id, onQueue = { onQueue(t) }, onMenu = { onMenu(t) }) {
-                    player?.play(tracks, i, kind, title, sourceId)
+                val row = @Composable {
+                    SwipeTrackRow(t, player?.currentId == t.id, onQueue = { onQueue(t) }, onMenu = { onMenu(t) }) {
+                        player?.play(tracks, i, kind, title, sourceId)
+                    }
+                }
+                if (onMove == null) {
+                    row()
+                } else {
+                    Row(Modifier.reorderRow(reorder, i, tracks.size), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) { row() }
+                        DragHandle(reorder, i, tracks.size, t.title, onMove)
+                    }
                 }
             }
             if (previews.isNotEmpty() && row != null) {
@@ -941,6 +985,8 @@ private fun QueueScreen(player: PlayerState?, onBack: () -> Unit) {
     val now = items.firstOrNull { it.isCurrent }
     val queued = items.filter { it.queued && !it.isCurrent }
     val rest = items.filter { !it.queued && !it.isCurrent }
+    val reorderQueued = rememberReorder()
+    val reorderRest = rememberReorder()
     Column(Modifier.fillMaxSize()) {
         BackTopBar("Queue", onBack)
         LazyColumn(Modifier.fillMaxSize()) {
@@ -956,20 +1002,33 @@ private fun QueueScreen(player: PlayerState?, onBack: () -> Unit) {
                         TextButton(onClick = { player?.clearQueue() }) { Text("Clear queue", color = Accent) }
                     }
                 }
-                items(queued) { q -> QueueRow(q, onClick = { player?.jumpTo(q.index) }, onRemove = { player?.removeAt(q.index) }) }
+                itemsIndexed(queued, key = { _, q -> "q${q.index}" }) { i, q ->
+                    QueueRow(q, onClick = { player?.jumpTo(q.index) }, onRemove = { player?.removeAt(q.index) },
+                        modifier = Modifier.reorderRow(reorderQueued, i, queued.size)) {
+                        DragHandle(reorderQueued, i, queued.size, q.title) { from, to -> player?.move(queued[from].index, queued[to].index) }
+                    }
+                }
             }
             if (rest.isNotEmpty()) {
                 item { SectionLabel("Next from: ${player?.sourceLabel.orEmpty()}") }
-                items(rest) { q -> QueueRow(q, onClick = { player?.jumpTo(q.index) }, onRemove = { player?.removeAt(q.index) }) }
+                itemsIndexed(rest, key = { _, q -> "r${q.index}" }) { i, q ->
+                    QueueRow(q, onClick = { player?.jumpTo(q.index) }, onRemove = { player?.removeAt(q.index) },
+                        modifier = Modifier.reorderRow(reorderRest, i, rest.size)) {
+                        DragHandle(reorderRest, i, rest.size, q.title) { from, to -> player?.move(rest[from].index, rest[to].index) }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun QueueRow(q: QueueItem, onClick: (() -> Unit)?, onRemove: (() -> Unit)?) {
+private fun QueueRow(
+    q: QueueItem, onClick: (() -> Unit)?, onRemove: (() -> Unit)?,
+    modifier: Modifier = Modifier, handle: (@Composable () -> Unit)? = null,
+) {
     Row(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -981,6 +1040,7 @@ private fun QueueRow(q: QueueItem, onClick: (() -> Unit)?, onRemove: (() -> Unit
             Text(q.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (onRemove != null) IconButton(onClick = onRemove) { Icon(Icons.Rounded.Close, "Remove ${q.title} from queue", tint = TextDim) }
+        handle?.invoke()
     }
 }
 
@@ -1138,8 +1198,9 @@ private fun SettingsScreen(
             Row(Modifier.fillMaxWidth().clickable { onFreeChange(!freeOn) }, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f).padding(end = 12.dp)) {
                     Text("Free full songs in search", color = TextMain)
-                    Text("Adds whole songs from Audius and free albums from the Internet Archive. They then also " +
-                        "see your search words and IP address.", color = TextDim, fontSize = 12.sp)
+                    Text("Adds whole songs from Audius and free albums from the Internet Archive, and plays a free full " +
+                        "copy instead of a Deezer preview when the artist put one there. They then also see your search " +
+                        "words and IP address.", color = TextDim, fontSize = 12.sp)
                 }
                 Switch(checked = freeOn, onCheckedChange = onFreeChange)
             }
@@ -1385,13 +1446,16 @@ private fun AddToPlaylistSheet(
 }
 
 @Composable
-private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
-    var name by remember { mutableStateOf("") }
+private fun CreatePlaylistDialog(
+    onDismiss: () -> Unit, onCreate: (String) -> Unit,
+    heading: String = "New playlist", initial: String = "", confirm: String = "Create",
+) {
+    var name by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = { onCreate(name.trim()) }) { Text("Create", color = Accent) } },
+        confirmButton = { TextButton(onClick = { onCreate(name.trim()) }) { Text(confirm, color = Accent) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextDim) } },
-        title = { Text("New playlist") },
+        title = { Text(heading) },
         text = { OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, placeholder = { Text("Name") }) },
         containerColor = CardBg,
     )

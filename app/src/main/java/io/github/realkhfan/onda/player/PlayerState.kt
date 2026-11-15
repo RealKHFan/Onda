@@ -124,7 +124,9 @@ class PlayerState(val controller: MediaController) {
 
     /** The online catalog the current song comes from; null for your own files and server. */
     val catalog: Source? get() = currentId?.let { Source.of(it) }
-    val isPreview: Boolean get() = catalog?.full == false
+    /** A Deezer preview may be playing as a free full copy (see [PreviewResolver]). */
+    val fullFrom: Source? get() = catalog?.takeIf { it.full } ?: PreviewResolver.fullCopyOf(currentId)
+    val isPreview: Boolean get() = catalog != null && fullFrom == null
 
     /** The playing context in its original order, without queued songs. */
     private var context: List<MediaItem> = emptyList()
@@ -282,6 +284,13 @@ class PlayerState(val controller: MediaController) {
     fun jumpTo(index: Int) {
         controller.seekTo(index, 0L)
         controller.play()
+    }
+
+    /** Drag in the queue screen; the playing song stays put. */
+    fun move(from: Int, to: Int) {
+        val cur = controller.currentMediaItemIndex
+        if (from == cur || to == cur || from !in 0 until controller.mediaItemCount || to !in 0 until controller.mediaItemCount) return
+        controller.moveMediaItem(from, to)
     }
 
     fun removeAt(index: Int) {
