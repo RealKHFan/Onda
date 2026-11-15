@@ -232,6 +232,54 @@ class FeaturesTest {
         }
     }
 
+    @Test fun playlistCopiesOrderHidingAndLooks() {
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        val mine = t("file:/tmp/onda-test/hide.mp3", "Hide Me", "Velvet Hours")
+        val before = s.settings
+        val b = onUi { s.createPlaylist("Bravo", listOf(mine.id)) }
+        val a = onUi { s.createPlaylist("alpha", emptyList()) }
+        try {
+            val copy = onUi { s.duplicatePlaylist(b)!! }
+            assertEquals("Bravo (copy)" to listOf(mine.id), s.collection.playlists.first { it.id == copy }.let { it.name to it.trackIds })
+            onUi { s.setPlaylistOrder("A–Z") }
+            val names = s.sidebarPlaylists.map { it.name }
+            assertTrue(names.indexOf("alpha") < names.indexOf("Bravo") && names.indexOf("Bravo") < names.indexOf("Bravo (copy)"))
+            onUi { s.togglePin(copy) }
+            assertEquals(copy, s.sidebarPlaylists.first().id) // pinned stays on top whatever the order
+            onUi { s.local = listOf(mine); s.toggleHidden(mine.id) }
+            assertTrue(onUi { s.library.none { it.id == mine.id } && s.hiddenSongs >= 1 })
+            onUi { s.showHiddenSongs() }
+            assertTrue(onUi { s.library.any { it.id == mine.id } })
+            onUi { s.setAccent(0xFF2EC4B6); s.setLyricsScale(5f) }
+            assertEquals(0xFF2EC4B6, Store.settings().accent)
+            assertEquals(androidx.compose.ui.graphics.Color(0xFF2EC4B6.toInt()), Accent)
+            assertEquals(1.8f, s.settings.lyricsScale)
+            onUi { s.deletePlaylist(copy) }
+        } finally {
+            onUi {
+                s.deletePlaylist(a); s.deletePlaylist(b)
+                s.setAccent(before.accent); s.setLyricsScale(before.lyricsScale); s.setPlaylistOrder(before.playlistOrder)
+                s.settings.pinned.filterNot { it in before.pinned }.forEach(s::togglePin)
+            }
+        }
+    }
+
+    @Test fun serverSongsAreKeptForReplays() {
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        var hits = 0
+        server.createContext("/song") { ex -> hits++; val b = "audio-bytes".toByteArray(); ex.responseHeaders.add("Content-Type", "audio/mpeg"); ex.sendResponseHeaders(200, b.size.toLong()); ex.responseBody.use { it.write(b) } }
+        server.start()
+        try {
+            val id = "nav:cache-test-${System.nanoTime()}"
+            SongCache.keep(CoroutineScope(ui), id, "http://127.0.0.1:${server.address.port}/song")
+            Thread.sleep(800)
+            assertEquals("audio-bytes", SongCache.get(id)?.readText())
+            SongCache.keep(CoroutineScope(ui), id, "http://127.0.0.1:${server.address.port}/song")
+            Thread.sleep(300)
+            assertEquals(1, hits) // kept: not fetched again
+        } finally { server.stop(0) }
+    }
+
     @Test fun equalizerIsInThePlaybackChain() {
         val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
         assertTrue(p.hasEqualizer)

@@ -30,8 +30,8 @@ sourceSets.main { resources.srcDir("../app/src/main/assets") }
 
 dependencies {
     implementation(compose.desktop.currentOs)
-    implementation(compose.material3)
-    implementation(compose.materialIconsExtended)
+    implementation("org.jetbrains.compose.material3:material3:1.9.0")
+    implementation("org.jetbrains.compose.material:material-icons-extended:1.7.3") // the last version; its icons stay as they are
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
     implementation("org.json:json:20240303")
     implementation("org.freedesktop.gstreamer:gst1-java-core:1.4.0") // playback through the system's GStreamer
@@ -51,7 +51,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Rpm)
             packageName = "Onda"
-            packageVersion = "0.9.0"
+            packageVersion = "0.10.0"
             description = "Privacy-first music player"
             modules("java.instrument", "jdk.unsupported", "jdk.security.auth", "jdk.crypto.ec", "java.naming", "java.sql")
             linux { iconFile.set(project.file("src/main/resources/onda.png")) }

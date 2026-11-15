@@ -46,6 +46,10 @@ object Store {
         val albumGain: Boolean = false, val output: String? = null,
         /** The main window's place and size (dp: x, y, width, height) and whether it was maximized. */
         val window: List<Int> = emptyList(), val maximized: Boolean = false,
+        /** [accent]: ARGB of the highlight colour; [compact]: sidebar with icons only; [playlistOrder]: "Custom", "A–Z" or "Most songs"; [lyricsScale]: text size. */
+        /** [cache]: keep server songs you play (up to 1 GB), so replays and seeking need no network. */
+        val cache: Boolean = true,
+        val accent: Long = 0xFF9D7BFF, val compact: Boolean = false, val playlistOrder: String = "Custom", val lyricsScale: Float = 1f,
     )
 
     fun settings(): Settings = runCatching {
@@ -64,6 +68,8 @@ object Store {
             zoom = o.optDouble("zoom", 1.0).toFloat().coerceIn(0.7f, 1.6f),
             gapless = o.optBoolean("gapless", true),
             albumGain = o.optBoolean("albumGain"), output = o.optString("output").ifBlank { null },
+            cache = o.optBoolean("cache", true), accent = o.optLong("accent", 0xFF9D7BFF), compact = o.optBoolean("compact"), playlistOrder = o.optString("playlistOrder", "Custom"),
+            lyricsScale = o.optDouble("lyricsScale", 1.0).toFloat().coerceIn(0.6f, 1.8f),
             window = o.optJSONArray("window")?.let { a -> List(a.length()) { a.getInt(it) } }?.takeIf { it.size == 4 }.orEmpty(), maximized = o.optBoolean("maximized"),
             searches = o.optJSONArray("searches")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty(),
             pinned = o.optJSONArray("pinned")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty(),
@@ -78,6 +84,7 @@ object Store {
         .put("eq", org.json.JSONArray(s.eq)).put("eqPreset", s.eqPreset).put("software", s.software).put("songNotify", s.songNotify).put("zoom", s.zoom.toDouble())
         .put("gapless", s.gapless).put("pinned", org.json.JSONArray(s.pinned)).put("searches", org.json.JSONArray(s.searches))
         .put("albumGain", s.albumGain).put("output", s.output).put("window", org.json.JSONArray(s.window)).put("maximized", s.maximized)
+        .put("cache", s.cache).put("accent", s.accent).put("compact", s.compact).put("playlistOrder", s.playlistOrder).put("lyricsScale", s.lyricsScale.toDouble())
         .put("picks", JSONObject().apply { s.picks.forEach { (k, v) -> put(k, org.json.JSONArray().put(v.first).put(v.second)) } })
         .put("server", s.server?.let { JSONObject().put("url", it.url).put("user", it.user).put("salt", it.salt).put("token", it.token) })
         .toString())

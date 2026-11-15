@@ -93,6 +93,7 @@ fun main(args: Array<String>) {
                 e.isCtrlPressed && e.key == Key.F -> state.navRequest = "search"
                 e.isCtrlPressed && e.key == Key.Comma -> state.navRequest = "settings"
                 e.isCtrlPressed && e.key == Key.K -> state.navRequest = "quick"
+                e.isCtrlPressed && e.key == Key.B -> state.setCompact(!state.settings.compact)
                 e.key == Key.F1 || (e.isCtrlPressed && e.key == Key.Slash) -> state.navRequest = "keys"
                 e.key == Key.Escape -> state.navRequest = "back"
                 else -> return false

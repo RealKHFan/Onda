@@ -61,7 +61,7 @@ class AppState(private val scope: CoroutineScope) {
     /** Catalog songs shown or played this run, so the heart and menus can save them. */
     private val seen = HashMap<String, RemoteTrack>()
 
-    init { Lrclib.init(Store.cache); Overrides.load(Store.data); ListenBrainz.load(Store.data) }
+    init { accentState.value = androidx.compose.ui.graphics.Color(settings.accent.toInt()); Lrclib.init(Store.cache); Overrides.load(Store.data); ListenBrainz.load(Store.data) }
 
     /** Details accepted from the online match (shown instead of the file's tags) and artist photos found with it. */
     var meta by mutableStateOf(Overrides.meta.value); private set
@@ -198,6 +198,35 @@ class AppState(private val scope: CoroutineScope) {
         }
     }
 
+    fun setCache(on: Boolean) { update(settings.copy(cache = on)); if (!on) SongCache.clear() }
+    fun setAccent(argb: Long) { update(settings.copy(accent = argb)); accentState.value = androidx.compose.ui.graphics.Color(argb.toInt()) }
+    fun setCompact(on: Boolean) = update(settings.copy(compact = on))
+    fun setPlaylistOrder(order: String) = update(settings.copy(playlistOrder = order))
+    fun setLyricsScale(scale: Float) = update(settings.copy(lyricsScale = (Math.round(scale * 10) / 10f).coerceIn(0.6f, 1.8f)))
+
+    /** A copy of a playlist ("… (copy)"), with its own copy of a custom cover. */
+    fun duplicatePlaylist(id: String): String? {
+        val pl = collection.playlists.firstOrNull { it.id == id } ?: return null
+        val newId = UUID.randomUUID().toString()
+        val cover = pl.cover?.let { c -> runCatching { java.io.File(c).let { f -> java.io.File(f.parentFile, "$newId.${f.extension}").also { f.copyTo(it) }.path } }.getOrNull() }
+        change(collection.copy(playlists = collection.playlists + pl.copy(id = newId, name = "${pl.name} (copy)", cover = cover)))
+        return newId
+    }
+
+    /** Your playlists in the sidebar's order: pinned first, then by your choice. */
+    val sidebarPlaylists by derivedStateOf {
+        val pins = settings.pinned
+        val ordered = when (settings.playlistOrder) {
+            "A–Z" -> collection.playlists.sortedBy { it.name.lowercase() }
+            "Most songs" -> collection.playlists.sortedByDescending { it.trackIds.size }
+            else -> collection.playlists
+        }
+        ordered.sortedBy { pins.indexOf(it.id).let { i -> if (i < 0) Int.MAX_VALUE else i } }
+    }
+
+    /** How many library songs you hid (as duplicates or on purpose). */
+    val hiddenSongs get() = collection.hidden.count { it.startsWith("file:") || it.startsWith(Navidrome.PREFIX) }
+
     fun setWindow(box: List<Int>, maximized: Boolean) { if (box != settings.window || maximized != settings.maximized) update(settings.copy(window = box, maximized = maximized)) }
 
     /** Files from outside your library (opened from the file manager, dropped on the window) as songs to play. */
@@ -207,7 +236,8 @@ class AppState(private val scope: CoroutineScope) {
 
     /** Your most played artists of the last three months (names), for the top mixes. */
     fun topArtists(n: Int): List<String> = (System.currentTimeMillis() - 90 * 86_400_000L).let { since ->
-        plays.filter { it.atMs >= since && !isBlocked(it.artist) }.groupingBy { it.artist }.eachCount().entries.sortedByDescending { it.value }.take(n).map { it.key }
+        // A file without an artist tag has no artist to make a mix of.
+        plays.filter { it.atMs >= since && !isBlocked(it.artist) && Match.norm(it.artist) !in setOf("", "unknown artist", "unknown", "various artists") }.groupingBy { it.artist }.eachCount().entries.sortedByDescending { it.value }.take(n).map { it.key }
     }
 
     /** An artist's mix: their songs in your library mixed with songs of similar artists (for this session). */
@@ -650,6 +680,10 @@ class AppState(private val scope: CoroutineScope) {
 
     /** For the player: a Deezer song plays as a free full copy when the artist's own account has one, else a fresh preview. */
     suspend fun resolve(i: Player.Item): Player.Resolved = coroutineScope {
+        if (i.id.startsWith(Navidrome.PREFIX) && settings.cache) {
+            SongCache.get(i.id)?.let { return@coroutineScope Player.Resolved(it.toURI().toString()) }
+            SongCache.keep(scope, i.id, i.uri) // streams now; kept for next time
+        }
         if (i.deezerId <= 0) return@coroutineScope Player.Resolved(i.uri)
         val full = fullCopy(i.deezerId)
         val preview = async { previewLink(i.deezerId) } // asked at the same time, so a preview never waits for the lookup

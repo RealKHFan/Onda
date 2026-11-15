@@ -17,6 +17,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -405,4 +407,53 @@ object Outputs {
     fun parse(json: String): List<Device> = JSONArray(json).let { a ->
         (0 until a.length()).map { a.getJSONObject(it) }.map { Device(it.getString("name"), it.optString("description").ifBlank { it.getString("name") }) }
     }
+}
+
+/**
+ * Server songs you play are kept (up to [LIMIT], the oldest used go first), so replays and seeking need no network,
+ * like the phone's playback cache. A song is stored once it has been fully fetched; until then it streams.
+ */
+object SongCache {
+    const val LIMIT = 1L shl 30
+    val dir = File(Store.cache, "songs")
+    var bytes by mutableStateOf(size()); private set
+    private val busy = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    private fun name(id: String) = java.security.MessageDigest.getInstance("SHA-1").digest(id.toByteArray()).joinToString("") { "%02x".format(it) }
+
+    /** The kept copy, touched so it counts as recently used. */
+    fun get(id: String): File? = File(dir, name(id)).takeIf { it.isFile && it.length() > 0 }?.also { it.setLastModified(System.currentTimeMillis()) }
+
+    /** Fetches [url] in the background (one song at a time) unless it's kept or on its way already. */
+    fun keep(scope: kotlinx.coroutines.CoroutineScope, id: String, url: String) {
+        if (get(id) != null || !busy.add(id)) return
+        scope.launch(Dispatchers.IO) {
+            try {
+                lock.withLock {
+                    dir.mkdirs()
+                    val part = File(dir, name(id) + ".part")
+                    val conn = URI(url).toURL().openConnection() as HttpURLConnection
+                    conn.connectTimeout = 15_000; conn.readTimeout = 30_000
+                    try {
+                        if (conn.responseCode !in 200..299 || conn.contentType.orEmpty().let { "json" in it || "xml" in it }) return@withLock
+                        part.outputStream().use { out -> conn.inputStream.use { it.copyTo(out, 64 * 1024) } }
+                        Files.move(part.toPath(), File(dir, name(id)).toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    } finally { conn.disconnect(); part.delete() }
+                    trim()
+                }
+            } catch (_: Exception) { // no network or the server said no: it just streams next time too
+            } finally { busy.remove(id) }
+        }
+    }
+    private val lock = kotlinx.coroutines.sync.Mutex()
+
+    private fun trim() {
+        val files = dir.listFiles { f -> f.isFile && !f.name.endsWith(".part") }.orEmpty().sortedBy { it.lastModified() }
+        var total = files.sumOf { it.length() }
+        for (f in files) { if (total <= LIMIT) break; total -= f.length(); f.delete() }
+        bytes = total
+    }
+
+    fun clear() { dir.listFiles().orEmpty().forEach { it.delete() }; bytes = 0 }
+    private fun size() = dir.listFiles().orEmpty().sumOf { it.length() }
 }
