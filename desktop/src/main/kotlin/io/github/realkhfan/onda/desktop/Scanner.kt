@@ -10,6 +10,21 @@ import java.util.logging.Logger
 
 /** Finds music files in your folders and reads their tags and covers. */
 object Scanner {
+    /** What the player bar and "Song info" show about a file. */
+    data class AudioInfo(val format: String, val bitrateKbps: Long, val sampleRate: Int, val bits: Int, val channels: String, val bytes: Long, val modified: Long) {
+        /** "FLAC · 24-bit · 96 kHz", "MP3 · 320 kbps". */
+        val badge: String get() {
+            val khz = if (sampleRate > 0) (if (sampleRate % 1000 == 0) "${sampleRate / 1000}" else "%.1f".format(sampleRate / 1000.0)) + " kHz" else null
+            val lossless = format.uppercase() in setOf("FLAC", "ALAC", "WAV", "AIFF", "APE", "WAVPACK")
+            return listOfNotNull(format.uppercase(), if (lossless && bits > 0) "$bits-bit" else if (bitrateKbps > 0) "$bitrateKbps kbps" else null, if (lossless) khz else null).joinToString(" · ")
+        }
+    }
+
+    fun audioInfo(f: File): AudioInfo? = runCatching {
+        val h = org.jaudiotagger.audio.AudioFileIO.read(f).audioHeader
+        AudioInfo(h.format.substringBefore(' ').ifBlank { f.extension }, h.bitRateAsNumber, h.sampleRateAsNumber, h.bitsPerSample, h.channels.orEmpty(), f.length(), f.lastModified())
+    }.getOrNull()
+
     private val exts = setOf("mp3", "m4a", "flac", "ogg", "oga", "opus", "wav", "aac")
     private val artDir = File(Store.cache, "art").apply { mkdirs() }
 

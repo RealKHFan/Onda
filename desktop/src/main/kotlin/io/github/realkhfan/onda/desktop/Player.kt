@@ -101,7 +101,8 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
             while (true) {
                 delay(if (gaplessNext >= 0) 50 else 400)
                 if (gaplessNext >= 0 && bin.get("current-uri") == queue.getOrNull(gaplessNext)?.uri) switchGapless()
-                if (sleepAt in 1..System.currentTimeMillis()) { sleepAt = 0; pause() }
+                if (sleepAt in 1..System.currentTimeMillis()) { sleepAt = 0; pause(); applyVolume() } // back to full for next time
+                else if (sleepAt > 0 && sleepAt - System.currentTimeMillis() < 30_000) applyVolume()
                 if (index < 0) continue
                 val d = bin.queryDuration(TimeUnit.MILLISECONDS)
                 if (d > 0) durationMs = d
@@ -181,7 +182,13 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     fun changeVolume(v: Double) { volume = v.coerceIn(0.0, 1.0); applyVolume() }
 
     // Ears hear loudness logarithmically: like KDE's and GNOME's sliders, the slider is cubic (10% ≈ -60 dB, 50% ≈ -18 dB).
-    private fun applyVolume() { bin.volume = volume * volume * volume * (current?.let(gain) ?: 1.0) }
+    private fun applyVolume() { bin.volume = volume * volume * volume * (current?.let(gain) ?: 1.0) * fade() }
+
+    /** The sleep timer fades out over its last 30 seconds instead of stopping mid-sound. */
+    private fun fade(): Double {
+        if (sleepAt <= 0) return 1.0
+        return ((sleepAt - System.currentTimeMillis()) / 30_000.0).coerceIn(0.0, 1.0)
+    }
 
     /** After the normalisation setting changed. */
     fun refreshVolume() = applyVolume()

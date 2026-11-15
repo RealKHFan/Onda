@@ -116,6 +116,42 @@ class AppState(private val scope: CoroutineScope) {
     fun setEqualizer(gains: List<Double>, preset: String) = update(settings.copy(eq = gains, eqPreset = preset))
     fun setSoftware(on: Boolean) = update(settings.copy(software = on))
     fun setSongNotify(on: Boolean) = update(settings.copy(songNotify = on))
+    fun rememberSearch(q: String) {
+        val t = q.trim().takeIf { it.length >= 2 } ?: return
+        update(settings.copy(searches = (listOf(t) + settings.searches.filterNot { it.equals(t, ignoreCase = true) }).take(10)))
+    }
+    fun forgetSearch(q: String?) = update(settings.copy(searches = if (q == null) emptyList() else settings.searches - q))
+
+    /** Name, description and cover of a playlist; a new cover image is copied, so moving the original doesn't lose it. */
+    fun editPlaylist(id: String, name: String, description: String, coverFrom: java.io.File?, removeCover: Boolean) {
+        val pl = collection.playlists.firstOrNull { it.id == id } ?: return
+        var cover = if (removeCover) null else pl.cover
+        if (removeCover || coverFrom != null) pl.cover?.let { java.io.File(it).delete() }
+        if (coverFrom != null) cover = runCatching {
+            val dir = java.io.File(Store.data, "playlist_covers").apply { mkdirs() }
+            java.io.File(dir, "$id-${System.currentTimeMillis()}.${coverFrom.extension.lowercase().ifBlank { "jpg" }}").also { coverFrom.copyTo(it) }.path
+        }.getOrNull()
+        change(collection.copy(playlists = collection.playlists.map {
+            if (it.id == id) it.copy(name = name.trim().ifBlank { pl.name }, description = description.trim(), cover = cover) else it
+        }))
+    }
+
+    /** Songs like a playlist's (its most frequent artists), not already in it; kept for this session. */
+    private val recommended = HashMap<String, List<RemoteTrack>>()
+    suspend fun recommendFor(playlistId: String, refresh: Boolean = false): List<RemoteTrack> {
+        if (!refresh) recommended[playlistId]?.let { return it }
+        val tracks = playlistTracks(playlistId)
+        val inIt = tracks.flatMap { listOf(it.id, Match.norm(it.artist) + "|" + Match.norm(it.title)) }.toSet()
+        val artists = tracks.groupingBy { it.artist }.eachCount().entries.sortedByDescending { it.value }.map { it.key }.shuffled().take(5)
+        if (artists.isEmpty()) return emptyList()
+        val found = runCatching {
+            Discover.similar(artists, settings.listenBrainz, skip = { it.key in inIt || Match.norm(it.artist) + "|" + Match.norm(it.title) in inIt || notWanted(it) }, n = 10)
+        }.getOrDefault(emptyList())
+        found.forEach { seen[it.key] = it }
+        recommended[playlistId] = found
+        return found
+    }
+
     fun setGapless(on: Boolean) = update(settings.copy(gapless = on))
     fun togglePin(id: String) = update(settings.copy(pinned = if (id in settings.pinned) settings.pinned - id else listOf(id) + settings.pinned))
 

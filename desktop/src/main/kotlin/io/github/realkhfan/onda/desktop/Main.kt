@@ -84,6 +84,7 @@ fun main(args: Array<String>) {
                 e.isCtrlPressed && e.key == Key.L -> player.current?.id?.takeIf(state::canSave)?.let(state::toggleLike)
                 e.isCtrlPressed && e.key == Key.F -> state.navRequest = "search"
                 e.isCtrlPressed && e.key == Key.Comma -> state.navRequest = "settings"
+                e.isCtrlPressed && e.key == Key.K -> state.navRequest = "quick"
                 e.key == Key.Escape -> state.navRequest = "back"
                 else -> return false
             }

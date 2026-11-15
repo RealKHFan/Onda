@@ -40,6 +40,8 @@ object Store {
         val software: Boolean = false, val songNotify: Boolean = false, val zoom: Float = 1f,
         /** [gapless]: no pause between files; [pinned]: playlist ids shown first; [picks]: song id to chosen lyrics (LRCLIB id, timing shift ms). */
         val gapless: Boolean = true, val pinned: List<String> = emptyList(), val picks: Map<String, Pair<Long, Long>> = emptyMap(),
+        /** Last searches, newest first (on this PC only). */
+        val searches: List<String> = emptyList(),
     )
 
     fun settings(): Settings = runCatching {
@@ -57,6 +59,7 @@ object Store {
             software = o.optBoolean("software"), songNotify = o.optBoolean("songNotify"),
             zoom = o.optDouble("zoom", 1.0).toFloat().coerceIn(0.7f, 1.6f),
             gapless = o.optBoolean("gapless", true),
+            searches = o.optJSONArray("searches")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty(),
             pinned = o.optJSONArray("pinned")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty(),
             picks = o.optJSONObject("picks")?.let { p -> p.keySet().associateWith { k -> p.getJSONArray(k).let { it.getLong(0) to it.getLong(1) } } }.orEmpty(),
         )
@@ -67,7 +70,7 @@ object Store {
         .put("autoplay", s.autoplay).put("background", s.background).put("releaseAlerts", s.releaseAlerts)
         .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir).put("normalize", s.normalize)
         .put("eq", org.json.JSONArray(s.eq)).put("eqPreset", s.eqPreset).put("software", s.software).put("songNotify", s.songNotify).put("zoom", s.zoom.toDouble())
-        .put("gapless", s.gapless).put("pinned", org.json.JSONArray(s.pinned))
+        .put("gapless", s.gapless).put("pinned", org.json.JSONArray(s.pinned)).put("searches", org.json.JSONArray(s.searches))
         .put("picks", JSONObject().apply { s.picks.forEach { (k, v) -> put(k, org.json.JSONArray().put(v.first).put(v.second)) } })
         .put("server", s.server?.let { JSONObject().put("url", it.url).put("user", it.user).put("salt", it.salt).put("token", it.token) })
         .toString())
@@ -103,7 +106,8 @@ object Store {
     fun track(o: JSONObject) = Track(o.getString("id"), o.getString("uri"), o.optString("title"), o.optString("artist"), o.optString("album"),
         o.optString("albumArtist"), o.optInt("trackNo"), o.optLong("durationMs"), o.optString("folder"), o.optString("art").ifBlank { null }, o.optString("file"))
 
-    data class Playlist(val id: String, val name: String, val trackIds: List<String>)
+    /** [cover]: an image file of yours, copied into Onda's data folder; null = made from the album covers. */
+    data class Playlist(val id: String, val name: String, val trackIds: List<String>, val description: String = "", val cover: String? = null)
 
     /** Liked songs (ids), your playlists, and catalog songs saved to Want to listen. */
     /** [remote]: catalog songs that Liked Songs or a playlist hold, so they can be shown and played. */
@@ -119,7 +123,8 @@ object Store {
         val o = JSONObject(File(data, "collection.json").readText())
         Collection(
             liked = o.optJSONArray("liked").strings(),
-            playlists = o.optJSONArray("playlists").objects().map { Playlist(it.getString("id"), it.getString("name"), it.optJSONArray("tracks").strings()) },
+            playlists = o.optJSONArray("playlists").objects().map { Playlist(it.getString("id"), it.getString("name"), it.optJSONArray("tracks").strings(),
+                it.optString("desc"), it.optString("cover").ifBlank { null }) },
             want = o.optJSONArray("want").objects().map(::remote),
             remote = o.optJSONArray("remote").objects().map(::remote),
             followed = o.optJSONArray("followed").objects().map { RemoteArtist(it.getLong("id"), it.getString("name"), it.optString("pic").ifBlank { null }) },
@@ -133,7 +138,8 @@ object Store {
 
     fun saveCollection(c: Collection) = write("collection.json", JSONObject()
         .put("liked", JSONArray(c.liked))
-        .put("playlists", JSONArray(c.playlists.map { JSONObject().put("id", it.id).put("name", it.name).put("tracks", JSONArray(it.trackIds)) }))
+        .put("playlists", JSONArray(c.playlists.map { JSONObject().put("id", it.id).put("name", it.name).put("tracks", JSONArray(it.trackIds))
+            .put("desc", it.description.ifBlank { null }).put("cover", it.cover) }))
         .put("want", JSONArray(c.want.map(::json)))
         .put("remote", JSONArray(c.remote.filter { r -> r.key in c.liked || c.playlists.any { r.key in it.trackIds } }.map(::json)))
         .put("followed", JSONArray(c.followed.map { JSONObject().put("id", it.id).put("name", it.name).put("pic", it.picture) }))

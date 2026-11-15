@@ -116,6 +116,50 @@ class FeaturesTest {
         }
     }
 
+    @Test fun qualityBadgeAndSleepFadeAndRecentSearches() {
+        val f = File(java.net.URI(wav(1.0)))
+        val info = Scanner.audioInfo(f)!!
+        assertEquals("WAV · 16-bit · 8 kHz", info.badge)
+        assertEquals("MP3 · 320 kbps", Scanner.AudioInfo("MP3", 320, 44100, 0, "Stereo", 1, 0).badge)
+        assertEquals("FLAC · 24-bit · 96 kHz", Scanner.AudioInfo("FLAC", 2400, 96000, 24, "Stereo", 1, 0).badge)
+        assertEquals("FLAC · 16-bit · 44.1 kHz", Scanner.AudioInfo("FLAC", 900, 44100, 16, "Stereo", 1, 0).badge)
+
+        val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
+        onUi { p.changeVolume(1.0); p.play(listOf(Player.Item("1", "One", "A", "B", null, wav(5.0))), 0); p.sleepAt = System.currentTimeMillis() + 15_000; p.refreshVolume() }
+        Thread.sleep(500)
+        assertEquals(0.5, onUi { p.outputVolume }, 0.05) // halfway through the 30-second fade
+        onUi { p.sleepAt = 0; p.refreshVolume() }
+        assertEquals(1.0, onUi { p.outputVolume }, 0.001)
+        onUi { p.close() }
+
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        val before = s.settings.searches
+        try {
+            onUi { s.rememberSearch("Velvet Hours"); s.rememberSearch("lumen"); s.rememberSearch("velvet hours"); s.rememberSearch("x") }
+            assertEquals(listOf("velvet hours", "lumen"), s.settings.searches.take(2)) // newest first, no duplicates, no one-letter searches
+        } finally {
+            onUi { s.forgetSearch(null); before.reversed().forEach(s::rememberSearch) }
+        }
+    }
+
+    @Test fun playlistCoverIsCopiedAndRemovable() {
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        val img = File.createTempFile("cover", ".png").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val id = onUi { s.createPlaylist("Cover test") }
+        try {
+            onUi { s.editPlaylist(id, "Night drive", "  For late roads  ", img, removeCover = false) }
+            val pl = s.collection.playlists.first { it.id == id }
+            assertEquals("Night drive" to "For late roads", pl.name to pl.description)
+            val copy = File(pl.cover!!)
+            assertTrue(copy.exists() && copy.path != img.path)
+            onUi { s.editPlaylist(id, "", "", null, removeCover = true) }
+            assertEquals("Night drive", s.collection.playlists.first { it.id == id }.name) // a blank name keeps the old one
+            assertFalse(copy.exists())
+        } finally {
+            onUi { s.deletePlaylist(id) }
+        }
+    }
+
     @Test fun equalizerIsInThePlaybackChain() {
         val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
         assertTrue(p.hasEqualizer)

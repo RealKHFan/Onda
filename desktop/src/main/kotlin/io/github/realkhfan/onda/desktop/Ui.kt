@@ -129,6 +129,7 @@ import io.github.realkhfan.onda.data.FreeCatalogs
 import io.github.realkhfan.onda.data.Lrclib
 import io.github.realkhfan.onda.data.Itunes
 import io.github.realkhfan.onda.data.Matcher
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.PushPin
@@ -201,6 +202,7 @@ private sealed interface View {
     data object Match : View
     data object Rename : View
     data object Stats : View
+    data object NowPlaying : View
     data object History : View
     data object Duplicates : View
     /** null: your music folders. */
@@ -218,10 +220,12 @@ fun OndaDesktop(state: AppState, player: Player?) {
         fun go(v: View) { stack.clear(); stack.add(v) }
         fun push(v: View) { stack.add(v) }
         val back: (() -> Unit)? = if (stack.size > 1) ({ stack.removeAt(stack.lastIndex) }) else null
+        var quick by remember { mutableStateOf(false) } // Ctrl+K
         LaunchedEffect(state.navRequest) {
             when (state.navRequest) {
                 "search" -> go(View.Search)
                 "settings" -> go(View.Settings)
+                "quick" -> quick = true
                 "back" -> if (stack.size > 1) stack.removeAt(stack.lastIndex)
             }
             state.navRequest = null
@@ -262,6 +266,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         View.Artists -> Artists(state, { a -> push(View.LibraryArtist(a.name)) }) { push(View.CatalogArtist(it)) }
                         is View.Mix -> MixPage(ctx, v.kind, back)
                         View.Stats -> StatsPage(ctx)
+                        View.NowPlaying -> NowPlayingPage(ctx, back)
                         View.History -> HistoryPage(ctx)
                         View.Duplicates -> DuplicatesPage(ctx, back)
                         is View.Folder -> FolderPage(ctx, v.path, back)
@@ -275,10 +280,11 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         is View.Playlist -> {
                             val pl = state.collection.playlists.firstOrNull { it.id == v.id }
                             if (pl == null) LaunchedEffect(Unit) { go(View.Songs) } else {
-                                SongList(ctx, pl.name, "Playlist", state.playlistTracks(pl.id), back = back, inPlaylist = pl.id, mosaic = true,
-                                    onMove = { from, to -> state.movePlaylistTrack(pl.id, from, to) }) {
+                                SongList(ctx, pl.name, pl.description.ifBlank { "Playlist" }, state.playlistTracks(pl.id), art = pl.cover, back = back, inPlaylist = pl.id,
+                                    mosaic = pl.cover == null, onMove = { from, to -> state.movePlaylistTrack(pl.id, from, to) },
+                                    below = { recommendations(ctx, pl.id) }) {
                                     IconButton(onClick = { state.togglePin(pl.id) }) { Icon(Icons.Rounded.PushPin, if (pl.id in state.settings.pinned) "Unpin" else "Pin to the top", tint = if (pl.id in state.settings.pinned) Accent else TextDim) }
-                                    IconButton(onClick = { naming = Naming.Rename(pl.id, pl.name) }) { Icon(Icons.Rounded.Edit, "Rename playlist", tint = TextDim) }
+                                    IconButton(onClick = { naming = Naming.EditPlaylist(pl.id) }) { Icon(Icons.Rounded.Edit, "Edit playlist", tint = TextDim) }
                                     IconButton(onClick = { naming = Naming.Delete(pl.id, pl.name) }) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) }
                                     DownloadAll(ctx, state.playlistTracks(pl.id))
                                     IconButton(onClick = { ctx.exportM3u(pl.name, state.playlistTracks(pl.id)) }) { Icon(Icons.Rounded.SaveAlt, "Save as playlist file (M3U)", tint = TextDim) }
@@ -301,6 +307,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                 if (player != null && panel == Panel.QUEUE) QueuePanel(player, onSave = { naming = Naming.New(null, player.queue.map { it.id }.filter(state::canSave).distinct()) }) { panel = Panel.NONE }
                 if (player != null && panel == Panel.LYRICS && !lyricsBig) LyricsPanel(state, player, onExpand = { lyricsBig = true }) { panel = Panel.NONE }
             }
+            if (quick) QuickSearch(ctx) { quick = false }
             toast?.let { Text(it, color = TextMain, modifier = Modifier.fillMaxWidth().background(Color(0xFF2E2E38)).padding(24.dp, 10.dp)) }
             PlayerBar(ctx, panel) { panel = if (panel == it) Panel.NONE else it }
         }
@@ -367,6 +374,8 @@ private sealed interface Naming {
     data class Rename(val id: String, val name: String) : Naming
     data class Delete(val id: String, val name: String) : Naming
     data class Edit(val t: Track) : Naming
+    data class Info(val t: Track) : Naming
+    data class EditPlaylist(val id: String) : Naming
     /** The same artist or album for every song of a list (an album, an artist). */
     data class EditMany(val tracks: List<Track>) : Naming
 }
@@ -381,6 +390,8 @@ private fun NamingDialog(state: AppState, n: Naming, close: () -> Unit) {
         return
     }
     if (n is Naming.Edit) return EditDialog(state, n.t, close)
+    if (n is Naming.Info) return InfoDialog(state, n.t, close)
+    if (n is Naming.EditPlaylist) return PlaylistDialog(state, n.id, close)
     if (n is Naming.EditMany) {
         var artist by remember { mutableStateOf("") }
         var album by remember { mutableStateOf("") }
@@ -472,6 +483,52 @@ private fun SongRow(
     }
 }
 
+/** The right-click menu of a library song, or of all selected songs when several are selected. */
+private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?, selected: Set<String>): List<ContextMenuItem> {
+    val s = ctx.state
+    val many = list.filter { it.id in selected }.takeIf { t.id in selected && it.size > 1 }
+    return if (many != null) buildList {
+        val n = many.size
+        ctx.player?.let { p ->
+            add(ContextMenuItem("Play $n songs") { ctx.play(many, 0) })
+            add(ContextMenuItem("Play next") { many.reversed().forEach { p.playNext(s.item(it)) } })
+            add(ContextMenuItem("Add to queue") { many.forEach { p.enqueue(s.item(it)) } })
+        }
+        val canLike = many.filter { s.canSave(it.id) }
+        if (canLike.any { !s.isLiked(it.id) }) add(ContextMenuItem("Add $n to Liked Songs") { canLike.filterNot { s.isLiked(it.id) }.forEach { s.toggleLike(it.id) } })
+        else if (canLike.isNotEmpty()) add(ContextMenuItem("Remove $n from Liked Songs") { canLike.forEach { s.toggleLike(it.id) } })
+        s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add $n to “${pl.name}”") { many.forEach { s.addToPlaylist(pl.id, it.id) } }) }
+        add(ContextMenuItem("Add $n to new playlist…") { ctx.dialog(Naming.New(null, many.map { it.id })) })
+        if (inPlaylist != null) add(ContextMenuItem("Remove $n from this playlist") { many.forEach { s.removeFromPlaylist(inPlaylist, it.id) } })
+        many.mapNotNull { Downloads.forTrack(it, s.settings.server) }.takeIf { it.isNotEmpty() }?.let { d -> add(ContextMenuItem("Download ${d.size}") { ctx.download(d) }) }
+        val editable = many.filterNot(s::isPreviewRow)
+        if (editable.any { s.meta.containsKey(it.id) }) add(ContextMenuItem("Restore original tags") { editable.forEach { Overrides.restore(it.id) }; ctx.toast("Original tags restored") })
+        if (editable.isNotEmpty()) add(ContextMenuItem("Edit details of ${editable.size} songs…") { ctx.dialog(Naming.EditMany(editable)) })
+    } else buildList {
+        ctx.player?.let { p ->
+            add(ContextMenuItem("Play next") { p.playNext(s.item(t)) })
+            add(ContextMenuItem("Add to queue") { p.enqueue(s.item(t)) })
+            add(ContextMenuItem("Start radio") { ctx.radio(s.item(t), t.artist) })
+        }
+        add(ContextMenuItem(if (s.isLiked(t.id)) "Remove from Liked Songs" else "Add to Liked Songs") { s.toggleLike(t.id) })
+        s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.addToPlaylist(pl.id, t.id) }) }
+        add(ContextMenuItem("Add to new playlist…") { ctx.dialog(Naming.New(t.id)) })
+        if (inPlaylist != null) add(ContextMenuItem("Remove from this playlist") { s.removeFromPlaylist(inPlaylist, t.id) })
+        add(ContextMenuItem("Go to album") {
+            Grouping.albums(s.library).firstOrNull { it.key == t.albumKey }?.let { a -> ctx.push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }
+        })
+        add(ContextMenuItem("Go to artist") {
+            Grouping.artists(s.library).firstOrNull { Match.norm(it.name) == Match.norm(t.artist) }?.let { a -> ctx.push(View.LibraryArtist(a.name)) }
+        })
+        Downloads.forTrack(t, s.settings.server)?.let { d -> add(ContextMenuItem("Download") { ctx.download(listOf(d)) }) }
+        val r = s.remoteFor(t)?.takeIf { it.source == io.github.realkhfan.onda.core.Source.DEEZER || it.source == io.github.realkhfan.onda.core.Source.ITUNES }
+        add(ContextMenuItem(if (r != null) "Copy link" else "Copy song name") { ctx.copy(shareText(t.title, t.artist, r), if (r != null) "Link" else "Song name") })
+        if (s.meta.containsKey(t.id)) add(ContextMenuItem("Restore original tags") { Overrides.restore(t.id); ctx.toast("Original tags restored") })
+        if (!s.isPreviewRow(t)) add(ContextMenuItem("Edit details…") { ctx.dialog(Naming.Edit(t)) })
+        if (!s.isPreviewRow(t)) add(ContextMenuItem("Song info") { ctx.dialog(Naming.Info(t)) })
+    }
+}
+
 /** A song from your library, with its right-click menu (for all selected songs when several are selected). */
 @Composable
 private fun TrackRow(
@@ -480,54 +537,41 @@ private fun TrackRow(
 ) {
     val t = list[i]
     val s = ctx.state
-    ContextMenuArea(items = {
-        val many = list.filter { it.id in selected }.takeIf { t.id in selected && it.size > 1 }
-        if (many != null) buildList {
-            val n = many.size
-            ctx.player?.let { p ->
-                add(ContextMenuItem("Play $n songs") { ctx.play(many, 0) })
-                add(ContextMenuItem("Play next") { many.reversed().forEach { p.playNext(s.item(it)) } })
-                add(ContextMenuItem("Add to queue") { many.forEach { p.enqueue(s.item(it)) } })
-            }
-            val canLike = many.filter { s.canSave(it.id) }
-            if (canLike.any { !s.isLiked(it.id) }) add(ContextMenuItem("Add $n to Liked Songs") { canLike.filterNot { s.isLiked(it.id) }.forEach { s.toggleLike(it.id) } })
-            else if (canLike.isNotEmpty()) add(ContextMenuItem("Remove $n from Liked Songs") { canLike.forEach { s.toggleLike(it.id) } })
-            s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add $n to “${pl.name}”") { many.forEach { s.addToPlaylist(pl.id, it.id) } }) }
-            add(ContextMenuItem("Add $n to new playlist…") { ctx.dialog(Naming.New(null, many.map { it.id })) })
-            if (inPlaylist != null) add(ContextMenuItem("Remove $n from this playlist") { many.forEach { s.removeFromPlaylist(inPlaylist, it.id) } })
-            many.mapNotNull { Downloads.forTrack(it, s.settings.server) }.takeIf { it.isNotEmpty() }?.let { d -> add(ContextMenuItem("Download ${d.size}") { ctx.download(d) }) }
-            val editable = many.filterNot(s::isPreviewRow)
-            if (editable.any { s.meta.containsKey(it.id) }) add(ContextMenuItem("Restore original tags") { editable.forEach { Overrides.restore(it.id) }; ctx.toast("Original tags restored") })
-            if (editable.isNotEmpty()) add(ContextMenuItem("Edit details of ${editable.size} songs…") { ctx.dialog(Naming.EditMany(editable)) })
-        } else buildList {
-            ctx.player?.let { p ->
-                add(ContextMenuItem("Play next") { p.playNext(s.item(t)) })
-                add(ContextMenuItem("Add to queue") { p.enqueue(s.item(t)) })
-                add(ContextMenuItem("Start radio") { ctx.radio(s.item(t), t.artist) })
-            }
-            add(ContextMenuItem(if (s.isLiked(t.id)) "Remove from Liked Songs" else "Add to Liked Songs") { s.toggleLike(t.id) })
-            s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.addToPlaylist(pl.id, t.id) }) }
-            add(ContextMenuItem("Add to new playlist…") { ctx.dialog(Naming.New(t.id)) })
-            if (inPlaylist != null) add(ContextMenuItem("Remove from this playlist") { s.removeFromPlaylist(inPlaylist, t.id) })
-            add(ContextMenuItem("Go to album") {
-                Grouping.albums(s.library).firstOrNull { it.key == t.albumKey }?.let { a -> ctx.push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }
-            })
-            add(ContextMenuItem("Go to artist") {
-                Grouping.artists(s.library).firstOrNull { Match.norm(it.name) == Match.norm(t.artist) }?.let { a -> ctx.push(View.LibraryArtist(a.name)) }
-            })
-            Downloads.forTrack(t, s.settings.server)?.let { d -> add(ContextMenuItem("Download") { ctx.download(listOf(d)) }) }
-            val r = s.remoteFor(t)?.takeIf { it.source == io.github.realkhfan.onda.core.Source.DEEZER || it.source == io.github.realkhfan.onda.core.Source.ITUNES }
-            add(ContextMenuItem(if (r != null) "Copy link" else "Copy song name") { ctx.copy(shareText(t.title, t.artist, r), if (r != null) "Link" else "Song name") })
-            if (s.meta.containsKey(t.id)) add(ContextMenuItem("Restore original tags") { Overrides.restore(t.id); ctx.toast("Original tags restored") })
-            if (!s.isPreviewRow(t)) add(ContextMenuItem("Edit details…") { ctx.dialog(Naming.Edit(t)) })
-        }
-    }) {
+    ContextMenuArea(items = { trackMenu(ctx, list, t, inPlaylist, selected) }) {
         SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
             note = if (s.isPreviewRow(t)) "Preview" else null, selected = t.id in selected,
             onCtrlClick = onSelect?.let { f -> { f(i, true, false) } }, onShiftClick = onSelect?.let { f -> { f(i, false, true) } },
             trailing = { if (s.isLiked(t.id)) Icon(Icons.Rounded.Favorite, "Liked", tint = Accent, modifier = Modifier.padding(12.dp)) }) {
             onSelect?.invoke(i, false, false)
             ctx.play(list, i)
+        }
+    }
+}
+
+/** "Recommended songs" under a playlist, like Spotify's: + adds one; Refresh finds others. */
+private fun androidx.compose.foundation.lazy.LazyListScope.recommendations(ctx: Ctx, playlistId: String) {
+    item {
+        val state = ctx.state
+        var recs by remember(playlistId) { mutableStateOf<List<RemoteTrack>?>(null) }
+        var round by remember(playlistId) { mutableIntStateOf(0) }
+        LaunchedEffect(playlistId, round) { recs = null; recs = state.recommendFor(playlistId, refresh = round > 0) }
+        val inList = state.collection.playlists.firstOrNull { it.id == playlistId }?.trackIds.orEmpty().toSet()
+        val shown = recs.orEmpty().filter { it.key !in inList }
+        Column(Modifier.padding(top = 24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Section("Recommended songs")
+                TextButton(onClick = { round++ }) { Text("Refresh", color = TextDim) }
+            }
+            when {
+                recs == null -> LinearProgressIndicator(Modifier.padding(24.dp, 8.dp).width(240.dp), color = Accent, trackColor = Raised)
+                shown.isEmpty() -> Note("Add a few songs and similar ones show up here.")
+                else -> shown.forEachIndexed { i, r ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) { RemoteRow(ctx, shown, i) }
+                        TextButton(onClick = { state.remember(r); state.addToPlaylist(playlistId, r.key) }, modifier = Modifier.padding(end = 12.dp)) { Text("Add", color = Accent) }
+                    }
+                }
+            }
         }
     }
 }
@@ -747,14 +791,19 @@ internal fun select(selected: Set<String>, list: List<Track>, anchor: Int, i: In
 @Composable
 private fun SongList(
     ctx: Ctx, title: String, subtitle: String, tracks: List<Track>, art: String? = null, back: (() -> Unit)? = null,
-    inPlaylist: String? = null, onMove: ((Int, Int) -> Unit)? = null, mosaic: Boolean = false,
-    above: (androidx.compose.foundation.lazy.LazyListScope.() -> Unit)? = null, actions: @Composable () -> Unit = {},
+    inPlaylist: String? = null, onMove: ((Int, Int) -> Unit)? = null, mosaic: Boolean = false, filterable: Boolean = true,
+    above: (androidx.compose.foundation.lazy.LazyListScope.() -> Unit)? = null,
+    below: (androidx.compose.foundation.lazy.LazyListScope.() -> Unit)? = null, actions: @Composable () -> Unit = {},
 ) {
+    var filter by remember(title) { mutableStateOf<String?>(null) }
     val reorder = remember { ReorderState() }
     var sort by remember(title) { mutableStateOf(Sort.CUSTOM) }
     var selected by remember(title) { mutableStateOf(emptySet<String>()) }
     var anchor by remember(title) { mutableIntStateOf(-1) }
-    val shown = remember(tracks, sort, ctx.state.playCounts) { sorted(tracks, sort, ctx.state.playCounts) }
+    val shown = remember(tracks, sort, ctx.state.playCounts, filter) {
+        val f = filter?.let(Match::norm).orEmpty()
+        sorted(tracks, sort, ctx.state.playCounts).filter { f.isEmpty() || Match.norm("${it.title} ${it.artist} ${it.album}").contains(f) }
+    }
     val onSelect = { i: Int, ctrl: Boolean, shift: Boolean ->
         selected = select(selected, shown, anchor, i, ctrl, shift)
         if (!shift) anchor = i
@@ -764,6 +813,9 @@ private fun SongList(
             Header(title, "$subtitle · ${tracks.size} songs" + if (selected.size > 1) " · ${selected.size} selected" else "", art, back = back,
                 mosaic = if (mosaic) tracks.map { it.artUri } else null) {
                 actions()
+                if (filterable && tracks.size > 1) IconButton(onClick = { filter = if (filter == null) "" else null }) {
+                    Icon(Icons.Rounded.Search, "Find in this list", tint = if (filter != null) Accent else TextDim)
+                }
                 Spacer(Modifier.width(8.dp))
                 var open by remember { mutableStateOf(false) }
                 Box {
@@ -773,7 +825,18 @@ private fun SongList(
                     }
                 }
                 Spacer(Modifier.width(8.dp))
+                if (tracks.size > 1) OutlinedButton(onClick = {
+                    ctx.player?.let { p -> if (!p.shuffle) p.toggleShuffle() }
+                    ctx.play(shown, shown.indices.random())
+                }) { Icon(Icons.Rounded.Shuffle, null, tint = Accent); Text(" Shuffle", color = TextMain) }
+                Spacer(Modifier.width(8.dp))
                 if (tracks.isNotEmpty()) Button(onClick = { ctx.play(shown, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
+            }
+        }
+        filter?.let { f ->
+            item {
+                TextBox(f, { filter = it }, placeholder = { Text("Find in $title") }, modifier = Modifier.padding(24.dp, 0.dp, 24.dp, 8.dp).width(360.dp),
+                    onKey = { k -> if (k == Key.Escape) { filter = null; true } else false })
             }
         }
         above?.invoke(this)
@@ -786,6 +849,7 @@ private fun SongList(
                 DragHandle(reorder, i, shown.size, shown[i].title, onMove)
             }
         }
+        below?.invoke(this)
     }
 }
 
@@ -800,7 +864,7 @@ private fun Songs(ctx: Ctx) {
         Row(Modifier.padding(24.dp, 16.dp, 24.dp, 0.dp)) {
             TextBox(filter, { filter = it }, placeholder = { Text("Filter your songs") }, singleLine = true, modifier = Modifier.width(360.dp))
         }
-        SongList(ctx, "Songs", "Your library", shown)
+        SongList(ctx, "Songs", "Your library", shown, filterable = false)
     }
 }
 
@@ -890,6 +954,8 @@ private fun Search(ctx: Ctx) {
             free = (ov.await().getOrDefault(emptyList()) + au.await().getOrDefault(emptyList())).filter(::ok).take(10)
             if (dz.await().isFailure && ov.await().isFailure && au.await().isFailure) problem = "No connection to the online catalogs."
         }
+        delay(2000) // still the same words two seconds later: worth keeping as a recent search
+        if (online.isNotEmpty() || artists.isNotEmpty()) state.rememberSearch(q)
     }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
@@ -898,6 +964,19 @@ private fun Search(ctx: Ctx) {
                 Spacer(Modifier.height(12.dp))
                 TextBox(q, { q = it }, placeholder = { Text("Songs, artists and albums, here and online") }, singleLine = true, modifier = Modifier.width(480.dp))
                 problem?.let { Text(it, color = TextDim, modifier = Modifier.padding(top = 8.dp)) }
+                if (q.isBlank() && state.settings.searches.isNotEmpty()) {
+                    Row(Modifier.padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Recent searches", color = TextMain, fontWeight = FontWeight.Bold)
+                        TextButton(onClick = { state.forgetSearch(null) }) { Text("Clear", color = TextDim) }
+                    }
+                    state.settings.searches.forEach { r ->
+                        Row(Modifier.width(480.dp).clip(RoundedCornerShape(6.dp)).clickable { q = r }.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.History, null, tint = TextDim, modifier = Modifier.size(18.dp))
+                            Text(r, color = TextMain, modifier = Modifier.weight(1f).padding(start = 10.dp))
+                            IconButton(onClick = { state.forgetSearch(r) }) { Icon(Icons.Rounded.Close, "Remove", tint = TextDim, modifier = Modifier.size(18.dp)) }
+                        }
+                    }
+                }
             }
         }
         // Your own songs are searched in Songs (the filter there); this is the online catalog.
@@ -1480,13 +1559,14 @@ private fun PlayerBar(ctx: Ctx, panel: Panel, toggle: (Panel) -> Unit) {
     Row(Modifier.fillMaxWidth().height(96.dp).background(Side).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
             if (cur != null) {
-                Art(cur.art, 56)
+                Box(Modifier.clickable { ctx.push(View.NowPlaying) }) { Art(cur.art, 56) }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f, fill = false)) {
                     Text(cur.title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                     val src = when { player.fullFrom != null -> "${player.fullFrom} · "; cur.preview -> "Preview · "; else -> "" }
                     Text(src + cur.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     player.error?.let { Text(it, color = ErrorRed, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        ?: qualityOf(cur)?.let { Text(it, color = Accent.copy(alpha = 0.85f), fontSize = 10.sp, maxLines = 1) }
                 }
                 if (state.canSave(cur.id)) {
                     val liked = state.isLiked(cur.id)
@@ -1604,6 +1684,21 @@ internal fun MiniPlayer(state: AppState, player: Player, openMain: () -> Unit) {
     }
 }
 
+private val qualities = HashMap<String, String?>()
+
+/** "FLAC · 24-bit · 96 kHz" for a file you have (read once per song). */
+@Composable
+private fun qualityOf(item: Player.Item): String? {
+    if (!item.uri.startsWith("file:")) return null
+    var q by remember(item.id) { mutableStateOf(qualities[item.id]) }
+    LaunchedEffect(item.id) {
+        if (item.id !in qualities) q = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { Scanner.audioInfo(File(java.net.URI(item.uri)))?.badge }.getOrNull()
+        }.also { qualities[item.id] = it }
+    }
+    return q
+}
+
 /** Sleep timer: pause after some minutes or when the song ends. */
 @Composable
 private fun SleepButton(player: Player?) {
@@ -1618,12 +1713,12 @@ private fun SleepButton(player: Player?) {
             if (player.sleepAt > 0) Text("${((player.sleepAt - now) / 60_000 + 1).coerceAtLeast(1)} min", color = Accent, fontSize = 11.sp)
         }
         DropdownMenu(open, { open = false }, modifier = Modifier.background(Color(0xFF2E2E38))) {
-            Text("Pause after…", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 4.dp))
+            Text("Pause after… (fades out over the last 30 s)", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 4.dp))
             listOf(15, 30, 45, 60, 90).forEach { m ->
-                DropdownMenuItem({ Text("$m minutes", color = TextMain) }, { player.sleepAfterSong = false; player.sleepAt = System.currentTimeMillis() + m * 60_000L; now = System.currentTimeMillis(); open = false })
+                DropdownMenuItem({ Text("$m minutes", color = TextMain) }, { player.sleepAfterSong = false; player.sleepAt = System.currentTimeMillis() + m * 60_000L; player.refreshVolume(); now = System.currentTimeMillis(); open = false })
             }
             DropdownMenuItem({ Text("End of this song", color = TextMain) }, { player.sleepAt = 0; player.sleepAfterSong = true; open = false })
-            if (on) DropdownMenuItem({ Text("Turn off", color = Accent) }, { player.sleepAt = 0; player.sleepAfterSong = false; open = false })
+            if (on) DropdownMenuItem({ Text("Turn off", color = Accent) }, { player.sleepAt = 0; player.sleepAfterSong = false; player.refreshVolume(); open = false })
         }
     }
 }
@@ -1733,9 +1828,10 @@ internal fun TextBox(
     value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, label: (@Composable () -> Unit)? = null,
     placeholder: (@Composable () -> Unit)? = null, singleLine: Boolean = true,
     visualTransformation: androidx.compose.ui.text.input.VisualTransformation = androidx.compose.ui.text.input.VisualTransformation.None,
-    onEnter: (() -> Unit)? = null,
+    onEnter: (() -> Unit)? = null, onKey: ((Key) -> Boolean)? = null,
 ) = OutlinedTextField(value, onValueChange, modifier.onKeyEvent { e ->
     if (e.type != KeyEventType.KeyDown) false
+    else if (onKey?.invoke(e.key) == true) true
     else if (e.key == Key.Enter && onEnter != null) { onEnter(); true }
     else !e.isCtrlPressed && e.key != Key.Escape // Ctrl+F and Esc still work while typing
 }, label = label, placeholder = placeholder, singleLine = singleLine, visualTransformation = visualTransformation)
@@ -1897,7 +1993,9 @@ private fun DuplicatesPage(ctx: Ctx, back: (() -> Unit)?) {
                 val where = if (t.id.startsWith("file:")) runCatching { java.io.File(java.net.URI(t.id)).path }.getOrDefault(t.fileName) else "On your music server"
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) {
-                        SongRow(null, t.album, where, "${ctx.state.playCounts[t.id] ?: 0} plays", t.durationMs, t.artUri, ctx.player?.current?.id == t.id) { ctx.play(listOf(t), 0) }
+                        ContextMenuArea(items = { listOf(ContextMenuItem("Hide this copy") { state.toggleHidden(t.id) }) + trackMenu(ctx, g, t, null, emptySet()) }) {
+                            SongRow(null, t.album, where, "${ctx.state.playCounts[t.id] ?: 0} plays", t.durationMs, t.artUri, ctx.player?.current?.id == t.id) { ctx.play(listOf(t), 0) }
+                        }
                     }
                     TextButton(onClick = { state.toggleHidden(t.id) }, modifier = Modifier.padding(end = 16.dp)) { Text("Hide", color = TextDim) }
                 }
@@ -1967,6 +2065,163 @@ private fun LibraryArtistPage(ctx: Ctx, name: String, back: (() -> Unit)?) {
         }
         item { Section("All songs") }
         items(a.tracks.size) { i -> TrackRow(ctx, a.tracks, i, numbered = true) }
+    }
+}
+
+/** Where a song is, its format and quality, and how often you played it. */
+@Composable
+private fun InfoDialog(state: AppState, t: Track, close: () -> Unit) {
+    val file = remember(t.id) { t.id.takeIf { it.startsWith("file:") }?.let { runCatching { File(java.net.URI(it)) }.getOrNull() } }
+    var info by remember(t.id) { mutableStateOf<Scanner.AudioInfo?>(null) }
+    LaunchedEffect(t.id) { info = file?.let { withContext(kotlinx.coroutines.Dispatchers.IO) { Scanner.audioInfo(it) } } }
+    val plays = state.plays.filter { it.key == t.id }
+    val fmt = java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm")
+    fun date(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()).format(fmt)
+    val rows = buildList {
+        add("Title" to t.title); add("Artist" to t.artist); add("Album" to t.album)
+        state.meta[t.id]?.let { add("Shown in Onda" to "Edited or matched; Right-click → Restore original tags shows the file's own") }
+        add("Length" to time(t.durationMs))
+        if (file != null) add("File" to file.path) else add("Where" to "On your music server")
+        info?.let { i ->
+            add("Format" to i.badge)
+            if (i.channels.isNotBlank()) add("Channels" to i.channels)
+            add("Size" to "%.1f MB".format(i.bytes / 1_048_576.0))
+            add("Modified" to date(i.modified))
+        }
+        add("Plays" to "${plays.size}" + (plays.maxOfOrNull { it.atMs }?.let { " · last ${date(it)}" } ?: ""))
+        if (state.settings.normalize) Loudness.gains[t.id]?.let { add("Loudness" to "%+.1f dB to even it out".format(20 * kotlin.math.log10(Loudness.factorFor(it.db, it.peak)))) }
+    }
+    AlertDialog(onDismissRequest = close, title = { Text("Song info") }, modifier = Modifier.width(620.dp),
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        text = {
+            androidx.compose.foundation.text.selection.SelectionContainer {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    rows.forEach { (k, v) ->
+                        Row { Text(k, color = TextDim, fontSize = 13.sp, modifier = Modifier.width(120.dp)); Text(v, color = TextMain, fontSize = 13.sp) }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = close) { Text("Close", color = Accent) } })
+}
+
+/** Name, description and cover image of one of your playlists. */
+@Composable
+private fun PlaylistDialog(state: AppState, id: String, close: () -> Unit) {
+    val pl = state.collection.playlists.firstOrNull { it.id == id } ?: return close()
+    var name by remember { mutableStateOf(pl.name) }
+    var desc by remember { mutableStateOf(pl.description) }
+    var cover by remember { mutableStateOf<File?>(null) }
+    var removeCover by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(onDismissRequest = close, title = { Text("Edit playlist") },
+        text = {
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    val shown = cover?.path ?: pl.cover?.takeIf { !removeCover }
+                    if (shown != null) Art(shown, 140) else Mosaic(state.playlistTracks(id).map { it.artUri }, 140)
+                    TextButton(onClick = {
+                        scope.launch {
+                            when (val r = FolderPicker.file(false, System.getProperty("user.home") + "/Pictures", "Cover image")) {
+                                is FolderPicker.Result.Picked -> File(r.path).takeIf { it.extension.lowercase() in setOf("jpg", "jpeg", "png", "webp") }
+                                    ?.let { cover = it; removeCover = false } ?: run { note = "Pick a JPG, PNG or WebP image." }
+                                FolderPicker.Result.NoPicker -> note = "No file picker found on this system."
+                                FolderPicker.Result.Cancelled -> {}
+                            }
+                        }
+                    }) { Text("Choose image", color = Accent) }
+                    if (pl.cover != null || cover != null) TextButton(onClick = { cover = null; removeCover = true }) { Text("Use album covers", color = TextDim) }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.width(300.dp)) {
+                    TextBox(name, { name = it }, label = { Text("Name") })
+                    TextBox(desc, { desc = it }, label = { Text("Description") }, singleLine = false, modifier = Modifier.height(120.dp))
+                    note?.let { Text(it, color = ErrorRed, fontSize = 12.sp) }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { state.editPlaylist(id, name, desc, cover, removeCover); close() }) { Text("Save", color = Accent) } },
+        dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
+}
+
+/** Ctrl+K: jump to any song, album, artist or playlist of yours by typing; arrows and Enter. */
+@Composable
+private fun QuickSearch(ctx: Ctx, close: () -> Unit) {
+    val state = ctx.state
+    var q by remember { mutableStateOf("") }
+    var sel by remember { mutableIntStateOf(0) }
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    class Hit(val label: String, val sub: String, val art: String?, val round: Boolean, val go: () -> Unit)
+    val hits = remember(q, state.library, state.collection.playlists) {
+        if (q.isBlank()) return@remember emptyList()
+        val nq = Match.norm(q)
+        val songs = AutoTree.search(state.library, q, limit = 6)
+        val albums = Grouping.albums(state.library).filter { Match.norm(it.title).contains(nq) }.take(3)
+        val artists = Grouping.artists(state.library).filter { Match.norm(it.name).contains(nq) }.take(3)
+        val lists = state.collection.playlists.filter { Match.norm(it.name).contains(nq) }.take(3)
+        artists.map { a -> Hit(a.name, "Artist", state.artistPics[a.name.lowercase()]?.ifBlank { null } ?: a.artUri, true) { ctx.push(View.LibraryArtist(a.name)) } } +
+            lists.map { pl -> Hit(pl.name, "Playlist", pl.cover, false) { ctx.push(View.Playlist(pl.id)) } } +
+            songs.mapIndexed { i, t -> Hit(t.title, "Song · ${t.artist}", t.artUri, false) { ctx.play(songs, i) } } +
+            albums.map { al -> Hit(al.title, "Album · ${al.artist}", al.artUri, false) { ctx.push(View.LocalList(al.title, "Album · ${al.artist}", al.artUri, al.tracks)) } }
+    }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    fun go(i: Int) { hits.getOrNull(i)?.let { close(); it.go() } }
+    androidx.compose.ui.window.Dialog(onDismissRequest = close) {
+        Column(Modifier.width(560.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF22222A)).padding(16.dp)) {
+            TextBox(q, { q = it; sel = 0 }, placeholder = { Text("Go to a song, album, artist or playlist") }, onEnter = { go(sel) },
+                onKey = { k -> when (k) {
+                    androidx.compose.ui.input.key.Key.DirectionDown -> { sel = (sel + 1).coerceAtMost(hits.lastIndex.coerceAtLeast(0)); true }
+                    androidx.compose.ui.input.key.Key.DirectionUp -> { sel = (sel - 1).coerceAtLeast(0); true }
+                    androidx.compose.ui.input.key.Key.Escape -> { close(); true }
+                    else -> false
+                } },
+                modifier = Modifier.fillMaxWidth().focusRequester(focus))
+            hits.forEachIndexed { i, h ->
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp).clip(RoundedCornerShape(6.dp)).background(if (i == sel) Raised else Color.Transparent)
+                    .clickable { go(i) }.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Art(h.art, 36, h.round)
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text(h.label, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(h.sub, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+            if (q.isNotBlank() && hits.isEmpty()) Text("Nothing in your library. Search online with Ctrl+F.", color = TextDim, modifier = Modifier.padding(8.dp))
+        }
+    }
+}
+
+/** The song big: cover on its own colour, controls, and what's next (click the cover in the player bar). */
+@Composable
+private fun NowPlayingPage(ctx: Ctx, back: (() -> Unit)?) {
+    val player = ctx.player ?: return Note("Playback isn't available.")
+    val cur = player.current ?: return Note("Nothing is playing.")
+    val tint = rememberArtTint(cur.art)
+    Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(tint, Bg)))) {
+        Row(Modifier.fillMaxSize().padding(40.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Art(cur.art, 380)
+                Spacer(Modifier.height(24.dp))
+                Text(cur.title, color = TextMain, fontSize = 32.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                Text(cur.artist, color = TextMain.copy(alpha = 0.8f), fontSize = 18.sp, modifier = Modifier.clickable { ctx.push(View.LibraryArtist(cur.artist)) })
+                Text(cur.album, color = TextMain.copy(alpha = 0.6f), fontSize = 14.sp)
+            }
+            Column(Modifier.width(360.dp)) {
+                Text("Up next", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Spacer(Modifier.height(8.dp))
+                val next = player.upcoming().take(8)
+                if (next.isEmpty()) Text(if (ctx.state.settings.autoplay) "Similar songs follow when this one ends." else "This is the last song.", color = TextMain.copy(alpha = 0.7f))
+                next.forEach { (i, it) ->
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { player.jumpTo(i) }.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Art(it.art, 40)
+                        Spacer(Modifier.width(10.dp))
+                        Column { Text(it.title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(it.artist, color = TextMain.copy(alpha = 0.7f), fontSize = 12.sp, maxLines = 1) }
+                    }
+                }
+            }
+        }
+        if (back != null) IconButton(onClick = back, modifier = Modifier.padding(12.dp)) { Icon(Icons.Rounded.CloseFullscreen, "Back", tint = TextMain) }
     }
 }
 
