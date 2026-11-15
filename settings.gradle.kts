@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "Onda"
 include(":app")
+include(":desktop")

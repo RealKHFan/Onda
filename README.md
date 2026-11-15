@@ -20,6 +20,9 @@ Onda is offline-first: it plays music you own or can legally stream, and works f
 - **Downloads:** saved as real music files in your music folder, only from sources that allow it (your server, free catalogs).
 - **Android Auto:** playlists, albums, artists, search and voice.
 
+## Linux (early)
+A desktop version for Linux lives in `desktop/` (Compose for Desktop, GStreamer for playback). It plays your music folders and your Navidrome server, searches the catalogs with previews and free full songs, and has a queue, shuffle and repeat. Build it with `./gradlew :desktop:createDistributable`; `desktop/packaging/install.sh` adds it to your app menu without root.
+
 ## Privacy
 - No account, no analytics, no crash reporting, no device ID. Your history never leaves the phone.
 - Online services (Deezer, Apple, Audius, Jamendo, Openverse, Internet Archive, ListenBrainz/MusicBrainz, LRCLIB) only see search words, song names and your IP address, and each can be turned off. Deny Onda's Network permission and it keeps working offline.
