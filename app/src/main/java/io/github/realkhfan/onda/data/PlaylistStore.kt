@@ -96,6 +96,12 @@ object PlaylistStore {
         write()
     }
 
+    /** Undo: a playlist's songs as they were. */
+    fun setTracks(id: String, trackIds: List<String>) {
+        _playlists.value = _playlists.value.map { if (it.id == id) it.copy(trackIds = trackIds) else it }
+        write()
+    }
+
     fun moveInPlaylist(id: String, from: Int, to: Int) {
         _playlists.value = _playlists.value.map { pl ->
             if (pl.id != id) return@map pl

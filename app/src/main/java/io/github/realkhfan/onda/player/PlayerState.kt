@@ -182,6 +182,7 @@ class PlayerState(val controller: MediaController) {
                 val now = controller.currentMediaItemIndex
                 val prev = lastIndex
                 val auto = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO
+                if (auto) SleepTimer.songEnded(this@PlayerState)
                 // A queued song that finished (or was skipped past) leaves the queue, like Spotify.
                 // Otherwise it would come round again on every repeat of the playlist.
                 if ((auto || now > prev) && prev != now && prev in 0 until controller.mediaItemCount &&

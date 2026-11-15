@@ -57,7 +57,10 @@ class PlaybackService : MediaLibraryService() {
             .build()
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = extendIfEnding(player)
+            override fun onAudioSessionIdChanged(audioSessionId: Int) = Effects.attach(audioSessionId)
         })
+        Effects.apply(io.github.realkhfan.onda.data.Prefs.eq(this))
+        Effects.attach(player.audioSessionId)
         session = MediaLibrarySession.Builder(this, player, AutoLibrary(this, scope)).build()
     }
 
@@ -92,6 +95,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        Effects.release()
         session?.run {
             player.release()
             release()

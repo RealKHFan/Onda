@@ -51,10 +51,16 @@ class ScreenshotTest {
     @Test fun library() = shot("library") {
         LibraryScreen(playlists, { null }, likedCount = 12, wantCount = 3, albums = Grouping.albums(tracks), artists = Grouping.artists(tracks),
             folders = Grouping.folders(tracks), songs = tracks, currentId = tracks[0].id, onAvatar = {}, onCreate = {}, onOpenLiked = {},
-            onOpenWant = {}, onOpenPlaylist = {}, onOpenAlbum = {}, onOpenArtist = {}, onOpenFolder = {},
+            onOpenWant = {}, onOpenSmart = {}, onOpenPlaylist = {}, onOpenAlbum = {}, onOpenArtist = {}, onOpenFolder = {},
             savedAlbums = listOf(release), followed = listOf(RemoteArtist(7, "Coastline Kids", null)),
             serverPlaylists = listOf(Subsonic.Playlist("s1", "Gym", listOf("a", "b"))), onOpenServerPlaylist = {},
             onOpenRemoteAlbum = {}, onOpenRemoteArtist = {}, onPlaySongs = { _, _ -> }, onMenu = {}, onQueue = {})
+    }
+
+    @Test fun stats() = shot("stats") {
+        val now = System.currentTimeMillis()
+        val plays = tracks.flatMapIndexed { i, t -> List(5 - i.coerceAtMost(4)) { k -> io.github.realkhfan.onda.core.Discovery.Play(t.id, t.artist, t.title, now - (i * 7 + k) * 3_600_000L) } }
+        StatsScreen(plays, tracks, { id -> tracks.firstOrNull { it.id == id } }, { null }, null, onBack = {}, onOpenAlbum = { _, _, _, _ -> })
     }
 
     @Test fun playlist() = shot("playlist") {

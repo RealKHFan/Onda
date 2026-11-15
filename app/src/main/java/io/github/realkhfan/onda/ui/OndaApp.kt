@@ -103,7 +103,12 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -146,6 +151,14 @@ import io.github.realkhfan.onda.core.ArtistGroup
 import io.github.realkhfan.onda.core.FolderGroup
 import io.github.realkhfan.onda.core.Grouping
 import io.github.realkhfan.onda.core.Match
+import io.github.realkhfan.onda.core.Smart
+import io.github.realkhfan.onda.player.SleepTimer
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.VisibilityOff
 import io.github.realkhfan.onda.core.RemoteTrack
 import io.github.realkhfan.onda.core.Track
 import io.github.realkhfan.onda.data.Deezer
@@ -187,6 +200,9 @@ private data object QueueRoute : Route
 private data object SettingsRoute : Route
 private data object MatchRoute : Route
 private data object RenameRoute : Route
+private data object StatsRoute : Route
+private data object HistoryRoute : Route
+private data object SmartRoute : Route
 private data class MixRoute(val kind: Discovery.Kind) : Route
 private data class RemoteArtistRoute(val artist: RemoteArtist) : Route
 private data class RemoteAlbumRoute(val album: RemoteAlbum) : Route
@@ -218,7 +234,11 @@ fun OndaApp(player: PlayerState?) {
     val matching by Matcher.state.collectAsState()
     val serverTracks = remember(serverSongs, serverCfg, serverKbps) { Server.toTracks(serverSongs, serverCfg, serverKbps) }
     // What the app shows: local files plus server songs you don't have locally, with accepted Deezer matches on top.
-    val tracks = remember(localTracks, serverTracks, meta) { AppData.library(localTracks, serverTracks, meta) }
+    val hidden by UserCollection.hidden.collectAsState()
+    // Songs you hid stay out of the library (playlists that hold them still play them).
+    val tracks = remember(localTracks, serverTracks, meta, hidden) { AppData.library(localTracks, serverTracks, meta).filterNot { it.id in hidden } }
+    val plays by PlayLog.plays.collectAsState()
+    remember { accentState.value = androidx.compose.ui.graphics.Color(Prefs.accent(ctx).toInt()); 0 }
     // Lookups also know server songs hidden by a local twin, so playlists that saved one still find it.
     val everyTrack = remember(localTracks, serverTracks, meta) { AppData.everyTrack(localTracks, serverTracks, meta) }
     val folders by MusicLibrary.folders.collectAsState()
@@ -266,6 +286,8 @@ fun OndaApp(player: PlayerState?) {
     var showCreate by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
+    var infoFor by remember { mutableStateOf<Track?>(null) }
+    var sleepSheet by remember { mutableStateOf(false) }
 
     var query by rememberSaveable { mutableStateOf("") }
     var results by remember { mutableStateOf(RemoteResults()) }
@@ -303,6 +325,13 @@ fun OndaApp(player: PlayerState?) {
     // One message at a time: a new one replaces the old instead of queueing up behind it.
     fun toast(msg: String) {
         scope.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar(msg) }
+    }
+    /** A message with Undo, like the desktop's. */
+    fun undoable(msg: String, undo: () -> Unit) {
+        scope.launch {
+            snackbar.currentSnackbarData?.dismiss()
+            if (snackbar.showSnackbar(msg, actionLabel = "Undo", duration = SnackbarDuration.Long) == SnackbarResult.ActionPerformed) undo()
+        }
     }
     fun download(items: List<Downloads.Item>) {
         toast(Downloads.start(ctx, items) ?: "Downloading ${songCount(items.size)}…")
@@ -342,7 +371,6 @@ fun OndaApp(player: PlayerState?) {
     val rowCtx = RemoteRowContext(localFor, wantKeys, player?.currentId) { PlaylistStore.toggleWant(it) }
 
     // Daily 10 / Weekly 30: built from what you play, like, save and own; rebuilt when the day / week changes.
-    val plays by PlayLog.plays.collectAsState()
     val mixes by Mixes.mixes.collectAsState()
     val mixesBuilding by Mixes.building.collectAsState()
     val mixesProblem by Mixes.problem.collectAsState()
@@ -387,7 +415,11 @@ fun OndaApp(player: PlayerState?) {
             // Swipe only closes it; it opens from the avatar, so right-swipes stay free for "add to queue".
             gesturesEnabled = drawerState.isOpen,
             drawerContent = {
-                DrawerSheet(onSettings = { scope.launch { drawerState.close() }; push(SettingsRoute) })
+                DrawerSheet(
+                    onSettings = { scope.launch { drawerState.close() }; push(SettingsRoute) },
+                    onStats = { scope.launch { drawerState.close() }; push(StatsRoute) },
+                    onHistory = { scope.launch { drawerState.close() }; push(HistoryRoute) },
+                )
             },
         ) {
             Scaffold(
@@ -428,6 +460,17 @@ fun OndaApp(player: PlayerState?) {
                             onMenu = { remoteMenu = it },
                         )
                         QueueRoute -> QueueScreen(player) { pop() }
+                        StatsRoute -> StatsScreen(plays, tracks, { byId[it] }, { name -> artists.firstOrNull { Match.norm(it.name) == Match.norm(name) }?.artUri }, player,
+                            onBack = { pop() }, onOpenAlbum = { list, title, artist, art -> push(TracksRoute(title, "Album · $artist", art, list, "Album")) })
+                        HistoryRoute -> HistoryScreen(plays, { byId[it] }, player) { pop() }
+                        SmartRoute -> {
+                            val now = remember { System.currentTimeMillis() }
+                            val lists = remember(tracks, plays, liked) { Smart.Kind.entries.associateWith { Smart.list(it, tracks, plays, liked, byId::get, now) } }
+                            SmartScreen(lists, onBack = { pop() }) { k ->
+                                val l = lists[k].orEmpty()
+                                push(TracksRoute(k.title, k.about, l.firstNotNullOfOrNull { it.artUri }, l, "Playlist"))
+                            }
+                        }
                         LikedRoute -> TrackListScreen(
                             title = "Liked Songs", subtitle = "Playlist · ${songCount(likedTracks.size)}", art = null,
                             tracks = likedTracks, kind = "Playlist", sourceId = LIKED_ID, player = player,
@@ -505,6 +548,12 @@ fun OndaApp(player: PlayerState?) {
                                 onOpenMix = { push(MixRoute(it)) },
                                 releases = releases,
                                 onOpenRelease = { push(RemoteAlbumRoute(it)) },
+                                // The same song from two places (file and preview) shows once, like on the desktop.
+                                recent = remember(plays, byId) {
+                                    plays.asReversed().mapNotNull { byId[it.key] }.distinctBy { Match.norm(it.title) + "|" + Match.norm(it.artist) }.take(20)
+                                },
+                                onPlayRecent = { list, i -> player?.play(list, i, "Playlist", "Recently played") },
+                                onOpenHistory = { push(HistoryRoute) },
                             )
                             1 -> SearchScreen(
                                 query, { query = it }, searchState, results, rowCtx,
@@ -520,6 +569,7 @@ fun OndaApp(player: PlayerState?) {
                                 albums = albums, artists = artists, folders = folderGroups, songs = songs,
                                 savedAlbums = savedAlbums, followed = followed,
                                 serverPlaylists = serverPlaylists,
+                                onOpenSmart = { push(SmartRoute) },
                                 onOpenServerPlaylist = { sp ->
                                     val list = sp.songIds.mapNotNull { byId[Server.PREFIX + it] }
                                     push(TracksRoute(sp.name, "Playlist · Music server · ${songCount(list.size)}", list.firstNotNullOfOrNull { it.artUri }, list, "Playlist"))
@@ -571,6 +621,9 @@ fun OndaApp(player: PlayerState?) {
             }
         }
 
+        infoFor?.let { t -> SongInfoDialog(t, plays, meta.containsKey(t.id)) { infoFor = null } }
+        if (sleepSheet && player != null) SleepSheet(player) { sleepSheet = false }
+
         // Outside the Scaffold so messages also show above the full player.
         SnackbarHost(
             snackbar,
@@ -605,7 +658,12 @@ fun OndaApp(player: PlayerState?) {
             Downloads.forTrack(t, serverCfg)?.let { item -> add(MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) }) }
             if (inPlaylist && pid != null) {
                 add(MenuAction("Remove from this playlist", Icons.Rounded.RemoveCircleOutline) {
-                    if (pid == LIKED_ID) PlaylistStore.toggleLike(t.id) else PlaylistStore.removeFromPlaylist(pid, t.id)
+                    if (pid == LIKED_ID) { PlaylistStore.toggleLike(t.id); undoable("Removed from Liked Songs") { PlaylistStore.toggleLike(t.id) } }
+                    else {
+                        val before = playlists.firstOrNull { it.id == pid }?.trackIds.orEmpty()
+                        PlaylistStore.removeFromPlaylist(pid, t.id)
+                        undoable("Removed from the playlist") { PlaylistStore.setTracks(pid, before) }
+                    }
                 })
                 // Long playlists: a far move in one tap instead of many drags.
                 playlists.firstOrNull { it.id == pid }?.let { pl ->
@@ -628,6 +686,11 @@ fun OndaApp(player: PlayerState?) {
             if (meta.containsKey(t.id)) {
                 add(MenuAction("Restore original tags", Icons.Rounded.Restore) { Overrides.restore(t.id); toast("Original tags restored") })
             }
+            add(MenuAction("Song info", Icons.Rounded.Info) { infoFor = t })
+            if (m.fromPlayer && player != null) add(MenuAction(if (SleepTimer.on) "Sleep timer (on)" else "Sleep timer", Icons.Rounded.Bedtime) { sleepSheet = true })
+            if (t.id !in hidden) add(MenuAction("Hide from library", Icons.Rounded.VisibilityOff) {
+                UserCollection.toggleHidden(t.id); undoable("Hidden: ${t.title}") { UserCollection.toggleHidden(t.id) }
+            })
         }
         SongMenu(t.title, t.artist, t.artUri, actions) { menuFor = null }
     }
@@ -731,9 +794,14 @@ internal fun HomeScreen(
     onOpenMix: (Discovery.Kind) -> Unit,
     releases: List<RemoteAlbum>,
     onOpenRelease: (RemoteAlbum) -> Unit,
+    recent: List<Track> = emptyList(),
+    onPlayRecent: (List<Track>, Int) -> Unit = { _, _ -> },
+    onOpenHistory: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize()) {
-        TopBar("Onda", onAvatar)
+        // Greets you like the desktop does.
+        val hour = remember { java.time.LocalTime.now().hour }
+        TopBar(when (hour) { in 5..11 -> "Good morning"; in 12..17 -> "Good afternoon"; else -> "Good evening" }, onAvatar)
         if (noFolders) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Add the folders your music lives in to get started.", color = TextDim)
@@ -776,6 +844,25 @@ internal fun HomeScreen(
                     }
                 }
             }
+            if (recent.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Row(Modifier.padding(top = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Recently played", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f))
+                        TextButton(onClick = onOpenHistory) { Text("Show all", color = TextDim) }
+                    }
+                }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        itemsIndexed(recent) { i, t ->
+                            Column(Modifier.width(132.dp).clickable { onPlayRecent(recent, i) }) {
+                                Art(t.artUri, 132.dp)
+                                Text(t.title, color = TextMain, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+                                Text(t.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -810,6 +897,7 @@ internal fun LibraryScreen(
     onCreate: () -> Unit,
     onOpenLiked: () -> Unit,
     onOpenWant: () -> Unit,
+    onOpenSmart: () -> Unit,
     onOpenPlaylist: (String) -> Unit,
     onOpenAlbum: (Album) -> Unit,
     onOpenArtist: (ArtistGroup) -> Unit,
@@ -896,6 +984,7 @@ internal fun LibraryScreen(
                                 IconTile(Icons.Rounded.Bookmark, 52.dp, WantBg, Accent)
                             }
                         }
+                        item { GroupRow("Smart playlists", "Most played, On repeat, Never played, Forgotten favourites", onOpenSmart) { IconTile(Icons.Rounded.AutoAwesome, 52.dp, CardBg, Accent) } }
                         items(playlists) { pl ->
                             GroupRow(pl.name, "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) }) {
                                 Art(playlistArt(pl), 52.dp)
@@ -956,8 +1045,28 @@ internal fun TrackListScreen(
     onMove: ((from: Int, to: Int) -> Unit)? = null,
 ) {
     val reorder = rememberReorder()
+    // Sort and find, like the desktop's list header.
+    var sort by remember(title) { mutableStateOf(Smart.Sort.CUSTOM) }
+    var filter by remember(title) { mutableStateOf<String?>(null) }
+    var sorting by remember { mutableStateOf(false) }
+    val plays by PlayLog.plays.collectAsState()
+    val counts = remember(plays) { plays.groupingBy { it.key }.eachCount() }
+    val shown = remember(tracks, sort, counts, filter) {
+        val f = filter?.let(Match::norm).orEmpty()
+        Smart.sorted(tracks, sort, counts).filter { f.isEmpty() || Match.norm("${it.title} ${it.artist} ${it.album}").contains(f) }
+    }
     Column(Modifier.fillMaxSize()) {
         BackTopBar(title, onBack) {
+            if (tracks.size > 1) IconButton(onClick = { filter = if (filter == null) "" else null }) {
+                Icon(Icons.Rounded.Search, "Find in this list", tint = if (filter != null) Accent else TextDim)
+            }
+            if (tracks.size > 1) Box {
+                IconButton(onClick = { sorting = true }) { Icon(Icons.AutoMirrored.Rounded.Sort, "Sort: ${sort.label}", tint = if (sort != Smart.Sort.CUSTOM) Accent else TextDim) }
+                DropdownMenu(sorting, { sorting = false }) {
+                    Smart.Sort.entries.forEach { o -> DropdownMenuItem({ Text(o.label, color = if (o == sort) Accent else TextMain) }, { sort = o; sorting = false }) }
+                }
+            }
+            if (tracks.isNotEmpty()) IconButton(onClick = { shown.forEach(onQueue) }) { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add all to the queue", tint = TextDim) }
             if (onRename != null) IconButton(onClick = onRename) { Icon(Icons.Rounded.Edit, "Rename playlist", tint = TextDim) }
             if (onDownload != null) IconButton(onClick = onDownload) { Icon(Icons.Rounded.Download, "Download $title", tint = TextDim) }
             if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) }
@@ -966,37 +1075,42 @@ internal fun TrackListScreen(
             if (tile != null) IconTile(tile, 96.dp) else Art(art, 96.dp, round = round)
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
-                Text(subtitle, color = TextDim, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(subtitle + if (tracks.any { it.durationMs > 0 }) " · ${Smart.length(tracks)}" else "", color = TextDim, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
-                            if (tracks.isNotEmpty()) player?.play(tracks, 0, kind, title, sourceId, shuffled = false) else onPlayPreview(-1)
+                            if (shown.isNotEmpty()) player?.play(shown, 0, kind, title, sourceId, shuffled = false) else onPlayPreview(-1)
                         },
                         enabled = tracks.isNotEmpty() || previews.isNotEmpty(),
                     ) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
                     OutlinedButton(
-                        onClick = { player?.play(tracks, Random.nextInt(tracks.size), kind, title, sourceId, shuffled = true) },
-                        enabled = tracks.isNotEmpty(),
+                        onClick = { player?.play(shown, Random.nextInt(shown.size), kind, title, sourceId, shuffled = true) },
+                        enabled = shown.isNotEmpty(),
                     ) { Icon(Icons.Rounded.Shuffle, null); Text("Shuffle") }
                 }
             }
         }
         Spacer(Modifier.height(8.dp))
+        filter?.let { f ->
+            OutlinedTextField(f, { filter = it }, placeholder = { Text("Find in $title") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 8.dp))
+        }
         if (tracks.isEmpty() && previews.isEmpty() && emptyText != null) Text(emptyText, color = TextDim, modifier = Modifier.padding(24.dp))
         LazyColumn(Modifier.fillMaxSize()) {
-            itemsIndexed(tracks) { i, t ->
+            itemsIndexed(shown) { i, t ->
                 val row = @Composable {
                     SwipeTrackRow(t, player?.currentId == t.id, onQueue = { onQueue(t) }, onMenu = { onMenu(t) }) {
-                        player?.play(tracks, i, kind, title, sourceId)
+                        player?.play(shown, i, kind, title, sourceId)
                     }
                 }
-                if (onMove == null) {
+                // Dragging moves songs only in the list's own order.
+                if (onMove == null || sort != Smart.Sort.CUSTOM || filter != null) {
                     row()
                 } else {
-                    Row(Modifier.reorderRow(reorder, i, tracks.size), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.reorderRow(reorder, i, shown.size), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.weight(1f)) { row() }
-                        DragHandle(reorder, i, tracks.size, t.title, onMove)
+                        DragHandle(reorder, i, shown.size, t.title, onMove)
                     }
                 }
             }
@@ -1211,6 +1325,17 @@ internal fun SettingsScreen(
                 }
                 Switch(checked = mobileDl, onCheckedChange = { mobileDl = it; Prefs.setMobileDownloads(ctx, it) })
             }
+            SectionLabel("Equalizer", Modifier.padding(0.dp))
+            EqualizerSettings(ctx)
+            SectionLabel("Display", Modifier.padding(0.dp))
+            Text("Colour", color = TextMain)
+            AccentPicker(ctx)
+            val hiddenNow by UserCollection.hidden.collectAsState()
+            val hiddenCount = hiddenNow.count(UserCollection::isLibraryKey)
+            if (hiddenCount > 0) Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("${songCount(hiddenCount)} hidden from your library", color = TextMain, modifier = Modifier.weight(1f))
+                TextButton(onClick = { UserCollection.showHiddenSongs() }) { Text("Show them again") }
+            }
             SectionLabel("New releases", Modifier.padding(0.dp))
             Row(Modifier.fillMaxWidth().clickable { setReleaseAlerts(!releaseAlerts) }, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f).padding(end = 12.dp)) {
@@ -1351,14 +1476,17 @@ internal fun SettingsScreen(
 }
 
 @Composable
-private fun DrawerSheet(onSettings: () -> Unit) {
+private fun DrawerSheet(onSettings: () -> Unit, onStats: () -> Unit, onHistory: () -> Unit) {
     ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.55f), drawerContainerColor = CardBg) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Onda", color = Accent, fontWeight = FontWeight.Bold, fontSize = 22.sp)
-            Row(Modifier.fillMaxWidth().clickable(onClick = onSettings).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.Settings, null, tint = TextMain)
-                Spacer(Modifier.width(12.dp))
-                Text("Settings", color = TextMain, fontSize = 16.sp)
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Onda", color = Accent, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.padding(bottom = 12.dp))
+            listOf(Triple("Settings", Icons.Rounded.Settings, onSettings), Triple("Your stats", Icons.Rounded.BarChart, onStats),
+                Triple("History", Icons.Rounded.History, onHistory)).forEach { (label, icon, go) ->
+                Row(Modifier.fillMaxWidth().clickable(onClick = go).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(icon, null, tint = TextMain)
+                    Spacer(Modifier.width(12.dp))
+                    Text(label, color = TextMain, fontSize = 16.sp)
+                }
             }
         }
     }

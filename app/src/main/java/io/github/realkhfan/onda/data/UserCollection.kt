@@ -39,6 +39,10 @@ object UserCollection {
         _hidden.value = if (key in _hidden.value) _hidden.value - key else _hidden.value + key
         write()
     }
+    /** Library songs you hid (files and server songs; catalog songs you marked "not interested" stay hidden). */
+    fun isLibraryKey(key: String) = key.startsWith("content:") || key.startsWith("file:") || key.startsWith(Server.PREFIX)
+    fun showHiddenSongs() { _hidden.value = _hidden.value.filterNot(::isLibraryKey).toSet(); write() }
+
     fun isBlocked(name: String) = Match.norm(name) in _blocked.value
     fun toggleBlocked(name: String) {
         val k = Match.norm(name)

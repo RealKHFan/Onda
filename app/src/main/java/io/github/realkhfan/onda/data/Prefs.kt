@@ -35,6 +35,15 @@ object Prefs {
 
     fun clearServer(ctx: Context) = p(ctx).edit().remove("srv_url").remove("srv_user").remove("srv_salt").remove("srv_token").apply()
 
+    /** Highlight colour (ARGB). */
+    fun accent(ctx: Context): Long = p(ctx).getLong("accent", 0xFF9D7BFF)
+    fun setAccent(ctx: Context, argb: Long) = p(ctx).edit().putLong("accent", argb).apply()
+
+    /** Equalizer: 10 gains in dB (30 Hz … 15 kHz, like the desktop) and the preset they came from. */
+    fun eq(ctx: Context): List<Double> = p(ctx).getString("eq", null)?.split(',')?.mapNotNull { it.toDoubleOrNull() }?.takeIf { it.size == 10 } ?: List(10) { 0.0 }
+    fun eqPreset(ctx: Context): String = p(ctx).getString("eq_preset", "Flat") ?: "Flat"
+    fun setEq(ctx: Context, gains: List<Double>, preset: String) = p(ctx).edit().putString("eq", gains.joinToString(",")).putString("eq_preset", preset).apply()
+
     /** Max streaming bitrate in kbps; 0 = the original file. */
     fun streamKbps(ctx: Context): Int = p(ctx).getInt("stream_kbps", 0)
     fun setStreamKbps(ctx: Context, kbps: Int) = p(ctx).edit().putInt("stream_kbps", kbps).apply()
