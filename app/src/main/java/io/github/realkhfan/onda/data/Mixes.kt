@@ -128,7 +128,7 @@ object Mixes {
         // Playable first: songs with a free full copy become that copy and lead the mix.
         val withFull = if (!taste.audius && taste.jamendoId.isBlank()) picked else picked.map { t ->
             if (t.source != Source.DEEZER) t
-            else runCatching { FullCopies.find(t.id, taste.audius, taste.jamendoId) }.getOrNull()?.also { delay(120) } ?: t
+            else runCatching { FullCopies.find(t.id, taste.audius, taste.jamendoId, thorough = true) }.getOrNull()?.also { delay(120) } ?: t
         }
         return Mix(kind, period, withFull.sortedBy { !it.source.full }, seeds.take(3))
     }

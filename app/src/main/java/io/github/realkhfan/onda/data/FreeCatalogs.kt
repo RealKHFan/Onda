@@ -96,10 +96,11 @@ object FreeCatalogs {
 
     // Netlabels (Creative Commons releases) and the Live Music Archive (bands that allow taping) only; the open
     // "community audio" uploads are left out because anyone can post anything there.
-    suspend fun archive(query: String): List<RemoteAlbum> {
+    /** [collections]: netlabels (studio releases) and/or etree (concert recordings). */
+    suspend fun archive(query: String, collections: String = "netlabels OR etree"): List<RemoteAlbum> {
         val words = query.replace(Regex("""[^\p{L}\p{N}]+"""), " ").trim()
         if (words.isEmpty()) return emptyList()
-        val q = "($words) AND mediatype:audio AND collection:(netlabels OR etree)"
+        val q = "($words) AND mediatype:audio AND collection:($collections)"
         return parseArchiveSearch(fetch("https://archive.org/advancedsearch.php?q=${Http.enc(q)}" +
             "&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=creator&fl%5B%5D=date&rows=10&output=json"))
     }

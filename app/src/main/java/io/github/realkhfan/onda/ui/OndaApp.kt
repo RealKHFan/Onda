@@ -2,6 +2,8 @@
 
 package io.github.realkhfan.onda.ui
 
+import androidx.compose.material.icons.rounded.VerticalAlignBottom
+import androidx.compose.material.icons.rounded.VerticalAlignTop
 import androidx.compose.material.icons.rounded.Dns
 import io.github.realkhfan.onda.data.Subsonic
 import kotlinx.coroutines.withContext
@@ -605,6 +607,14 @@ fun OndaApp(player: PlayerState?) {
                 add(MenuAction("Remove from this playlist", Icons.Rounded.RemoveCircleOutline) {
                     if (pid == LIKED_ID) PlaylistStore.toggleLike(t.id) else PlaylistStore.removeFromPlaylist(pid, t.id)
                 })
+                // Long playlists: a far move in one tap instead of many drags.
+                playlists.firstOrNull { it.id == pid }?.let { pl ->
+                    val at = pl.trackIds.indexOf(t.id)
+                    if (at > 0) add(MenuAction("Move to top", Icons.Rounded.VerticalAlignTop) { PlaylistStore.moveInPlaylist(pid, at, 0) })
+                    if (at >= 0 && at < pl.trackIds.size - 1) {
+                        add(MenuAction("Move to bottom", Icons.Rounded.VerticalAlignBottom) { PlaylistStore.moveInPlaylist(pid, at, pl.trackIds.size - 1) })
+                    }
+                }
             }
             if (!m.fromPlayer) {
                 add(MenuAction("Play next", Icons.Rounded.QueuePlayNext) { player?.playNext(t.toMediaItem()); toast("Playing next") })
@@ -705,7 +715,7 @@ private fun currentRemote(p: PlayerState): RemoteTrack? {
 /* ---------------- Home ---------------- */
 
 @Composable
-private fun HomeScreen(
+internal fun HomeScreen(
     playlists: List<PlaylistStore.Playlist>,
     playlistArt: (PlaylistStore.Playlist) -> String?,
     scanning: Boolean,
@@ -786,7 +796,7 @@ private fun ShortcutTile(title: String, onClick: () -> Unit, leading: @Composabl
 /* ---------------- Library ---------------- */
 
 @Composable
-private fun LibraryScreen(
+internal fun LibraryScreen(
     playlists: List<PlaylistStore.Playlist>,
     playlistArt: (PlaylistStore.Playlist) -> String?,
     likedCount: Int,
@@ -922,7 +932,7 @@ private fun LibraryScreen(
 /* ---------------- Track list (playlist / album / artist / folder) ---------------- */
 
 @Composable
-private fun TrackListScreen(
+internal fun TrackListScreen(
     title: String,
     subtitle: String,
     art: String?,
@@ -1068,7 +1078,7 @@ private fun QueueRow(
 /* ---------------- Settings (in the drawer) ---------------- */
 
 @Composable
-private fun SettingsScreen(
+internal fun SettingsScreen(
     folders: List<String>,
     scanning: Boolean,
     appleOn: Boolean,

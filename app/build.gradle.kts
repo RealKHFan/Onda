@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("io.github.takahirom.roborazzi")
 }
 
 android {
@@ -12,8 +13,8 @@ android {
         applicationId = "io.github.realkhfan.onda"
         minSdk = 26
         targetSdk = 36
-        versionCode = 18
-        versionName = "0.14.0"
+        versionCode = 19
+        versionName = "0.15.0"
     }
 
     buildFeatures {
@@ -30,11 +31,24 @@ android {
         jvmTarget = "17"
     }
 
+    // The release key is never in the repo: it comes from environment variables. Without them the release build is
+    // signed with the debug key, which can't update an installed release.
+    val keystore = System.getenv("ONDA_KEYSTORE")
+    signingConfigs {
+        if (keystore != null) create("release") {
+            storeFile = file(keystore)
+            storePassword = System.getenv("ONDA_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("ONDA_KEY_ALIAS")
+            keyPassword = System.getenv("ONDA_KEY_PASSWORD")
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
+    testOptions { unitTests.isIncludeAndroidResources = true } // screenshot tests render real resources
     packaging {
         resources.excludes += setOf("META-INF/*.kotlin_module")
     }
@@ -63,4 +77,11 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303") // real org.json for JVM tests (Android's is a stub there)
+    // Screenshot tests of the main screens (test-only; never in the app).
+    testImplementation("org.robolectric:robolectric:4.18")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.79.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.79.0")
+    testImplementation(platform("androidx.compose:compose-bom:2026.06.01"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
