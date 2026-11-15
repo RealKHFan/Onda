@@ -29,7 +29,7 @@ class DesktopTest {
     }
 
     @Test fun filesWithoutTagsAreNamedFromTheFileName() {
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory().toFile()
         wav(File(dir, "Velvet Hours - Paper Moon.wav"))
         val t = Scanner.scan(listOf(dir.path), emptyMap()).values.single().second
         assertEquals("Paper Moon", t.title)
@@ -40,7 +40,7 @@ class DesktopTest {
 
     @Test fun playsThroughGStreamerAndMovesOn() = runBlocking {
         val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory().toFile()
         val songs = listOf(wav(File(dir, "a.wav"), 0.6), wav(File(dir, "b.wav"), 0.6)).mapIndexed { i, f ->
             Player.Item("id$i", "Song $i", "Artist", "Album", null, f.toURI().toString())
         }
@@ -91,7 +91,7 @@ class DesktopTest {
 
 class FolderPickerTest {
     @Test fun typedPathsResolve() {
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory().toFile()
         assertEquals(dir.canonicalPath, FolderPicker.resolve("  \"${dir.path}\" "))
         assertEquals(dir.canonicalPath, FolderPicker.resolve("file://${dir.path}"))
         assertEquals(java.io.File(System.getProperty("user.home")).canonicalPath, FolderPicker.resolve("~"))

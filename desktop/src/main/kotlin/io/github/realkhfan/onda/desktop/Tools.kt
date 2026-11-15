@@ -25,7 +25,6 @@ import java.io.IOException
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URL
 import java.nio.file.Files
 import java.util.zip.ZipInputStream
 
@@ -316,7 +315,7 @@ object Downloads {
 
     /** The new file's id (as the library scan gives it), or null if a file of that name was already there. */
     internal fun save(dir: File, item: Item): String? {
-        val conn = URL(item.url).openConnection() as HttpURLConnection
+        val conn = URI(item.url).toURL().openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 30_000
         conn.setRequestProperty("User-Agent", "Onda")

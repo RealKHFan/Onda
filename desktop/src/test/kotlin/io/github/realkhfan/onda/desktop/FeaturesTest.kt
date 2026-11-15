@@ -208,6 +208,30 @@ class FeaturesTest {
         }
     }
 
+    @Test fun openWithOndaHandsFilesToTheRunningOne() {
+        val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
+        val opened = ArrayList<String>()
+        var raised = false
+        val m = Mpris(p, CoroutineScope(ui), ui, onRaise = { raised = true }, onQuit = {}, onOpen = { opened += it })
+        m.start()
+        try {
+            val song = File(java.net.URI(wav(1.0))).toURI().toString()
+            assertTrue(Instance.raiseExisting(listOf(song)))
+            Thread.sleep(500)
+            assertEquals(listOf(song), opened)
+            assertTrue(raised)
+            val s = onUi { AppState(CoroutineScope(ui)) }
+            val items = onUi { s.itemsForFiles(listOf(song, "file:/no/such/file.mp3")) }
+            assertEquals(1, items.size) // a missing file is skipped
+            assertEquals(song, items[0].uri)
+            onUi { s.setWindow(listOf(10, 20, 900, 700), maximized = true) }
+            assertEquals(listOf(10, 20, 900, 700) to true, Store.settings().let { it.window to it.maximized })
+            onUi { s.setWindow(emptyList(), maximized = false) }
+        } finally {
+            m.close(); onUi { p.close() }
+        }
+    }
+
     @Test fun equalizerIsInThePlaybackChain() {
         val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
         assertTrue(p.hasEqualizer)

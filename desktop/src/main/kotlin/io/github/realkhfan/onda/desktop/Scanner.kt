@@ -26,6 +26,7 @@ object Scanner {
     }.getOrNull()
 
     private val exts = setOf("mp3", "m4a", "flac", "ogg", "oga", "opus", "wav", "aac")
+    fun isAudio(f: File) = f.isFile && f.extension.lowercase() in exts
     private val artDir = File(Store.cache, "art").apply { mkdirs() }
 
     init {

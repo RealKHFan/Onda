@@ -18,7 +18,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -45,7 +45,9 @@ fun main(args: Array<String>) {
     System.setProperty("http.agent", "Onda") // the default would send the Java version and OS to every server
     // A game can hold the graphics card so Onda's window never appears: drawing on the CPU avoids it.
     if (Store.settings().software) System.setProperty("skiko.renderApi", "SOFTWARE")
-    if (Instance.raiseExisting()) return // Onda is already running: it came to the front instead
+    // Audio files from "Open with Onda" in the file manager (or the command line).
+    val files = args.filterNot { it.startsWith("--") }.map { java.io.File(it).absoluteFile }.filter(Scanner::isAudio).map { it.toURI().toString() }
+    if (Instance.raiseExisting(files)) return // Onda is already running: it plays the files and comes to the front instead
     startLog()
     val started = System.currentTimeMillis()
     application {
@@ -59,6 +61,10 @@ fun main(args: Array<String>) {
                     state.settings.output?.let { o -> if (Outputs.list().any { it.name == o }) p.setOutput(o) } }
         }
         val mpris = remember { arrayOfNulls<Mpris>(1) }
+        val appIcon = remember {
+            androidx.compose.ui.graphics.painter.BitmapPainter(org.jetbrains.skia.Image.makeFromEncoded(
+                Thread.currentThread().contextClassLoader.getResourceAsStream("onda.png")!!.use { it.readBytes() }).toComposeImageBitmap())
+        }
         // Started with your desktop session: no window until you open Onda (from the app menu, or the media widget).
         var visible by remember { mutableStateOf("--background" !in args) }
         fun saveSession() {
@@ -106,16 +112,37 @@ fun main(args: Array<String>) {
         }
         val mainWindow = arrayOfNulls<java.awt.Frame>(1)
         if (state.mini && player != null) Window(
-            onCloseRequest = { state.mini = false }, title = "Onda mini player", icon = painterResource("onda.png"), alwaysOnTop = true, resizable = false,
+            onCloseRequest = { state.mini = false }, title = "Onda mini player", icon = appIcon, alwaysOnTop = true, resizable = false,
             state = rememberWindowState(width = 440.dp, height = 150.dp, position = WindowPosition(Alignment.BottomEnd)), onKeyEvent = ::keys,
         ) { MiniPlayer(state, player) { mainWindow[0]?.let(::bringToFront) } }
+        val saved = state.settings
+        val windowState = rememberWindowState(
+            placement = if (saved.maximized) androidx.compose.ui.window.WindowPlacement.Maximized else androidx.compose.ui.window.WindowPlacement.Floating,
+            position = saved.window.takeIf { it.size == 4 }?.let { WindowPosition(it[0].dp, it[1].dp) } ?: WindowPosition.PlatformDefault,
+            size = saved.window.takeIf { it.size == 4 }?.let { androidx.compose.ui.unit.DpSize(it[2].dp, it[3].dp) } ?: androidx.compose.ui.unit.DpSize(1280.dp, 820.dp),
+        )
+        LaunchedEffect(windowState) {
+            // Remembered for next time (once moving or resizing has settled).
+            snapshotFlow { Triple(windowState.position, windowState.size, windowState.placement) }.collect { (pos, size, placement) ->
+                delay(800)
+                val box = if (pos is WindowPosition.Absolute) listOf(pos.x.value.toInt(), pos.y.value.toInt(), size.width.value.toInt(), size.height.value.toInt()) else saved.window
+                state.setWindow(box, placement == androidx.compose.ui.window.WindowPlacement.Maximized)
+            }
+        }
+        var lastOpen = 0L
+        /** Plays opened files; more files within two seconds (one file manager action) join the queue. */
+        fun openFiles(uris: List<String>) {
+            val items = state.itemsForFiles(uris).takeIf { it.isNotEmpty() } ?: return
+            if (System.currentTimeMillis() - lastOpen < 2000 && player != null && player.queue.isNotEmpty()) items.forEach(player::enqueue) else player?.play(items, 0)
+            lastOpen = System.currentTimeMillis()
+        }
         Window(
             // With "keep playing" on, closing hides the window; the app menu or the media widget brings it back.
             onCloseRequest = { if (state.settings.background && player?.queue?.isNotEmpty() == true) visible = false else quit() },
             visible = visible,
             title = "Onda",
-            icon = painterResource("onda.png"),
-            state = rememberWindowState(width = 1280.dp, height = 820.dp),
+            icon = appIcon,
+            state = windowState,
             onKeyEvent = ::keys,
         ) {
             LaunchedEffect(Unit) {
@@ -127,7 +154,8 @@ fun main(args: Array<String>) {
                 player.changeVolume(state.settings.volume)
                 player.equalize(state.settings.eq)
                 // Back where you left off: same queue and song, paused at the same moment.
-                withContext(Dispatchers.IO) { Store.session() }?.let { player.restore(it.items, it.index, it.positionMs, it.shuffle, it.repeat) }
+                if (files.isNotEmpty()) openFiles(files)
+                else withContext(Dispatchers.IO) { Store.session() }?.let { player.restore(it.items, it.index, it.positionMs, it.shuffle, it.repeat) }
                 scope.launch { snapshotFlow { player.current }.collect { it?.let(state::played) } } // for Home and the mixes
                 scope.launch {
                     var restored = true // the song from last time isn't news
@@ -139,7 +167,7 @@ fun main(args: Array<String>) {
                         restored = false
                     }
                 }
-                val m = Mpris(player, scope, Dispatchers.Main, onRaise = { bringToFront(window) }, onQuit = ::quit)
+                val m = Mpris(player, scope, Dispatchers.Main, onRaise = { bringToFront(window) }, onQuit = ::quit, onOpen = { openFiles(listOf(it)) })
                 withContext(Dispatchers.IO) { m.start() }
                 mpris[0] = m
                 var tick = 0

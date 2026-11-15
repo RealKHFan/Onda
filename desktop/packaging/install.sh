@@ -13,7 +13,8 @@ cat > "$HOME/.local/share/applications/io.github.realkhfan.Onda.desktop" <<DESKT
 Type=Application
 Name=Onda
 Comment=Music player without an account or tracking
-Exec=$dest/bin/Onda
+Exec=$dest/bin/Onda %F
+MimeType=audio/mpeg;audio/flac;audio/x-flac;audio/ogg;audio/opus;audio/x-vorbis+ogg;audio/wav;audio/x-wav;audio/mp4;audio/x-m4a;audio/aac;
 Icon=io.github.realkhfan.Onda
 Categories=AudioVideo;Audio;Player;
 StartupWMClass=io-github-realkhfan-onda-desktop-MainKt

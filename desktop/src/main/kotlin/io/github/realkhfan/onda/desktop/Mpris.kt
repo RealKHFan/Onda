@@ -43,6 +43,8 @@ class Mpris(
     private val ui: CoroutineDispatcher,
     private val onRaise: () -> Unit,
     private val onQuit: () -> Unit,
+    /** "Open with Onda" from the file manager, through a second start: plays the file. */
+    private val onOpen: (String) -> Unit = {},
 ) : MprisRoot, MprisPlayer, Properties {
 
     private var conn: DBusConnection? = null
@@ -84,7 +86,7 @@ class Mpris(
     override fun Play() = onUi { player.resume() }
     override fun Seek(offset: Long) = onUi { player.seek(player.positionMs + offset / 1000) }
     override fun SetPosition(trackId: DBusPath, position: Long) = onUi { player.seek(position / 1000) }
-    override fun OpenUri(uri: String) {}
+    override fun OpenUri(uri: String) { if (uri.startsWith("file:")) scope.launch(ui) { onOpen(uri) } }
 
     @Suppress("UNCHECKED_CAST")
     override fun <A : Any?> Get(iface: String, prop: String): A = GetAll(iface)[prop] as A // typed, so maps (Metadata) travel too
@@ -106,7 +108,7 @@ class Mpris(
         ROOT -> mapOf(
             "CanQuit" to Variant(true), "CanRaise" to Variant(true), "HasTrackList" to Variant(false),
             "Identity" to Variant("Onda"), "DesktopEntry" to Variant("io.github.realkhfan.Onda"),
-            "SupportedUriSchemes" to Variant(arrayOf("file"), "as"), "SupportedMimeTypes" to Variant(arrayOf("audio/mpeg"), "as"),
+            "SupportedUriSchemes" to Variant(arrayOf("file"), "as"), "SupportedMimeTypes" to Variant(arrayOf("audio/mpeg", "audio/flac", "audio/ogg", "audio/opus", "audio/wav", "audio/mp4", "audio/aac"), "as"),
         )
         PLAYER -> onUi { playerProps() }
         else -> emptyMap()

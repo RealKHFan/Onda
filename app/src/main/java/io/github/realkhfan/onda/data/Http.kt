@@ -3,7 +3,7 @@ package io.github.realkhfan.onda.data
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
-import java.net.URL
+import java.net.URI
 import java.net.URLEncoder
 
 /** Plain GETs for the catalog APIs. Call from Dispatchers.IO. */
@@ -13,7 +13,7 @@ internal object Http {
 
     /** Like [get], but "not found" (404) is null instead of an error. */
     fun getOrNull(url: String, readTimeoutMs: Int = 8000, agent: String = "Onda"): String? {
-        val c = URL(url).openConnection() as HttpURLConnection
+        val c = URI(url).toURL().openConnection() as HttpURLConnection
         c.connectTimeout = 8000
         c.readTimeout = readTimeoutMs
         c.setRequestProperty("User-Agent", agent) // the default agent would send the phone model

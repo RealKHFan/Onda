@@ -178,6 +178,7 @@ class AppState(private val scope: CoroutineScope) {
         TOP("Most played", "Your 100 most played songs"),
         NEVER("Never played", "Songs in your library you haven't played yet"),
         FORGOTTEN("Forgotten favourites", "Liked songs you haven't played in two months"),
+        REPEAT("On repeat", "What you've played most in the last 30 days"),
     }
 
     fun smart(kind: Smart): List<Track> {
@@ -187,10 +188,49 @@ class AppState(private val scope: CoroutineScope) {
             Smart.ADDED -> library.filter { it.id in addedAt }.sortedByDescending { addedAt[it.id] }.take(100)
             Smart.TOP -> library.filter { (counts[it.id] ?: 0) > 0 }.sortedByDescending { counts[it.id] }.take(100)
             Smart.NEVER -> library.filter { it.id !in counts }.sortedBy { it.title.lowercase() }
+            Smart.REPEAT -> (System.currentTimeMillis() - 30 * 86_400_000L).let { since ->
+                plays.filter { it.atMs >= since }.groupingBy { it.key }.eachCount().entries.filter { it.value >= 2 }
+                    .sortedByDescending { it.value }.take(30).mapNotNull { trackFor(it.key) }
+            }
             Smart.FORGOTTEN -> (System.currentTimeMillis() - 60 * 86_400_000L).let { since ->
                 collection.liked.mapNotNull(::trackFor).filter { (last[it.id] ?: 0) < since }.sortedBy { last[it.id] ?: 0 }
             }
         }
+    }
+
+    fun setWindow(box: List<Int>, maximized: Boolean) { if (box != settings.window || maximized != settings.maximized) update(settings.copy(window = box, maximized = maximized)) }
+
+    /** Files from outside your library (opened from the file manager, dropped on the window) as songs to play. */
+    fun itemsForFiles(uris: List<String>): List<Player.Item> = uris.mapNotNull { u ->
+        byId[u]?.let(::item) ?: runCatching { java.io.File(java.net.URI(u)) }.getOrNull()?.takeIf(Scanner::isAudio)?.let { item(Scanner.read(it, it.parentFile?.name ?: "")) }
+    }
+
+    /** Your most played artists of the last three months (names), for the top mixes. */
+    fun topArtists(n: Int): List<String> = (System.currentTimeMillis() - 90 * 86_400_000L).let { since ->
+        plays.filter { it.atMs >= since && !isBlocked(it.artist) }.groupingBy { it.artist }.eachCount().entries.sortedByDescending { it.value }.take(n).map { it.key }
+    }
+
+    /** An artist's mix: their songs in your library mixed with songs of similar artists (for this session). */
+    private val artistMixes = HashMap<String, List<Track>>()
+    suspend fun artistMix(name: String): List<Track> {
+        artistMixes[name]?.let { return it }
+        val own = library.filter { Match.norm(it.artist) == Match.norm(name) }.shuffled().take(10)
+        val ownKeys = own.map { Match.norm(it.artist) + "|" + Match.norm(it.title) }.toSet()
+        val similar = runCatching { Discover.similar(listOf(name), settings.listenBrainz, skip = { notWanted(it) || Match.norm(it.artist) + "|" + Match.norm(it.title) in ownKeys }, n = 20) }
+            .getOrDefault(emptyList()).onEach { seen[it.key] = it }.map { own(it) ?: asTrack(it) }
+        val mixed = ArrayList<Track>()
+        val a = own.iterator(); val b = similar.iterator()
+        while (a.hasNext() || b.hasNext()) { if (a.hasNext()) mixed += a.next(); repeat(2) { if (b.hasNext()) mixed += b.next() } }
+        return mixed.distinctBy { it.id }.also { artistMixes[name] = it }
+    }
+
+    /** New releases as songs: the tracks of the newest releases of your artists (for this session). */
+    private var radar: List<RemoteTrack>? = null
+    suspend fun releaseRadar(): List<RemoteTrack> {
+        radar?.let { return it }
+        val tracks = releases.items.take(12).flatMap { a -> runCatching { Deezer.album(a.id).second }.getOrDefault(emptyList()).take(3) }
+            .filterNot(::notWanted).onEach { seen[it.key] = it }
+        return tracks.also { if (it.isNotEmpty()) radar = it }
     }
 
     fun setGapless(on: Boolean) = update(settings.copy(gapless = on))

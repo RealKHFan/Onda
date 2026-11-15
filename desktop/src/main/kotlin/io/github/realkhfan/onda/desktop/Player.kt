@@ -63,6 +63,8 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     var gapless = true
     /** Set on GStreamer's thread when the next song was queued up gaplessly; the switch shows once it plays. */
     @Volatile private var gaplessNext = -1
+    /** The song handed over, so a queue edit in the meantime (an index moving) can't show the wrong song. */
+    @Volatile private var gaplessItem: Item? = null
 
     /** Long songs (DJ mixes) pick up where you left them: [resumeAt] gives the spot, [onLeave] hears where you stopped. */
     var resumeAt: (Item) -> Long = { 0 }
@@ -94,7 +96,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         bin.bus.connect(Bus.EOS { _ -> scope.launch { gaplessNext = -1; next(auto = true) } })
         // Called on GStreamer's thread shortly before the end: the next file is handed over now, so there's no gap.
         bin.connect(PlayBin.ABOUT_TO_FINISH { _ ->
-            gaplessTarget()?.let { i -> gaplessNext = i; bin.set("uri", queue[i].uri) }
+            gaplessTarget()?.let { i -> gaplessItem = queue[i]; gaplessNext = i; bin.set("uri", queue[i].uri) }
         })
         bin.bus.connect(Bus.ERROR { _, _, message ->
             scope.launch {
@@ -105,7 +107,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         scope.launch {
             while (true) {
                 delay(if (gaplessNext >= 0) 50 else 400)
-                if (gaplessNext >= 0 && bin.get("current-uri") == queue.getOrNull(gaplessNext)?.uri) switchGapless()
+                if (gaplessNext >= 0 && bin.get("current-uri") == gaplessItem?.uri) switchGapless()
                 if (sleepAt in 1..System.currentTimeMillis()) { sleepAt = 0; pause(); applyVolume() } // back to full for next time
                 else if (sleepAt > 0 && sleepAt - System.currentTimeMillis() < 30_000) applyVolume()
                 if (index < 0) continue
@@ -300,9 +302,12 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     /** The handed-over song is playing now: show it, and do what starting a song does. */
     private fun switchGapless() {
         leaving()
-        index = gaplessNext
+        val handed = gaplessItem
+        val at = handed?.let { h -> queue.indexOfFirst { it === h } } ?: -1
+        if (at < 0) { gaplessNext = -1; gaplessItem = null; return next() } // removed from the queue meanwhile: play what's next instead
+        index = at
         playingItem = current
-        gaplessNext = -1
+        gaplessNext = -1; gaplessItem = null
         val item = current ?: return
         error = null; fullFrom = null
         durationMs = item.durationMs; positionMs = 0
