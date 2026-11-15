@@ -95,7 +95,8 @@ object Discover {
     }
 
     /** A desktop notification (KDE, GNOME…); silently nothing if the system has no notify-send. */
-    fun notify(title: String, body: String) {
-        runCatching { ProcessBuilder("notify-send", "-a", "Onda", title, body).start() }
+    /** [icon]: an image file (a cover) or an icon name. */
+    fun notify(title: String, body: String, icon: String? = null) {
+        runCatching { ProcessBuilder(listOfNotNull("notify-send", "-a", "Onda", icon?.let { "-i" }, icon, title, body)).start() }
     }
 }

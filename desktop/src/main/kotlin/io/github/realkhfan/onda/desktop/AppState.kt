@@ -47,7 +47,8 @@ class AppState(private val scope: CoroutineScope) {
     var mixes by mutableStateOf(Store.mixes()); private set
     var building by mutableStateOf(setOf<Discovery.Kind>()); private set
     var releases by mutableStateOf(Store.releases()); private set
-    private var plays = Store.plays()
+    /** Your listening history (this PC only): for mixes, Most played and Your stats. */
+    var plays by mutableStateOf(Store.plays()); private set
 
     /** Community list of AI-generated "artists" (CennoxX/spotify-ai-blocker, MIT), shipped with the app. */
     private val aiList: Set<String> = runCatching {
@@ -109,6 +110,11 @@ class AppState(private val scope: CoroutineScope) {
     fun setApple(on: Boolean) = update(settings.copy(apple = on))
     fun setListenBrainz(on: Boolean) = update(settings.copy(listenBrainz = on))
     fun setBackupDir(dir: String?) = update(settings.copy(backupDir = dir))
+    fun setEqualizer(gains: List<Double>, preset: String) = update(settings.copy(eq = gains, eqPreset = preset))
+    fun setSoftware(on: Boolean) = update(settings.copy(software = on))
+    fun setSongNotify(on: Boolean) = update(settings.copy(songNotify = on))
+    fun setZoom(z: Float) = update(settings.copy(zoom = (Math.round(z * 10) / 10f).coerceIn(0.7f, 1.6f)))
+
     fun setNormalize(on: Boolean) { update(settings.copy(normalize = on)); if (on) measureLoudness() else Loudness.stop() }
 
     /** Measures the loudness of library songs not measured yet (files directly, server songs through their download link). */
@@ -171,6 +177,24 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     /** On the last song: add about 10 similar songs (your own copies in full, others as previews or free full copies). */
+    /** Song radio: songs like this artist's, for after the song you started it from. */
+    suspend fun radio(artist: String, skipKey: String): List<Player.Item> =
+        runCatching { Discover.similar(listOf(artist), settings.listenBrainz, skip = { it.key == skipKey || notWanted(it) }, n = 25) }
+            .getOrDefault(emptyList()).mapNotNull(::item)
+
+    /** How often each song was played (your own history, on this PC). */
+    val playCounts by derivedStateOf { plays.groupingBy { it.key }.eachCount() }
+
+    /** The mini player window is open. */
+    var mini by mutableStateOf(false)
+
+    /** A playlist file (M3U) becomes a playlist; returns its name and how many songs were found. */
+    fun importPlaylistFile(file: java.io.File): Pair<String, Int> {
+        val (name, ids) = M3u.read(file, library)
+        if (ids.isNotEmpty()) createPlaylist(name, ids)
+        return name to ids.size
+    }
+
     fun extend(player: Player) {
         if (!settings.autoplay) return
         val inQueue = player.queue.map { it.id }.toSet()
@@ -195,7 +219,8 @@ class AppState(private val scope: CoroutineScope) {
             z.putNextEntry(java.util.zip.ZipEntry("settings.json"))
             z.write(org.json.JSONObject().put("kbps", s.kbps).put("volume", s.volume).put("autoplay", s.autoplay)
                 .put("background", s.background).put("releaseAlerts", s.releaseAlerts).put("apple", s.apple)
-                .put("listenBrainz", s.listenBrainz).put("normalize", s.normalize).toString().toByteArray())
+                .put("listenBrainz", s.listenBrainz).put("normalize", s.normalize)
+                .put("eq", org.json.JSONArray(s.eq)).put("eqPreset", s.eqPreset).put("songNotify", s.songNotify).put("zoom", s.zoom.toDouble()).toString().toByteArray())
             z.closeEntry()
         }
     }
@@ -229,7 +254,9 @@ class AppState(private val scope: CoroutineScope) {
                 update(settings.copy(kbps = o.optInt("kbps", settings.kbps), volume = o.optDouble("volume", settings.volume),
                     autoplay = o.optBoolean("autoplay", settings.autoplay), background = o.optBoolean("background", settings.background),
                     releaseAlerts = o.optBoolean("releaseAlerts", settings.releaseAlerts), apple = o.optBoolean("apple", settings.apple),
-                    listenBrainz = o.optBoolean("listenBrainz", settings.listenBrainz), normalize = o.optBoolean("normalize", settings.normalize)))
+                    listenBrainz = o.optBoolean("listenBrainz", settings.listenBrainz), normalize = o.optBoolean("normalize", settings.normalize),
+                    eq = o.optJSONArray("eq")?.let { a -> List(10) { a.optDouble(it, 0.0) } } ?: settings.eq, eqPreset = o.optString("eqPreset", settings.eqPreset),
+                    songNotify = o.optBoolean("songNotify", settings.songNotify), zoom = o.optDouble("zoom", settings.zoom.toDouble()).toFloat()))
             } else {
                 java.io.File(Store.data, "$name.tmp").apply { writeText(text) }.renameTo(java.io.File(Store.data, name))
             }

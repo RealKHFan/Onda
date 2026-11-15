@@ -34,6 +34,10 @@ object Store {
         val apple: Boolean = false, val listenBrainz: Boolean = true, val backupDir: String? = null,
         /** Every song at about the same loudness (measured once per song). */
         val normalize: Boolean = true,
+        /** Equalizer gains (10 bands, dB) and the preset they came from. */
+        val eq: List<Double> = List(10) { 0.0 }, val eqPreset: String = "Flat",
+        /** [software]: draw without the graphics card (when a game holds it); [songNotify]: a notification per song; [zoom]: UI size. */
+        val software: Boolean = false, val songNotify: Boolean = false, val zoom: Float = 1f,
     )
 
     fun settings(): Settings = runCatching {
@@ -47,6 +51,9 @@ object Store {
             releaseAlerts = o.optBoolean("releaseAlerts", true),
             apple = o.optBoolean("apple", false), listenBrainz = o.optBoolean("listenBrainz", true),
             backupDir = o.optString("backupDir").ifBlank { null }, normalize = o.optBoolean("normalize", true),
+            eq = o.optJSONArray("eq")?.let { a -> List(10) { a.optDouble(it, 0.0) } } ?: List(10) { 0.0 }, eqPreset = o.optString("eqPreset", "Flat"),
+            software = o.optBoolean("software"), songNotify = o.optBoolean("songNotify"),
+            zoom = o.optDouble("zoom", 1.0).toFloat().coerceIn(0.7f, 1.6f),
         )
     }.getOrDefault(Settings())
 
@@ -54,6 +61,7 @@ object Store {
         .put("folders", JSONArray(s.folders)).put("kbps", s.kbps).put("volume", s.volume)
         .put("autoplay", s.autoplay).put("background", s.background).put("releaseAlerts", s.releaseAlerts)
         .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir).put("normalize", s.normalize)
+        .put("eq", org.json.JSONArray(s.eq)).put("eqPreset", s.eqPreset).put("software", s.software).put("songNotify", s.songNotify).put("zoom", s.zoom.toDouble())
         .put("server", s.server?.let { JSONObject().put("url", it.url).put("user", it.user).put("salt", it.salt).put("token", it.token) })
         .toString())
 

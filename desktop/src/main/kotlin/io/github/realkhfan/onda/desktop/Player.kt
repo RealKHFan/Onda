@@ -59,11 +59,18 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     private var order by mutableStateOf<List<Int>>(emptyList())
 
+    /** Sleep timer: pause at this time (ms since epoch), or 0. */
+    var sleepAt by mutableLongStateOf(0L)
+    /** Sleep timer: stop when the current song ends. */
+    var sleepAfterSong by mutableStateOf(false)
+
     /** Called when the last song starts (repeat off): "similar songs when the queue ends" adds more. */
     var onLastSong: (() -> Unit)? = null
     private var loadToken = 0
     private var pendingSeek = -1L
     private val bin: PlayBin
+    /** Null when the system has no equalizer element (gst-plugins-good). */
+    private val eq: org.freedesktop.gstreamer.Element?
 
     val current: Item? get() = queue.getOrNull(index)
 
@@ -73,6 +80,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         bin.setVideoSink(ElementFactory.make("fakesink", "novideo"))
         // Tests: a silent sink that still keeps real time, like speakers do.
         if (audioSink != null) bin.setAudioSink(ElementFactory.make(audioSink, "audio").also { it.set("sync", true) })
+        eq = runCatching { ElementFactory.make("equalizer-10bands", "eq") }.getOrNull()?.also { bin.set("audio-filter", it) }
         bin.bus.connect(Bus.EOS { _ -> scope.launch { next(auto = true) } })
         bin.bus.connect(Bus.ERROR { _, _, message ->
             scope.launch {
@@ -83,6 +91,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         scope.launch {
             while (true) {
                 delay(400)
+                if (sleepAt in 1..System.currentTimeMillis()) { sleepAt = 0; pause() }
                 if (index < 0) continue
                 val d = bin.queryDuration(TimeUnit.MILLISECONDS)
                 if (d > 0) durationMs = d
@@ -134,6 +143,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     fun next(auto: Boolean = false, afterError: Boolean = false) {
         if (index < 0) return
+        if (auto && sleepAfterSong) { sleepAfterSong = false; playing = false } // the next song waits, paused
         if (auto && repeat == 2 && !afterError) return load()
         val pos = order.indexOf(index)
         when {
@@ -252,6 +262,14 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     /** What GStreamer gets (tests). */
     internal val outputVolume: Double get() = bin.volume
+
+    /** 10 bands (31 Hz to 16 kHz), each -12..+12 dB. */
+    fun equalize(gains: List<Double>) {
+        val e = eq ?: return
+        gains.take(10).forEachIndexed { i, g -> e.set("band$i", g.coerceIn(-12.0, 12.0)) }
+    }
+
+    val hasEqualizer get() = eq != null
 
     fun close() { bin.stop(); bin.dispose() }
 }

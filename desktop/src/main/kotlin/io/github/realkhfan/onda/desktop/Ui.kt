@@ -129,6 +129,24 @@ import io.github.realkhfan.onda.data.FreeCatalogs
 import io.github.realkhfan.onda.data.Lrclib
 import io.github.realkhfan.onda.data.Itunes
 import io.github.realkhfan.onda.data.Matcher
+import androidx.compose.material.icons.rounded.OpenInFull
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isShiftPressed
+import kotlinx.coroutines.withContext
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.onClick
+import androidx.compose.material.icons.automirrored.rounded.Sort
+import androidx.compose.material.icons.rounded.PictureInPictureAlt
+import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
@@ -179,6 +197,7 @@ private sealed interface View {
     data class Mix(val kind: Discovery.Kind) : View
     data object Match : View
     data object Rename : View
+    data object Stats : View
 }
 
 private enum class Panel { NONE, QUEUE, LYRICS }
@@ -234,6 +253,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         View.Albums -> Albums(state, { a -> push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }) { push(View.CatalogAlbum(it)) }
                         View.Artists -> Artists(state, { a -> push(View.LocalList(a.name, "Artist", a.artUri, a.tracks)) }) { push(View.CatalogArtist(it)) }
                         is View.Mix -> MixPage(ctx, v.kind, back)
+                        View.Stats -> StatsPage(ctx)
                         View.Search -> Search(ctx)
                         View.Settings -> SettingsPage(ctx)
                         View.Match -> MatchPage(ctx, back)
@@ -248,6 +268,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                                     IconButton(onClick = { naming = Naming.Rename(pl.id, pl.name) }) { Icon(Icons.Rounded.Edit, "Rename playlist", tint = TextDim) }
                                     IconButton(onClick = { naming = Naming.Delete(pl.id, pl.name) }) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) }
                                     DownloadAll(ctx, state.playlistTracks(pl.id))
+                                    IconButton(onClick = { ctx.exportM3u(pl.name, state.playlistTracks(pl.id)) }) { Icon(Icons.Rounded.SaveAlt, "Save as playlist file (M3U)", tint = TextDim) }
                                 }
                             }
                         }
@@ -287,7 +308,35 @@ private class Ctx(
     val toast: (String) -> Unit,
     val openArtistByName: (String) -> Unit,
 ) {
+    /** Plays the song now and fills the queue with similar songs as soon as they're found. */
+    fun radio(first: Player.Item, artist: String) {
+        val p = player ?: return
+        p.play(listOf(first), 0)
+        toast("Song radio: finding similar songs…")
+        state.launch {
+            val more = state.radio(artist, first.id)
+            if (more.isEmpty()) toast("Couldn't find similar songs right now.")
+            else if (p.queue.firstOrNull()?.id == first.id && p.queue.size == 1) { p.append(more); toast("Song radio: ${more.size} songs added") }
+        }
+    }
+
     fun download(items: List<Downloads.Item>) = toast(Downloads.start(state, items) ?: "Downloading to “${Downloads.FOLDER}” in your music folder")
+    /** Saves a playlist file other players open too. */
+    fun exportM3u(name: String, tracks: List<Track>) {
+        state.launch {
+            val safe = name.replace(Regex("""[/\\:*?"<>|]"""), "_").ifBlank { "playlist" }
+            when (val r = FolderPicker.file(true, System.getProperty("user.home") + "/Music/$safe.m3u8", "Save playlist file")) {
+                is FolderPicker.Result.Picked -> {
+                    val f = java.io.File(r.path).let { if (it.extension.lowercase() in setOf("m3u", "m3u8")) it else java.io.File(it.path + ".m3u8") }
+                    val (files, other) = withContext(kotlinx.coroutines.Dispatchers.IO) { M3u.write(name, tracks, f) }
+                    toast("Saved ${f.name}: $files songs" + if (other > 0) " ($other aren't files on this PC and are listed by name only)" else "")
+                }
+                FolderPicker.Result.NoPicker -> toast("No file picker found on this system.")
+                FolderPicker.Result.Cancelled -> {}
+            }
+        }
+    }
+
     fun copy(text: String, what: String) {
         java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(text), null)
         toast("$what copied")
@@ -301,7 +350,7 @@ private class Ctx(
 }
 
 private sealed interface Naming {
-    data class New(val first: String? = null) : Naming
+    data class New(val first: String? = null, val more: List<String> = emptyList()) : Naming
     data class Rename(val id: String, val name: String) : Naming
     data class Delete(val id: String, val name: String) : Naming
     data class Edit(val t: Track) : Naming
@@ -340,7 +389,7 @@ private fun NamingDialog(state: AppState, n: Naming, close: () -> Unit) {
         confirmButton = {
             TextButton(onClick = {
                 when (n) {
-                    is Naming.New -> state.createPlaylist(name.trim(), listOfNotNull(n.first))
+                    is Naming.New -> state.createPlaylist(name.trim(), listOfNotNull(n.first) + n.more)
                     is Naming.Rename -> state.renamePlaylist(n.id, name.trim())
                     else -> Unit
                 }
@@ -379,12 +428,22 @@ private fun Header(title: String, subtitle: String, art: String? = null, round: 
 @Composable
 private fun Section(text: String) = Text(text, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(24.dp, 16.dp, 24.dp, 6.dp))
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun SongRow(
     n: Int?, title: String, artist: String, album: String, durMs: Long, art: String?, playing: Boolean,
-    note: String? = null, trailing: (@Composable () -> Unit)? = null, onClick: () -> Unit,
+    note: String? = null, trailing: (@Composable () -> Unit)? = null, selected: Boolean = false,
+    onCtrlClick: (() -> Unit)? = null, onShiftClick: (() -> Unit)? = null, onClick: () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 24.dp, end = 12.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    val hover = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val hovered by hover.collectIsHoveredAsState()
+    // Ctrl+click and Shift+click select songs (several at once for the right-click menu); a plain click plays.
+    Row(Modifier.fillMaxWidth().background(if (selected) Accent.copy(alpha = 0.22f) else if (hovered) Raised.copy(alpha = 0.6f) else Color.Transparent)
+        .hoverable(hover)
+        .onClick(keyboardModifiers = { isCtrlPressed }) { (onCtrlClick ?: onClick)() }
+        .onClick(keyboardModifiers = { isShiftPressed && !isCtrlPressed }) { (onShiftClick ?: onClick)() }
+        .onClick(keyboardModifiers = { !isCtrlPressed && !isShiftPressed }, onClick = onClick)
+        .padding(start = 24.dp, end = 12.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         if (n != null) Text("$n", color = TextDim, modifier = Modifier.width(36.dp))
         Art(art, 40)
         Spacer(Modifier.width(12.dp))
@@ -398,16 +457,38 @@ private fun SongRow(
     }
 }
 
-/** A song from your library, with its right-click menu. */
+/** A song from your library, with its right-click menu (for all selected songs when several are selected). */
 @Composable
-private fun TrackRow(ctx: Ctx, list: List<Track>, i: Int, numbered: Boolean, inPlaylist: String? = null) {
+private fun TrackRow(
+    ctx: Ctx, list: List<Track>, i: Int, numbered: Boolean, inPlaylist: String? = null,
+    selected: Set<String> = emptySet(), onSelect: ((Int, Boolean, Boolean) -> Unit)? = null,
+) {
     val t = list[i]
     val s = ctx.state
     ContextMenuArea(items = {
-        buildList {
+        val many = list.filter { it.id in selected }.takeIf { t.id in selected && it.size > 1 }
+        if (many != null) buildList {
+            val n = many.size
+            ctx.player?.let { p ->
+                add(ContextMenuItem("Play $n songs") { ctx.play(many, 0) })
+                add(ContextMenuItem("Play next") { many.reversed().forEach { p.playNext(s.item(it)) } })
+                add(ContextMenuItem("Add to queue") { many.forEach { p.enqueue(s.item(it)) } })
+            }
+            val canLike = many.filter { s.canSave(it.id) }
+            if (canLike.any { !s.isLiked(it.id) }) add(ContextMenuItem("Add $n to Liked Songs") { canLike.filterNot { s.isLiked(it.id) }.forEach { s.toggleLike(it.id) } })
+            else if (canLike.isNotEmpty()) add(ContextMenuItem("Remove $n from Liked Songs") { canLike.forEach { s.toggleLike(it.id) } })
+            s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add $n to “${pl.name}”") { many.forEach { s.addToPlaylist(pl.id, it.id) } }) }
+            add(ContextMenuItem("Add $n to new playlist…") { ctx.dialog(Naming.New(null, many.map { it.id })) })
+            if (inPlaylist != null) add(ContextMenuItem("Remove $n from this playlist") { many.forEach { s.removeFromPlaylist(inPlaylist, it.id) } })
+            many.mapNotNull { Downloads.forTrack(it, s.settings.server) }.takeIf { it.isNotEmpty() }?.let { d -> add(ContextMenuItem("Download ${d.size}") { ctx.download(d) }) }
+            val editable = many.filterNot(s::isPreviewRow)
+            if (editable.any { s.meta.containsKey(it.id) }) add(ContextMenuItem("Restore original tags") { editable.forEach { Overrides.restore(it.id) }; ctx.toast("Original tags restored") })
+            if (editable.isNotEmpty()) add(ContextMenuItem("Edit details of ${editable.size} songs…") { ctx.dialog(Naming.EditMany(editable)) })
+        } else buildList {
             ctx.player?.let { p ->
                 add(ContextMenuItem("Play next") { p.playNext(s.item(t)) })
                 add(ContextMenuItem("Add to queue") { p.enqueue(s.item(t)) })
+                add(ContextMenuItem("Start radio") { ctx.radio(s.item(t), t.artist) })
             }
             add(ContextMenuItem(if (s.isLiked(t.id)) "Remove from Liked Songs" else "Add to Liked Songs") { s.toggleLike(t.id) })
             s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.addToPlaylist(pl.id, t.id) }) }
@@ -422,13 +503,17 @@ private fun TrackRow(ctx: Ctx, list: List<Track>, i: Int, numbered: Boolean, inP
             Downloads.forTrack(t, s.settings.server)?.let { d -> add(ContextMenuItem("Download") { ctx.download(listOf(d)) }) }
             val r = s.remoteFor(t)?.takeIf { it.source == io.github.realkhfan.onda.core.Source.DEEZER || it.source == io.github.realkhfan.onda.core.Source.ITUNES }
             add(ContextMenuItem(if (r != null) "Copy link" else "Copy song name") { ctx.copy(shareText(t.title, t.artist, r), if (r != null) "Link" else "Song name") })
-            if (!s.isPreviewRow(t)) add(ContextMenuItem("Edit details…") { ctx.dialog(Naming.Edit(t)) })
             if (s.meta.containsKey(t.id)) add(ContextMenuItem("Restore original tags") { Overrides.restore(t.id); ctx.toast("Original tags restored") })
+            if (!s.isPreviewRow(t)) add(ContextMenuItem("Edit details…") { ctx.dialog(Naming.Edit(t)) })
         }
     }) {
         SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
-            note = if (s.isPreviewRow(t)) "Preview" else null,
-            trailing = { if (s.isLiked(t.id)) Icon(Icons.Rounded.Favorite, "Liked", tint = Accent, modifier = Modifier.padding(12.dp)) }) { ctx.play(list, i) }
+            note = if (s.isPreviewRow(t)) "Preview" else null, selected = t.id in selected,
+            onCtrlClick = onSelect?.let { f -> { f(i, true, false) } }, onShiftClick = onSelect?.let { f -> { f(i, false, true) } },
+            trailing = { if (s.isLiked(t.id)) Icon(Icons.Rounded.Favorite, "Liked", tint = Accent, modifier = Modifier.padding(12.dp)) }) {
+            onSelect?.invoke(i, false, false)
+            ctx.play(list, i)
+        }
     }
 }
 
@@ -464,6 +549,7 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
             add(ContextMenuItem(if (s.isHidden(r.key)) "Suggest this song again" else "Not interested in this song") { s.toggleHidden(r.key) })
             add(ContextMenuItem(if (s.isBlocked(r.artist)) "Suggest ${r.artist} again" else "Don't suggest ${r.artist}") { s.toggleBlocked(r.artist) })
             add(ContextMenuItem("Go to artist") { ctx.openArtistByName(r.artist) })
+            ctx.state.item(r)?.let { item -> if (ctx.player != null) add(ContextMenuItem("Start radio") { ctx.radio(item, r.artist) }) }
             Downloads.forRemote(r)?.let { d -> add(ContextMenuItem("Download") { ctx.download(listOf(d)) }) }
             val linked = r.source == io.github.realkhfan.onda.core.Source.DEEZER || r.source == io.github.realkhfan.onda.core.Source.ITUNES
             add(ContextMenuItem(if (linked) "Copy link" else "Copy song name") { ctx.copy(shareText(r.title, r.artist, r.takeIf { linked }), if (linked) "Link" else "Song name") })
@@ -506,6 +592,7 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, newPlaylist:
         }
         Entry(View.Home, "Home", Icons.Rounded.Home, big = true)
         Entry(View.Search, "Search", Icons.Rounded.Search, big = true)
+        Entry(View.Stats, "Your stats", Icons.Rounded.BarChart)
         Row(Modifier.padding(top = 18.dp, start = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Your library", color = TextDim, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             IconButton(onClick = newPlaylist, Modifier.size(32.dp)) { Icon(Icons.Rounded.Add, "New playlist", tint = TextDim) }
@@ -605,26 +692,62 @@ private fun HomePage(ctx: Ctx, open: (View) -> Unit) {
 
 /* ---------- Pages ---------- */
 
+/** How a song list is ordered; [CUSTOM] is the list's own order (a playlist's, an album's). */
+enum class Sort(val label: String) { CUSTOM("Custom order"), TITLE("Title"), ARTIST("Artist"), ALBUM("Album"), PLAYS("Most played"), LENGTH("Length") }
+
+internal fun sorted(tracks: List<Track>, sort: Sort, plays: Map<String, Int>): List<Track> = when (sort) {
+    Sort.CUSTOM -> tracks
+    Sort.TITLE -> tracks.sortedBy { it.title.lowercase() }
+    Sort.ARTIST -> tracks.sortedWith(compareBy({ it.artist.lowercase() }, { it.album.lowercase() }, { it.trackNo }))
+    Sort.ALBUM -> tracks.sortedWith(compareBy({ it.album.lowercase() }, { it.trackNo }))
+    Sort.PLAYS -> tracks.sortedByDescending { plays[it.id] ?: 0 }
+    Sort.LENGTH -> tracks.sortedBy { it.durationMs }
+}
+
+/** Ctrl+click toggles a song, Shift+click selects from the last clicked one; ids, so a re-sort keeps the selection. */
+internal fun select(selected: Set<String>, list: List<Track>, anchor: Int, i: Int, ctrl: Boolean, shift: Boolean): Set<String> = when {
+    ctrl -> if (list[i].id in selected) selected - list[i].id else selected + list[i].id
+    shift && anchor in list.indices -> selected + list.subList(minOf(anchor, i), maxOf(anchor, i) + 1).map { it.id }
+    else -> emptySet()
+}
+
 @Composable
 private fun SongList(
     ctx: Ctx, title: String, subtitle: String, tracks: List<Track>, art: String? = null, back: (() -> Unit)? = null,
     inPlaylist: String? = null, onMove: ((Int, Int) -> Unit)? = null, actions: @Composable () -> Unit = {},
 ) {
     val reorder = remember { ReorderState() }
+    var sort by remember(title) { mutableStateOf(Sort.CUSTOM) }
+    var selected by remember(title) { mutableStateOf(emptySet<String>()) }
+    var anchor by remember(title) { mutableIntStateOf(-1) }
+    val shown = remember(tracks, sort, ctx.state.playCounts) { sorted(tracks, sort, ctx.state.playCounts) }
+    val onSelect = { i: Int, ctrl: Boolean, shift: Boolean ->
+        selected = select(selected, shown, anchor, i, ctrl, shift)
+        if (!shift) anchor = i
+    }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            Header(title, "$subtitle · ${tracks.size} songs", art, back = back) {
+            Header(title, "$subtitle · ${tracks.size} songs" + if (selected.size > 1) " · ${selected.size} selected" else "", art, back = back) {
                 actions()
                 Spacer(Modifier.width(8.dp))
-                if (tracks.isNotEmpty()) Button(onClick = { ctx.play(tracks, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
+                var open by remember { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { open = true }) { Icon(Icons.AutoMirrored.Rounded.Sort, null, tint = TextDim); Spacer(Modifier.width(6.dp)); Text(sort.label, color = TextDim) }
+                    DropdownMenu(open, { open = false }, modifier = Modifier.background(Color(0xFF2E2E38))) {
+                        Sort.entries.forEach { o -> DropdownMenuItem({ Text(o.label, color = if (o == sort) Accent else TextMain) }, { sort = o; open = false }) }
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                if (tracks.isNotEmpty()) Button(onClick = { ctx.play(shown, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
             }
         }
         if (tracks.isEmpty()) item { Note("Nothing here yet. Right-click a song to add it.") }
-        items(tracks.size) { i ->
-            if (onMove == null) TrackRow(ctx, tracks, i, numbered = true, inPlaylist = inPlaylist)
-            else Row(Modifier.reorderRow(reorder, i, tracks.size), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { TrackRow(ctx, tracks, i, numbered = true, inPlaylist = inPlaylist) }
-                DragHandle(reorder, i, tracks.size, tracks[i].title, onMove)
+        items(shown.size, key = { shown[it].id }) { i ->
+            // Dragging moves songs only in the list's own order.
+            if (onMove == null || sort != Sort.CUSTOM) TrackRow(ctx, shown, i, numbered = true, inPlaylist = inPlaylist, selected = selected, onSelect = onSelect)
+            else Row(Modifier.reorderRow(reorder, i, shown.size), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { TrackRow(ctx, shown, i, numbered = true, inPlaylist = inPlaylist, selected = selected, onSelect = onSelect) }
+                DragHandle(reorder, i, shown.size, shown[i].title, onMove)
             }
         }
     }
@@ -968,6 +1091,18 @@ private fun SettingsPage(ctx: Ctx) {
                             }
                         }
                     }) { Text("Choose Spotify export") }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            when (val r = FolderPicker.file(false, System.getProperty("user.home") + "/Music", "Playlist file (M3U)")) {
+                                is FolderPicker.Result.Picked -> {
+                                    val (name, n) = withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { state.importPlaylistFile(File(r.path)) }.getOrDefault("" to -1) }
+                                    ctx.toast(when (n) { -1 -> "Couldn't read that file."; 0 -> "None of its songs are in your library."; else -> "Playlist “$name”: $n songs" })
+                                }
+                                FolderPicker.Result.NoPicker -> ctx.toast("No file picker found on this system.")
+                                FolderPicker.Result.Cancelled -> {}
+                            }
+                        }
+                    }) { Text("Import playlist file (M3U)") }
                 }
             }
         }
@@ -985,7 +1120,25 @@ private fun SettingsPage(ctx: Ctx) {
                 } else if (dl.paused) Text("Paused without a connection: ${dl.total - dl.done} left, they continue the next time you open Onda.", color = TextMain, fontSize = 13.sp)
             }
         }
+        item { Section("Equalizer") }
+        item { EqualizerSettings(ctx) }
+        item { Section("Display") }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Size", color = TextMain, modifier = Modifier.width(120.dp))
+                    OutlinedButton(onClick = { state.setZoom(state.settings.zoom - 0.1f) }) { Text("−") }
+                    Text("${Math.round(state.settings.zoom * 100)} %", color = TextMain, modifier = Modifier.width(60.dp), textAlign = TextAlign.Center)
+                    OutlinedButton(onClick = { state.setZoom(state.settings.zoom + 0.1f) }) { Text("+") }
+                    TextButton(onClick = { state.setZoom(1f) }) { Text("Reset", color = TextDim) }
+                    Text("Also Ctrl + and Ctrl −", color = TextDim, fontSize = 12.sp)
+                }
+                Toggle("Draw without the graphics card", "Turn on if Onda doesn't show up while a game is running. Takes effect the next time Onda starts.",
+                    state.settings.software, state::setSoftware)
+            }
+        }
         item { Section("Playback and discovery") }
+        item { Toggle("Song notifications", "A desktop notification with the cover when a new song starts and Onda isn't in front.", state.settings.songNotify, state::setSongNotify) }
         item { Toggle("Similar songs when the queue ends", "Keeps the music going with songs like the last ones.", state.settings.autoplay, state::setAutoplay) }
         item { Toggle("Keep playing when the window is closed", "Reopen Onda from the app menu or your desktop's media controls.", state.settings.background, state::setBackground) }
         item { Toggle("New release notifications", "A desktop notification when an artist you listen to releases something.", state.settings.releaseAlerts, state::setReleaseAlerts) }
@@ -1044,7 +1197,7 @@ private fun SettingsPage(ctx: Ctx) {
         }
         item { Section("Keyboard") }
         item {
-            Text("Space play/pause · Ctrl+→ / Ctrl+← next / previous · → / ← seek 5 s · ↑ / ↓ volume · Ctrl+L like · Ctrl+F search · Ctrl+, settings · Esc back",
+            Text("Space play/pause · Ctrl+→ / Ctrl+← next / previous · → / ← seek 5 s · ↑ / ↓ volume · Ctrl+L like · Ctrl+F search · Ctrl+, settings · Ctrl + / Ctrl − size · Esc back · Ctrl+click or Shift+click selects several songs",
                 color = TextDim, fontSize = 13.sp)
         }
         item { Section("Privacy") }
@@ -1267,11 +1420,108 @@ private fun PlayerBar(ctx: Ctx, panel: Panel, toggle: (Panel) -> Unit) {
             }
         }
         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            SleepButton(player)
+            IconButton(onClick = { state.mini = !state.mini }) { Icon(Icons.Rounded.PictureInPictureAlt, "Mini player", tint = if (state.mini) Accent else TextDim) }
             IconButton(onClick = { toggle(Panel.LYRICS) }) { Icon(Icons.Rounded.Lyrics, "Lyrics", tint = if (panel == Panel.LYRICS) Accent else TextDim) }
             IconButton(onClick = { toggle(Panel.QUEUE) }) { Icon(Icons.AutoMirrored.Rounded.QueueMusic, "Queue", tint = if (panel == Panel.QUEUE) Accent else TextDim) }
             Icon(Icons.AutoMirrored.Rounded.VolumeUp, null, tint = TextDim)
             ThinSlider((player?.volume ?: 0.8).toFloat(), "Volume", { player?.changeVolume(it.toDouble()) },
                 onDone = { player?.let { state.setVolume(it.volume) } }, modifier = Modifier.width(120.dp).padding(start = 8.dp))
+        }
+    }
+}
+
+private val eqPresets = linkedMapOf(
+    "Flat" to List(10) { 0.0 },
+    "Bass boost" to listOf(6.0, 5.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    "Treble boost" to listOf(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 4.0, 5.0, 6.0),
+    "Vocal" to listOf(-2.0, -2.0, -1.0, 1.0, 3.0, 4.0, 3.0, 1.0, 0.0, -1.0),
+    "Rock" to listOf(4.0, 3.0, 2.0, 0.0, -1.0, -1.0, 1.0, 3.0, 4.0, 4.0),
+    "Electronic" to listOf(5.0, 4.0, 1.0, 0.0, -2.0, 1.0, 0.0, 1.0, 4.0, 5.0),
+    "Acoustic" to listOf(3.0, 3.0, 2.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0),
+)
+
+/** 10 bands from 30 Hz to 15 kHz, with presets; moving a band makes it "Custom". */
+@Composable
+private fun EqualizerSettings(ctx: Ctx) {
+    val state = ctx.state
+    val player = ctx.player
+    var draft by remember(state.settings.eq) { mutableStateOf(state.settings.eq) }
+    fun apply(gains: List<Double>, preset: String) { draft = gains; player?.equalize(gains); state.setEqualizer(gains, preset) }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (player?.hasEqualizer == false) Text("Your system's GStreamer has no equalizer (it's in gst-plugins-good).", color = ErrorRed, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            (eqPresets.keys + "Custom").forEach { name ->
+                val on = state.settings.eqPreset == name
+                if (on) Button(onClick = {}, contentPadding = PaddingValues(12.dp, 4.dp)) { Text(name, fontSize = 13.sp) }
+                else if (name != "Custom") OutlinedButton(onClick = { apply(eqPresets.getValue(name), name) }, contentPadding = PaddingValues(12.dp, 4.dp)) { Text(name, fontSize = 13.sp) }
+            }
+        }
+        listOf("30 Hz", "60 Hz", "120 Hz", "240 Hz", "480 Hz", "950 Hz", "1.9 kHz", "3.8 kHz", "7.5 kHz", "15 kHz").forEachIndexed { i, label ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(label, color = TextDim, fontSize = 12.sp, modifier = Modifier.width(70.dp))
+                Slider(draft[i].toFloat(), { v -> draft = draft.toMutableList().also { it[i] = Math.round(v * 2) / 2.0 }; player?.equalize(draft) },
+                    valueRange = -12f..12f, onValueChangeFinished = { state.setEqualizer(draft, "Custom") }, modifier = Modifier.width(320.dp),
+                    colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent, inactiveTrackColor = Raised))
+                Text((if (draft[i] > 0) "+" else "") + "${draft[i]} dB", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(start = 8.dp))
+            }
+        }
+    }
+}
+
+/** A small window that stays on top: cover, song, controls and progress. */
+@Composable
+internal fun MiniPlayer(state: AppState, player: Player, openMain: () -> Unit) {
+    val cur = player.current
+    Row(Modifier.fillMaxSize().background(Side).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Art(cur?.art, 96)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(cur?.title ?: "Nothing playing", color = TextMain, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(cur?.artist.orEmpty(), color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = player::previous) { Icon(Icons.Rounded.SkipPrevious, "Previous", tint = TextMain) }
+                IconButton(onClick = player::toggle, Modifier.size(40.dp).clip(CircleShape).background(Accent)) {
+                    Icon(if (player.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (player.playing) "Pause" else "Play", tint = Color.Black)
+                }
+                IconButton(onClick = { player.next() }) { Icon(Icons.Rounded.SkipNext, "Next", tint = TextMain) }
+                if (cur != null && state.canSave(cur.id)) {
+                    val liked = state.isLiked(cur.id)
+                    IconButton(onClick = { state.toggleLike(cur.id) }) {
+                        Icon(if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (liked) "Remove from Liked Songs" else "Add to Liked Songs", tint = if (liked) Accent else TextDim)
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = openMain) { Icon(Icons.Rounded.OpenInFull, "Open Onda", tint = TextDim) }
+            }
+            val dur = player.durationMs
+            Box(Modifier.fillMaxWidth().height(3.dp).clip(CircleShape).background(Raised)) {
+                Box(Modifier.fillMaxWidth(if (dur > 0) (player.positionMs.toFloat() / dur).coerceIn(0f, 1f) else 0f).height(3.dp).background(TextMain))
+            }
+        }
+    }
+}
+
+/** Sleep timer: pause after some minutes or when the song ends. */
+@Composable
+private fun SleepButton(player: Player?) {
+    if (player == null) return
+    var open by remember { mutableStateOf(false) }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(player.sleepAt) { while (player.sleepAt > 0) { now = System.currentTimeMillis(); delay(15_000) } }
+    val on = player.sleepAt > 0 || player.sleepAfterSong
+    Box {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { open = true }) { Icon(Icons.Rounded.Bedtime, "Sleep timer", tint = if (on) Accent else TextDim) }
+            if (player.sleepAt > 0) Text("${((player.sleepAt - now) / 60_000 + 1).coerceAtLeast(1)} min", color = Accent, fontSize = 11.sp)
+        }
+        DropdownMenu(open, { open = false }, modifier = Modifier.background(Color(0xFF2E2E38))) {
+            Text("Pause after…", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 4.dp))
+            listOf(15, 30, 45, 60, 90).forEach { m ->
+                DropdownMenuItem({ Text("$m minutes", color = TextMain) }, { player.sleepAfterSong = false; player.sleepAt = System.currentTimeMillis() + m * 60_000L; now = System.currentTimeMillis(); open = false })
+            }
+            DropdownMenuItem({ Text("End of this song", color = TextMain) }, { player.sleepAt = 0; player.sleepAfterSong = true; open = false })
+            if (on) DropdownMenuItem({ Text("Turn off", color = Accent) }, { player.sleepAt = 0; player.sleepAfterSong = false; open = false })
         }
     }
 }
@@ -1455,6 +1705,53 @@ internal fun EditDialog(state: AppState, t: Track, close: () -> Unit) {
             }) { Text("Save", color = Accent) }
         },
         dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
+}
+
+/** Top artists and songs from your own listening history (kept on this PC only). */
+@Composable
+private fun StatsPage(ctx: Ctx) {
+    val state = ctx.state
+    var period by remember { mutableIntStateOf(0) }
+    val periods = listOf("Last 4 weeks" to 28L, "Last 6 months" to 182L, "All time" to 0L)
+    val plays = remember(state.plays, period) {
+        val days = periods[period].second
+        if (days == 0L) state.plays else (System.currentTimeMillis() - days * 86_400_000L).let { since -> state.plays.filter { it.atMs >= since } }
+    }
+    val artists = remember(plays) { plays.groupingBy { it.artist }.eachCount().entries.sortedByDescending { it.value }.take(10) }
+    val songs = remember(plays, state.byId) {
+        plays.groupBy { it.key }.entries.sortedByDescending { it.value.size }.take(20)
+            .mapNotNull { (key, list) -> state.trackFor(key)?.let { it to list.size } }
+    }
+    val playable = songs.map { it.first }
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { Header("Your stats", "${plays.size} plays · counted on this PC only, never sent anywhere") }
+        item {
+            Row(Modifier.padding(horizontal = 24.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                periods.forEachIndexed { i, (label, _) ->
+                    if (i == period) Button(onClick = {}) { Text(label) } else OutlinedButton(onClick = { period = i }) { Text(label) }
+                }
+            }
+        }
+        if (plays.isEmpty()) item { Note("Play some songs and your top artists and songs show up here.") }
+        else {
+            item { Section("Top artists") }
+            items(artists.size) { i ->
+                val (name, n) = artists[i]
+                Row(Modifier.fillMaxWidth().clickable { ctx.openArtistByName(name) }.padding(24.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${i + 1}", color = TextDim, modifier = Modifier.width(36.dp))
+                    Art(state.artistPics[name.lowercase()]?.ifBlank { null }, 40, round = true)
+                    Spacer(Modifier.width(12.dp))
+                    Text(name, color = TextMain, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("$n plays", color = TextDim, fontSize = 13.sp)
+                }
+            }
+            item { Section("Top songs") }
+            items(songs.size) { i ->
+                val (t, n) = songs[i]
+                SongRow(i + 1, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id, note = "$n plays") { ctx.play(playable, i) }
+            }
+        }
+    }
 }
 
 /* ---------- Match metadata, rename files ---------- */

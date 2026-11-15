@@ -344,3 +344,50 @@ object Downloads {
         }
     }
 }
+
+/** Playlist files (.m3u/.m3u8) that other players read too. Only files on this PC are written: server links hold your login. */
+object M3u {
+    /** Returns how many songs were written as files and how many are listed only as a comment (not a file here). */
+    fun write(name: String, tracks: List<Track>, to: File): Pair<Int, Int> {
+        var files = 0
+        val text = buildString {
+            append("#EXTM3U\n#PLAYLIST:").append(name.replace('\n', ' ')).append('\n')
+            for (t in tracks) {
+                val path = t.id.takeIf { it.startsWith("file:") }?.let { runCatching { File(URI(it)).path }.getOrNull() }
+                append("#EXTINF:").append(t.durationMs / 1000).append(',').append(t.artist).append(" - ").append(t.title).append('\n')
+                if (path != null) { append(path).append('\n'); files++ } else append("# not a file on this PC\n")
+            }
+        }
+        to.writeText(text)
+        return files to tracks.size - files
+    }
+
+    /** Matches entries by file (absolute, relative to the playlist, or file:// URI), else by "Artist - Title". */
+    fun read(file: File, library: List<Track>): Pair<String, List<String>> {
+        val byId = library.associateBy { it.id }
+        val byName = library.groupBy { Match.norm(it.artist) + "|" + Match.norm(it.title) }
+        var name = file.nameWithoutExtension
+        var info: String? = null
+        val ids = ArrayList<String>()
+        for (raw in file.readLines().take(20_000)) {
+            val line = raw.trim().removePrefix("\uFEFF")
+            when {
+                line.startsWith("#PLAYLIST:") -> name = line.substringAfter(':').trim().ifEmpty { name }
+                line.startsWith("#EXTINF:") -> info = line.substringAfter(',', "").trim()
+                line == "# not a file on this PC" -> { // written by Onda for a server song or preview: found by name
+                    info?.takeIf { " - " in it }?.let { byName[Match.norm(it.substringBefore(" - ")) + "|" + Match.norm(it.substringAfter(" - "))]?.firstOrNull() }?.let { ids += it.id }
+                    info = null
+                }
+                line.isEmpty() || line.startsWith("#") -> {}
+                else -> {
+                    val f = runCatching { if (line.startsWith("file:")) File(URI(line)) else File(line).let { if (it.isAbsolute) it else File(file.parentFile, line) } }.getOrNull()
+                    val hit = f?.let { byId[it.absoluteFile.toURI().toString()] }
+                        ?: info?.takeIf { " - " in it }?.let { byName[Match.norm(it.substringBefore(" - ")) + "|" + Match.norm(it.substringAfter(" - "))]?.firstOrNull() }
+                    hit?.let { ids += it.id }
+                    info = null
+                }
+            }
+        }
+        return name to ids.distinct()
+    }
+}
