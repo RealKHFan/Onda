@@ -91,7 +91,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
-import javax.swing.JFileChooser
 
 val Bg = Color(0xFF0F0F12)
 val Side = Color(0xFF09090B)
@@ -319,6 +318,8 @@ private fun SettingsPage(state: AppState) {
     var password by remember { mutableStateOf("") } // only for connecting; never saved
     var connecting by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf<String?>(null) }
+    var typedFolder by remember { mutableStateOf("") }
+    var folderNote by remember { mutableStateOf<String?>(null) }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Header("Settings", "Onda for Linux · no account, no tracking") }
         item { Section("Music folders") }
@@ -329,12 +330,28 @@ private fun SettingsPage(state: AppState) {
             }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    val chooser = JFileChooser(System.getProperty("user.home") + "/Music").apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY; dialogTitle = "Add a music folder" }
-                    if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) state.addFolder(chooser.selectedFile.absolutePath)
-                }) { Text("Add folder") }
-                OutlinedButton(onClick = { state.rescan() }, enabled = !state.scanning) { Text("Rescan") }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        scope.launch {
+                            when (val r = FolderPicker.pick(System.getProperty("user.home") + "/Music")) {
+                                is FolderPicker.Result.Picked -> { state.addFolder(r.path); folderNote = null }
+                                FolderPicker.Result.Cancelled -> {}
+                                FolderPicker.Result.NoPicker -> folderNote = "No folder picker found on this system. Type the folder's path below."
+                            }
+                        }
+                    }) { Text("Add folder") }
+                    OutlinedButton(onClick = { state.rescan() }, enabled = !state.scanning) { Text("Rescan") }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(typedFolder, { typedFolder = it }, label = { Text("Or type a folder path") },
+                        placeholder = { Text("~/Music") }, singleLine = true, modifier = Modifier.width(420.dp))
+                    OutlinedButton(onClick = {
+                        val path = FolderPicker.resolve(typedFolder)
+                        if (path != null) { state.addFolder(path); typedFolder = ""; folderNote = null } else folderNote = "That folder doesn't exist."
+                    }, enabled = typedFolder.isNotBlank()) { Text("Add") }
+                }
+                folderNote?.let { Text(it, color = TextDim, fontSize = 13.sp) }
             }
         }
         item { Section("Music server (Navidrome)") }

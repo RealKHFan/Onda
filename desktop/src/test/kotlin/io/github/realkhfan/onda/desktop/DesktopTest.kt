@@ -68,3 +68,19 @@ class DesktopTest {
         scene.close()
     }
 }
+
+class FolderPickerTest {
+    @Test fun typedPathsResolve() {
+        val dir = createTempDir()
+        assertEquals(dir.canonicalPath, FolderPicker.resolve("  \"${dir.path}\" "))
+        assertEquals(dir.canonicalPath, FolderPicker.resolve("file://${dir.path}"))
+        assertEquals(java.io.File(System.getProperty("user.home")).canonicalPath, FolderPicker.resolve("~"))
+        assertEquals(null, FolderPicker.resolve("/no/such/folder"))
+        assertEquals(null, FolderPicker.resolve(" "))
+    }
+
+    @Test fun noPickerInstalledIsReported() = kotlinx.coroutines.runBlocking {
+        // This build machine has neither kdialog nor zenity.
+        assertEquals(FolderPicker.Result.NoPicker, FolderPicker.pick("/tmp"))
+    }
+}
