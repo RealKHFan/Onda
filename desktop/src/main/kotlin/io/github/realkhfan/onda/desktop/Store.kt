@@ -32,6 +32,8 @@ object Store {
         val autoplay: Boolean = true, val background: Boolean = false, val releaseAlerts: Boolean = true,
         /** [apple]: also search Apple's catalog; [listenBrainz]: its similar artists in mixes; [backupDir]: daily backup folder. */
         val apple: Boolean = false, val listenBrainz: Boolean = true, val backupDir: String? = null,
+        /** Every song at about the same loudness (measured once per song). */
+        val normalize: Boolean = true,
     )
 
     fun settings(): Settings = runCatching {
@@ -44,14 +46,14 @@ object Store {
             autoplay = o.optBoolean("autoplay", true), background = o.optBoolean("background", false),
             releaseAlerts = o.optBoolean("releaseAlerts", true),
             apple = o.optBoolean("apple", false), listenBrainz = o.optBoolean("listenBrainz", true),
-            backupDir = o.optString("backupDir").ifBlank { null },
+            backupDir = o.optString("backupDir").ifBlank { null }, normalize = o.optBoolean("normalize", true),
         )
     }.getOrDefault(Settings())
 
     fun save(s: Settings) = write("settings.json", JSONObject()
         .put("folders", JSONArray(s.folders)).put("kbps", s.kbps).put("volume", s.volume)
         .put("autoplay", s.autoplay).put("background", s.background).put("releaseAlerts", s.releaseAlerts)
-        .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir)
+        .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir).put("normalize", s.normalize)
         .put("server", s.server?.let { JSONObject().put("url", it.url).put("user", it.user).put("salt", it.salt).put("token", it.token) })
         .toString())
 

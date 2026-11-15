@@ -37,6 +37,12 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     var resolver: suspend (Item) -> Resolved = { Resolved(it.uri) }
 
+    /** Volume factor per song (normalisation); 1 = as recorded. */
+    var gain: (Item) -> Double = { 1.0 }
+
+    /** Told about the next song once one starts, so its audio link can be looked up ahead of time. */
+    var prefetch: ((Item) -> Unit)? = null
+
     var queue by mutableStateOf<List<Item>>(emptyList()); private set
     var index by mutableIntStateOf(-1); private set
     var playing by mutableStateOf(false); private set
@@ -155,7 +161,10 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     fun changeVolume(v: Double) { volume = v.coerceIn(0.0, 1.0); applyVolume() }
 
     // Ears hear loudness logarithmically: like KDE's and GNOME's sliders, the slider is cubic (10% ≈ -60 dB, 50% ≈ -18 dB).
-    private fun applyVolume() { bin.volume = volume * volume * volume }
+    private fun applyVolume() { bin.volume = volume * volume * volume * (current?.let(gain) ?: 1.0) }
+
+    /** After the normalisation setting changed. */
+    fun refreshVolume() = applyVolume()
 
     fun toggleShuffle() { shuffle = !shuffle; order = makeOrder() }
     fun cycleRepeat() { repeat = (repeat + 1) % 3 }
@@ -209,7 +218,8 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         error = null; fullFrom = null
         bin.stop()
         positionMs = seekTo.coerceAtLeast(0)
-        durationMs = item.durationMs
+        // A catalog song may turn out to be a 30-second preview: its full length would show until then.
+        durationMs = if (item.preview) 0 else item.durationMs
         scope.launch {
             val r = try {
                 withContext(Dispatchers.IO) { resolver(item) }
@@ -224,11 +234,13 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
                 return@launch next(auto = true, afterError = true)
             }
             fullFrom = r.fullFrom
+            if (item.preview && durationMs == 0L) durationMs = if (r.fullFrom != null) item.durationMs else 30_000 // GStreamer then gives the exact length
             if (repeat == 0 && order.lastOrNull() == index) onLastSong?.invoke()
             bin.setURI(URI(r.uri))
             applyVolume()
             pendingSeek = seekTo
             if (playing) bin.play() else bin.pause()
+            upcoming().firstOrNull()?.second?.let { prefetch?.invoke(it) }
         }
     }
 

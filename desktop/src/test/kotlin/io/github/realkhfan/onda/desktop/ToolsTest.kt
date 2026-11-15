@@ -98,6 +98,50 @@ class ToolsTest {
         }
     }
 
+    private fun tone(amplitude: Int, seconds: Int = 4): String {
+        val f = File.createTempFile("onda", ".wav")
+        val rate = 22050; val n = rate * seconds
+        val b = java.nio.ByteBuffer.allocate(44 + n * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        b.put("RIFF".toByteArray()).putInt(36 + n * 2).put("WAVEfmt ".toByteArray()).putInt(16).putShort(1).putShort(1)
+            .putInt(rate).putInt(rate * 2).putShort(2).putShort(16).put("data".toByteArray()).putInt(n * 2)
+        repeat(n) { b.putShort((Math.sin(it * 2 * Math.PI * 440 / rate) * amplitude).toInt().toShort()) }
+        f.writeBytes(b.array()); return f.toURI().toString()
+    }
+
+    @Test fun loudnessIsMeasuredAndEvenedOut() {
+        onUi { Player(CoroutineScope(ui), audioSink = "fakesink").close() } // starts GStreamer
+        val quiet = Loudness.analyse(tone(1000))!!
+        val loud = Loudness.analyse(tone(16000))!!
+        assertEquals(20 * Math.log10(16.0), quiet.db - loud.db, 0.5) // 16 times the amplitude: about 24 dB less gain
+        assertEquals(16000 / 32768.0, loud.peak, 0.02)
+        assertNull(Loudness.analyse(File("/no/such/song.mp3").toURI().toString()))
+        assertTrue(Loudness.factorFor(loud.db, loud.peak) < 1.0) // a loud song is turned down
+        assertTrue(Loudness.factorFor(quiet.db, 1.0) <= 1.0) // a song already peaking at full scale is never pushed past it
+        assertEquals(2.0, Loudness.factorFor(20.0, 0.5), 1e-9) // a quiet one goes up only as far as its peak allows
+    }
+
+    @Test fun previewsNeverShowTheFullLength() {
+        val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
+        val wav = tone(1000, 2)
+        p.resolver = { kotlinx.coroutines.delay(300); Player.Resolved(wav) }
+        onUi { p.play(listOf(Player.Item("dz:1", "Song", "Artist", "Album", null, "", preview = true, deezerId = 1, durationMs = 200_000)), 0) }
+        assertEquals(0L, onUi { p.durationMs }) // not 3:20 while the link is fetched
+        Thread.sleep(1500)
+        assertTrue(onUi { p.durationMs } in 1..30_000)
+        onUi { p.close() }
+    }
+
+    @Test fun editedDetailsShowAndBlankFieldsKeepTheirValue() {
+        io.github.realkhfan.onda.data.Overrides.load(dir())
+        val t = track(File("/m/x.mp3"), "trk01", "Unknown artist")
+        io.github.realkhfan.onda.data.Overrides.edit(t, " Paper Moon ", "Velvet Hours", "")
+        val shown = io.github.realkhfan.onda.data.Overrides.apply(listOf(t), io.github.realkhfan.onda.data.Overrides.meta.value).single()
+        assertEquals(Triple("Paper Moon", "Velvet Hours", "Album"), Triple(shown.title, shown.artist, shown.album))
+        io.github.realkhfan.onda.data.Overrides.restore(t.id)
+        assertTrue(io.github.realkhfan.onda.data.Overrides.meta.value.isEmpty())
+        io.github.realkhfan.onda.data.Overrides.load(Store.data)
+    }
+
     @Test fun spotifyCsvBecomesAPlaylistOfYourOwnSongs() {
         val s = onUi { AppState(CoroutineScope(ui)) }
         val f = File(dir(), "Paper Moon.mp3").apply { writeText("a") }

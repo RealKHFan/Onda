@@ -31,7 +31,8 @@ fun main() {
         val state = remember { AppState(scope) }
         val player = remember {
             runCatching { Player(scope) }.onFailure { System.err.println("Onda: GStreamer could not start: $it") }.getOrNull()
-                ?.also { p -> p.resolver = state::resolve; p.onLastSong = { state.extend(p) } }
+                ?.also { p -> p.resolver = state::resolve; p.onLastSong = { state.extend(p) }; p.prefetch = state::prefetch
+                    p.gain = { if (state.settings.normalize) Loudness.factor(it.id) else 1.0 } }
         }
         val mpris = remember { arrayOfNulls<Mpris>(1) }
         var visible by remember { mutableStateOf(true) }

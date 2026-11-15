@@ -54,6 +54,15 @@ object Overrides {
         write()
     }
 
+    /** Details typed in by hand; a cover and Deezer link from an earlier match stay. Blank fields keep what was shown. */
+    fun edit(t: Track, title: String, artist: String, album: String) {
+        val old = _meta.value[t.id]
+        _meta.value = _meta.value + (t.id to Meta(title.trim().ifEmpty { t.title }, artist.trim().ifEmpty { t.artist },
+            album.trim().ifEmpty { t.album }, old?.cover, old?.deezerId ?: 0))
+        _reviewed.value = _reviewed.value + t.id
+        write()
+    }
+
     fun keep(trackIds: Collection<String>) {
         if (trackIds.isEmpty()) return
         _reviewed.value = _reviewed.value + trackIds

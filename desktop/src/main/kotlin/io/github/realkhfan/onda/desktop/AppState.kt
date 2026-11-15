@@ -22,6 +22,9 @@ import io.github.realkhfan.onda.data.Overrides
 import io.github.realkhfan.onda.data.Subsonic
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -106,6 +109,16 @@ class AppState(private val scope: CoroutineScope) {
     fun setApple(on: Boolean) = update(settings.copy(apple = on))
     fun setListenBrainz(on: Boolean) = update(settings.copy(listenBrainz = on))
     fun setBackupDir(dir: String?) = update(settings.copy(backupDir = dir))
+    fun setNormalize(on: Boolean) { update(settings.copy(normalize = on)); if (on) measureLoudness() else Loudness.stop() }
+
+    /** Measures the loudness of library songs not measured yet (files directly, server songs through their download link). */
+    fun measureLoudness() {
+        if (!settings.normalize) return
+        val cfg = settings.server
+        Loudness.measure(scope, library.mapNotNull { t ->
+            if (t.id.startsWith("file:")) t.id to t.uri else Downloads.forTrack(t, cfg)?.let { t.id to it.url }
+        })
+    }
 
     /** Your artists, strongest first: followed ones, then plays, likes and your library (the phone's rule). */
     fun seeds(): List<String> =
@@ -182,7 +195,7 @@ class AppState(private val scope: CoroutineScope) {
             z.putNextEntry(java.util.zip.ZipEntry("settings.json"))
             z.write(org.json.JSONObject().put("kbps", s.kbps).put("volume", s.volume).put("autoplay", s.autoplay)
                 .put("background", s.background).put("releaseAlerts", s.releaseAlerts).put("apple", s.apple)
-                .put("listenBrainz", s.listenBrainz).toString().toByteArray())
+                .put("listenBrainz", s.listenBrainz).put("normalize", s.normalize).toString().toByteArray())
             z.closeEntry()
         }
     }
@@ -216,7 +229,7 @@ class AppState(private val scope: CoroutineScope) {
                 update(settings.copy(kbps = o.optInt("kbps", settings.kbps), volume = o.optDouble("volume", settings.volume),
                     autoplay = o.optBoolean("autoplay", settings.autoplay), background = o.optBoolean("background", settings.background),
                     releaseAlerts = o.optBoolean("releaseAlerts", settings.releaseAlerts), apple = o.optBoolean("apple", settings.apple),
-                    listenBrainz = o.optBoolean("listenBrainz", settings.listenBrainz)))
+                    listenBrainz = o.optBoolean("listenBrainz", settings.listenBrainz), normalize = o.optBoolean("normalize", settings.normalize)))
             } else {
                 java.io.File(Store.data, "$name.tmp").apply { writeText(text) }.renameTo(java.io.File(Store.data, name))
             }
@@ -281,6 +294,7 @@ class AppState(private val scope: CoroutineScope) {
         } finally {
             scanning = false
         }
+        measureLoudness()
     }
 
     fun launch(block: suspend CoroutineScope.() -> Unit) = scope.launch(block = block)
@@ -348,6 +362,7 @@ class AppState(private val scope: CoroutineScope) {
                 val lists = Navidrome.playlists(cfg)
                 serverPlaylists = lists
                 withContext(Dispatchers.IO) { Store.saveServerPlaylists(lists) }
+                measureLoudness()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -424,20 +439,37 @@ class AppState(private val scope: CoroutineScope) {
 
     companion object { const val PREVIEW = "Preview" }
 
-    private val fullCopies = HashMap<Long, Player.Resolved?>()
+    /** Full-copy lookups, by Deezer id: started once and kept, so a slow one still helps the next time the song plays. */
+    private val fullCopies = HashMap<Long, Deferred<Player.Resolved?>>()
+    private val previewLinks = HashMap<Long, Pair<Long, String>>() // Deezer id -> (fetched at, link); links expire
 
-    /** For the player: a Deezer song plays as a free full copy when the artist's own account has one, else a fresh preview. */
-    suspend fun resolve(i: Player.Item): Player.Resolved {
-        if (i.deezerId <= 0) return Player.Resolved(i.uri)
-        val known = synchronized(fullCopies) { fullCopies.containsKey(i.deezerId) }
-        val full = if (known) synchronized(fullCopies) { fullCopies[i.deezerId] } else {
-            // Never hold a preview up for long: after 3 s it plays the preview and asks again next time.
-            withTimeoutOrNull(3000) {
-                runCatching { FullCopies.find(i.deezerId, audius = true, jamendoId = "") }.getOrNull()
+    private fun fullCopy(id: Long): Deferred<Player.Resolved?> = synchronized(fullCopies) {
+        fullCopies.getOrPut(id) {
+            scope.async(Dispatchers.IO) {
+                runCatching { FullCopies.find(id, audius = true, jamendoId = "") }.getOrNull()
                     ?.let { c -> FreeCatalogs.stream(c)?.let { Player.Resolved(it, c.source.label) } }
-                    .also { synchronized(fullCopies) { fullCopies[i.deezerId] = it } }
             }
         }
-        return full ?: Player.Resolved(Deezer.previewNow(i.deezerId) ?: throw IOException("No preview"))
+    }
+
+    private suspend fun previewLink(id: Long): String? {
+        synchronized(previewLinks) { previewLinks[id] }?.takeIf { System.currentTimeMillis() - it.first < 10 * 60_000 }?.let { return it.second }
+        return Deezer.previewNow(id)?.also { synchronized(previewLinks) { previewLinks[id] = System.currentTimeMillis() to it } }
+    }
+
+    /** For the player: a Deezer song plays as a free full copy when the artist's own account has one, else a fresh preview. */
+    suspend fun resolve(i: Player.Item): Player.Resolved = coroutineScope {
+        if (i.deezerId <= 0) return@coroutineScope Player.Resolved(i.uri)
+        val full = fullCopy(i.deezerId)
+        val preview = async { previewLink(i.deezerId) } // asked at the same time, so a preview never waits for the lookup
+        // Never hold a preview up for long: after 1.5 s it plays the preview, and the lookup finishes for next time.
+        val copy = if (full.isCompleted) full.await() else withTimeoutOrNull(1500) { full.await() }
+        copy?.also { preview.cancel() } ?: Player.Resolved(preview.await() ?: throw IOException("No preview"))
+    }
+
+    /** The next song's link is looked up while this one plays, so it starts at once. */
+    fun prefetch(i: Player.Item) {
+        if (i.deezerId <= 0) return
+        scope.launch(Dispatchers.IO) { runCatching { fullCopy(i.deezerId).await(); previewLink(i.deezerId) } }
     }
 }

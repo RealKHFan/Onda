@@ -129,6 +129,7 @@ import io.github.realkhfan.onda.data.FreeCatalogs
 import io.github.realkhfan.onda.data.Lrclib
 import io.github.realkhfan.onda.data.Itunes
 import io.github.realkhfan.onda.data.Matcher
+import io.github.realkhfan.onda.data.Overrides
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -292,6 +293,7 @@ private sealed interface Naming {
     data class New(val first: String? = null) : Naming
     data class Rename(val id: String, val name: String) : Naming
     data class Delete(val id: String, val name: String) : Naming
+    data class Edit(val t: Track) : Naming
 }
 
 @Composable
@@ -300,6 +302,23 @@ private fun NamingDialog(state: AppState, n: Naming, close: () -> Unit) {
         AlertDialog(onDismissRequest = close, title = { Text("Delete “${n.name}”?") },
             text = { Text("Only the playlist goes; your songs stay.", color = TextDim) },
             confirmButton = { TextButton(onClick = { state.deletePlaylist(n.id); close() }) { Text("Delete", color = ErrorRed) } },
+            dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
+        return
+    }
+    if (n is Naming.Edit) {
+        var title by remember { mutableStateOf(n.t.title) }
+        var artist by remember { mutableStateOf(n.t.artist) }
+        var album by remember { mutableStateOf(n.t.album) }
+        AlertDialog(onDismissRequest = close, title = { Text("Edit details") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(title, { title = it }, label = { Text("Title") }, singleLine = true)
+                    OutlinedTextField(artist, { artist = it }, label = { Text("Artist") }, singleLine = true)
+                    OutlinedTextField(album, { album = it }, label = { Text("Album") }, singleLine = true)
+                    Text("Shown in Onda; the file itself isn't changed. Right-click → Restore original tags undoes it.", color = TextDim, fontSize = 12.sp)
+                }
+            },
+            confirmButton = { TextButton(onClick = { Overrides.edit(n.t, title, artist, album); close() }) { Text("Save", color = Accent) } },
             dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
         return
     }
@@ -391,7 +410,8 @@ private fun TrackRow(ctx: Ctx, list: List<Track>, i: Int, numbered: Boolean, inP
             Downloads.forTrack(t, s.settings.server)?.let { d -> add(ContextMenuItem("Download") { ctx.download(listOf(d)) }) }
             val r = s.remoteFor(t)?.takeIf { it.source == io.github.realkhfan.onda.core.Source.DEEZER || it.source == io.github.realkhfan.onda.core.Source.ITUNES }
             add(ContextMenuItem(if (r != null) "Copy link" else "Copy song name") { ctx.copy(shareText(t.title, t.artist, r), if (r != null) "Link" else "Song name") })
-            if (s.meta.containsKey(t.id)) add(ContextMenuItem("Restore original tags") { io.github.realkhfan.onda.data.Overrides.restore(t.id); ctx.toast("Original tags restored") })
+            if (!s.isPreviewRow(t)) add(ContextMenuItem("Edit details…") { ctx.dialog(Naming.Edit(t)) })
+            if (s.meta.containsKey(t.id)) add(ContextMenuItem("Restore original tags") { Overrides.restore(t.id); ctx.toast("Original tags restored") })
         }
     }) {
         SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
@@ -957,6 +977,15 @@ private fun SettingsPage(ctx: Ctx) {
         item { Toggle("Similar songs when the queue ends", "Keeps the music going with songs like the last ones.", state.settings.autoplay, state::setAutoplay) }
         item { Toggle("Keep playing when the window is closed", "Reopen Onda from the app menu or your desktop's media controls.", state.settings.background, state::setBackground) }
         item { Toggle("New release notifications", "A desktop notification when an artist you listen to releases something.", state.settings.releaseAlerts, state::setReleaseAlerts) }
+        item {
+            Column {
+                Toggle("Normalize volume", "Every song at about the same loudness. Each song is measured once, in the background; your files aren't changed.",
+                    state.settings.normalize) { state.setNormalize(it); ctx.player?.refreshVolume() }
+                val l = Loudness.state
+                Text(if (l.running) "Measuring loudness: ${l.done} of ${l.total} songs…" else "${Loudness.gains.size} songs measured. Songs not measured yet (and previews) play at your typical level.",
+                    color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(start = 4.dp))
+            }
+        }
         item { Toggle("ListenBrainz suggestions", "Adds similar artists from ListenBrainz's open listening data to your mixes and similar songs. Only artist names are sent.", state.settings.listenBrainz, state::setListenBrainz) }
         item { Section("Backup") }
         item {
