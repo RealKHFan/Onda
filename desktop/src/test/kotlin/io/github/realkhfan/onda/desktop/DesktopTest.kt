@@ -61,7 +61,13 @@ class DesktopTest {
             Track("file:///m/2.flac", "file:///m/2.flac", "Night Drive", "Velvet Hours", "Tides", "Velvet Hours", 2, 187_000, "Music", null),
             Track("file:///m/3.mp3", "file:///m/3.mp3", "Open Fields", "Lumen Trio", "Meadows", "Lumen Trio", 1, 243_000, "Music", null),
         )
-        val scene = ImageComposeScene(1240, 800, Density(1f)) { OndaDesktop(state, player = null) }
+        if (state.collection.playlists.none { it.name == "Road trip" }) state.createPlaylist("Road trip", state.local.map { it.id })
+        if (!state.isLiked(state.local[0].id)) state.toggleLike(state.local[0].id)
+        val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val player = runBlocking { withContext(ui) { Player(CoroutineScope(ui), audioSink = "fakesink") } }
+        runBlocking { withContext(ui) { player.restore(listOf(state.item(state.local[0]).copy(uri = wav(File.createTempFile("onda", ".wav"), 3.0).toURI().toString())), 0, 0, false, 0) } }
+        Thread.sleep(800)
+        val scene = ImageComposeScene(1240, 800, Density(1f)) { OndaDesktop(state, player) }
         repeat(3) { scene.render(it * 16_000_000L) }
         File("build/screenshots").mkdirs()
         File("build/screenshots/desktop-songs.png").writeBytes(scene.render(64_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes)

@@ -1,5 +1,7 @@
 package io.github.realkhfan.onda.desktop
 
+import io.github.realkhfan.onda.core.RemoteTrack
+import io.github.realkhfan.onda.core.Source
 import io.github.realkhfan.onda.core.Track
 import io.github.realkhfan.onda.data.Subsonic
 import org.json.JSONArray
@@ -68,6 +70,63 @@ object Store {
 
     fun track(o: JSONObject) = Track(o.getString("id"), o.getString("uri"), o.optString("title"), o.optString("artist"), o.optString("album"),
         o.optString("albumArtist"), o.optInt("trackNo"), o.optLong("durationMs"), o.optString("folder"), o.optString("art").ifBlank { null }, o.optString("file"))
+
+    data class Playlist(val id: String, val name: String, val trackIds: List<String>)
+
+    /** Liked songs (ids), your playlists, and catalog songs saved to Want to listen. */
+    data class Collection(val liked: List<String> = emptyList(), val playlists: List<Playlist> = emptyList(), val want: List<RemoteTrack> = emptyList())
+
+    fun collection(): Collection = runCatching {
+        val o = JSONObject(File(data, "collection.json").readText())
+        Collection(
+            liked = o.optJSONArray("liked").strings(),
+            playlists = o.optJSONArray("playlists").objects().map { Playlist(it.getString("id"), it.getString("name"), it.optJSONArray("tracks").strings()) },
+            want = o.optJSONArray("want").objects().map(::remote),
+        )
+    }.getOrElse {
+        File(data, "collection.json").takeIf { f -> f.exists() }?.let { f -> f.copyTo(File(data, "collection.json.bad"), true) } // never lose it silently
+        Collection()
+    }
+
+    fun saveCollection(c: Collection) = write("collection.json", JSONObject()
+        .put("liked", JSONArray(c.liked))
+        .put("playlists", JSONArray(c.playlists.map { JSONObject().put("id", it.id).put("name", it.name).put("tracks", JSONArray(it.trackIds)) }))
+        .put("want", JSONArray(c.want.map(::json)))
+        .toString())
+
+    fun json(r: RemoteTrack): JSONObject = JSONObject().put("id", r.id).put("title", r.title).put("artist", r.artist).put("album", r.album)
+        .put("cover", r.cover).put("duration", r.durationSec).put("src", r.source.name).put("ref", r.ref)
+
+    fun remote(o: JSONObject) = RemoteTrack(o.optLong("id"), o.optString("title"), o.optString("artist"), o.optString("album"),
+        o.optString("cover").ifBlank { null }, null, o.optInt("duration"),
+        Source.entries.firstOrNull { it.name == o.optString("src") } ?: Source.DEEZER, ref = o.optString("ref"))
+
+    data class Session(val items: List<Player.Item>, val index: Int, val positionMs: Long, val shuffle: Boolean, val repeat: Int)
+
+    fun session(): Session? = runCatching {
+        val o = JSONObject(File(data, "session.json").readText())
+        Session(o.getJSONArray("items").objects().map {
+            Player.Item(it.getString("id"), it.optString("title"), it.optString("artist"), it.optString("album"), it.optString("art").ifBlank { null },
+                it.optString("uri"), it.optBoolean("preview"), it.optLong("dz"), it.optLong("dur"))
+        }, o.getInt("index"), o.optLong("pos"), o.optBoolean("shuffle"), o.optInt("repeat"))
+    }.getOrNull()
+
+    fun saveSession(s: Session) = write("session.json", JSONObject()
+        .put("items", JSONArray(s.items.take(2000).map {
+            JSONObject().put("id", it.id).put("title", it.title).put("artist", it.artist).put("album", it.album).put("art", it.art)
+                .put("uri", it.uri).put("preview", it.preview).put("dz", it.deezerId).put("dur", it.durationMs)
+        }))
+        .put("index", s.index).put("pos", s.positionMs).put("shuffle", s.shuffle).put("repeat", s.repeat)
+        .toString())
+
+    fun serverPlaylists(): List<Subsonic.Playlist> = runCatching {
+        JSONArray(File(data, "server_playlists.json").readText()).objects().map { Subsonic.Playlist(it.getString("id"), it.getString("name"), it.optJSONArray("songs").strings()) }
+    }.getOrDefault(emptyList())
+
+    fun saveServerPlaylists(l: List<Subsonic.Playlist>) =
+        write("server_playlists.json", JSONArray(l.map { JSONObject().put("id", it.id).put("name", it.name).put("songs", JSONArray(it.songIds)) }).toString())
+
+    private fun JSONArray?.objects(): List<JSONObject> = if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it) }
 
     /** Atomic: a crash mid-write never leaves a half file. */
     private fun write(name: String, text: String) {

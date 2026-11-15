@@ -6,9 +6,12 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.freedesktop.gstreamer.Bus
 import org.freedesktop.gstreamer.ElementFactory
 import org.freedesktop.gstreamer.Format
@@ -23,7 +26,16 @@ import java.util.concurrent.TimeUnit
 /** Plays through the system's GStreamer (files, your server, previews). All calls on the UI thread. */
 class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
-    data class Item(val id: String, val title: String, val artist: String, val album: String, val art: String?, val uri: String, val preview: Boolean = false)
+    /** [deezerId] > 0: a Deezer song whose link is fetched right before it plays (links expire). */
+    data class Item(
+        val id: String, val title: String, val artist: String, val album: String, val art: String?, val uri: String,
+        val preview: Boolean = false, val deezerId: Long = 0, val durationMs: Long = 0,
+    )
+
+    /** What actually plays: the item's own link, a fresh preview link, or a free full copy ([fullFrom] names the catalog). */
+    data class Resolved(val uri: String, val fullFrom: String? = null)
+
+    var resolver: suspend (Item) -> Resolved = { Resolved(it.uri) }
 
     var queue by mutableStateOf<List<Item>>(emptyList()); private set
     var index by mutableIntStateOf(-1); private set
@@ -33,10 +45,15 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     var shuffle by mutableStateOf(false); private set
     /** 0 off, 1 all, 2 one. */
     var repeat by mutableIntStateOf(0); private set
+    /** The slider's position (0..1); see [applyVolume] for what reaches the speakers. */
     var volume by mutableDoubleStateOf(0.8); private set
+    /** Set while a preview plays as a free full copy. */
+    var fullFrom by mutableStateOf<String?>(null); private set
     var error by mutableStateOf<String?>(null)
 
-    private var order: List<Int> = emptyList() // play order (shuffled or not)
+    private var order: List<Int> = emptyList()
+    private var loadToken = 0
+    private var pendingSeek = -1L
     private val bin: PlayBin
 
     val current: Item? get() = queue.getOrNull(index)
@@ -45,7 +62,8 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         Gst.init(Version.of(1, 16), "Onda")
         bin = PlayBin("onda")
         bin.setVideoSink(ElementFactory.make("fakesink", "novideo"))
-        if (audioSink != null) bin.setAudioSink(ElementFactory.make(audioSink, "audio")) // tests
+        // Tests: a silent sink that still keeps real time, like speakers do.
+        if (audioSink != null) bin.setAudioSink(ElementFactory.make(audioSink, "audio").also { it.set("sync", true) })
         bin.bus.connect(Bus.EOS { _ -> scope.launch { next(auto = true) } })
         bin.bus.connect(Bus.ERROR { _, _, message ->
             scope.launch {
@@ -56,10 +74,11 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         scope.launch {
             while (true) {
                 delay(400)
-                if (index >= 0) {
-                    positionMs = bin.queryPosition(TimeUnit.MILLISECONDS).coerceAtLeast(0)
-                    bin.queryDuration(TimeUnit.MILLISECONDS).takeIf { it > 0 }?.let { durationMs = it }
-                }
+                if (index < 0) continue
+                val d = bin.queryDuration(TimeUnit.MILLISECONDS)
+                if (d > 0) durationMs = d
+                if (pendingSeek >= 0 && d > 0) { seek(pendingSeek); pendingSeek = -1 } // a resumed song, once it's ready
+                else positionMs = bin.queryPosition(TimeUnit.MILLISECONDS).coerceAtLeast(0)
             }
         }
     }
@@ -69,22 +88,40 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         queue = items
         index = start.coerceIn(items.indices)
         order = makeOrder()
+        playing = true
         load()
     }
 
+    /** Last session, paused at [positionMs]. */
+    fun restore(items: List<Item>, at: Int, positionMs: Long, shuffle: Boolean, repeat: Int) {
+        if (items.isEmpty()) return
+        queue = items; index = at.coerceIn(items.indices); this.shuffle = shuffle; this.repeat = repeat
+        order = makeOrder()
+        playing = false
+        load(seekTo = positionMs)
+    }
+
     /** Adds after the songs already waiting after the current one. */
-    fun enqueue(item: Item) {
+    fun enqueue(item: Item) = insert(item, atEnd = true)
+
+    /** Plays right after the current song. */
+    fun playNext(item: Item) = insert(item, atEnd = false)
+
+    private fun insert(item: Item, atEnd: Boolean) {
         if (index < 0) return play(listOf(item), 0)
-        val at = order.indexOf(index) + 1
         queue = queue + item
-        order = order.toMutableList().apply { add(at.coerceAtMost(size), queue.lastIndex) }
+        val at = if (atEnd) order.size else order.indexOf(index) + 1
+        order = order.toMutableList().apply { add(at.coerceIn(0, size), queue.lastIndex) }
     }
 
     fun toggle() {
         if (index < 0) return
-        if (playing) bin.pause() else bin.play()
         playing = !playing
+        if (playing) bin.play() else bin.pause()
     }
+
+    fun resume() { if (!playing) toggle() }
+    fun pause() { if (playing) toggle() }
 
     fun next(auto: Boolean = false, afterError: Boolean = false) {
         if (index < 0) return
@@ -105,17 +142,22 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         if (pos > 0) { index = order[pos - 1]; load() } else seek(0)
     }
 
-    fun jumpTo(i: Int) { if (i in queue.indices) { index = i; load() } }
+    fun jumpTo(i: Int) { if (i in queue.indices) { index = i; playing = true; load() } }
 
     fun seek(ms: Long) {
-        bin.seekSimple(Format.TIME, EnumSet.of(SeekFlags.FLUSH, SeekFlags.ACCURATE), ms * 1_000_000)
-        positionMs = ms
+        bin.seekSimple(Format.TIME, EnumSet.of(SeekFlags.FLUSH, SeekFlags.ACCURATE), ms.coerceAtLeast(0) * 1_000_000)
+        positionMs = ms.coerceAtLeast(0)
     }
 
-    fun changeVolume(v: Double) { volume = v.coerceIn(0.0, 1.0); bin.volume = volume }
+    fun changeVolume(v: Double) { volume = v.coerceIn(0.0, 1.0); applyVolume() }
+
+    // Ears hear loudness logarithmically: like KDE's and GNOME's sliders, the slider is cubic (10% ≈ -60 dB, 50% ≈ -18 dB).
+    private fun applyVolume() { bin.volume = volume * volume * volume }
 
     fun toggleShuffle() { shuffle = !shuffle; order = makeOrder() }
     fun cycleRepeat() { repeat = (repeat + 1) % 3 }
+    fun shuffleOn(on: Boolean) { if (on != shuffle) toggleShuffle() }
+    fun repeatMode(r: Int) { repeat = r.coerceIn(0, 2) }
 
     /** Songs still to come, in play order. */
     fun upcoming(): List<Pair<Int, Item>> = order.drop(order.indexOf(index) + 1).map { it to queue[it] }
@@ -127,16 +169,32 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         return if (first != null && first >= 0) listOf(first) + rest else rest
     }
 
-    private fun load() {
+    private fun load(seekTo: Long = -1) {
         val item = current ?: return
-        error = null
+        val token = ++loadToken
+        error = null; fullFrom = null
         bin.stop()
-        bin.setURI(URI(item.uri))
-        bin.volume = volume
-        bin.play()
-        playing = true
-        positionMs = 0
-        durationMs = 0
+        positionMs = seekTo.coerceAtLeast(0)
+        durationMs = item.durationMs
+        scope.launch {
+            val r = try {
+                withContext(Dispatchers.IO) { resolver(item) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            if (token != loadToken) return@launch // skipped meanwhile
+            if (r == null) {
+                error = "Couldn't play “${item.title}” right now."
+                return@launch next(auto = true, afterError = true)
+            }
+            fullFrom = r.fullFrom
+            bin.setURI(URI(r.uri))
+            applyVolume()
+            pendingSeek = seekTo
+            if (playing) bin.play() else bin.pause()
+        }
     }
 
     private fun stop() {
@@ -144,6 +202,9 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         playing = false
         positionMs = 0
     }
+
+    /** What GStreamer gets (tests). */
+    internal val outputVolume: Double get() = bin.volume
 
     fun close() { bin.stop(); bin.dispose() }
 }

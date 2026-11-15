@@ -16,7 +16,7 @@ object AppData {
         MusicLibrary.load(c)
         PlaylistStore.load(c)
         Overrides.load(c)
-        Lrclib.init(c)
+        Lrclib.init(c.cacheDir)
         Server.load(c)
         PlayLog.load(c)
         Mixes.load(c)

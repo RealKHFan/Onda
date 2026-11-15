@@ -1,6 +1,5 @@
 package io.github.realkhfan.onda.data
 
-import android.content.Context
 import io.github.realkhfan.onda.core.LyricLine
 import io.github.realkhfan.onda.core.Lrc
 import io.github.realkhfan.onda.core.Match
@@ -20,8 +19,9 @@ object Lrclib {
 
     private var dir: File? = null
 
-    fun init(context: Context) {
-        dir = File(context.cacheDir, "lyrics").apply { mkdirs() }
+    /** [cacheDir]: the app's cache folder (phone or desktop). */
+    fun init(cacheDir: File) {
+        dir = File(cacheDir, "lyrics").apply { mkdirs() }
     }
 
     /** Network errors throw (and aren't cached); "no lyrics" is a normal, cached answer. */

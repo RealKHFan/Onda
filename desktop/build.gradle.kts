@@ -15,6 +15,8 @@ sourceSets.main {
         "io/github/realkhfan/onda/data/Deezer.kt",
         "io/github/realkhfan/onda/data/Subsonic.kt",
         "io/github/realkhfan/onda/data/FreeCatalogs.kt",
+        "io/github/realkhfan/onda/data/FullCopies.kt",
+        "io/github/realkhfan/onda/data/Lrclib.kt",
         "io/github/realkhfan/onda/desktop/**",
     )
 }
@@ -27,6 +29,9 @@ dependencies {
     implementation("org.json:json:20240303")
     implementation("org.freedesktop.gstreamer:gst1-java-core:1.4.0") // playback through the system's GStreamer
     implementation("net.jthink:jaudiotagger:3.0.1") // reads tags and covers from your files
+    implementation("com.github.hypfvieh:dbus-java-core:5.2.2") // MPRIS: media keys and the desktop's media controls
+    implementation("com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.2")
+    implementation("org.slf4j:slf4j-nop:2.0.17") // dbus-java logs through SLF4J; nothing to log
     implementation("io.coil-kt.coil3:coil-compose:3.1.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.1.0")
     testImplementation(kotlin("test"))
@@ -39,9 +44,9 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Rpm)
             packageName = "Onda"
-            packageVersion = "0.1.1"
+            packageVersion = "0.2.0"
             description = "Privacy-first music player"
-            modules("java.instrument", "jdk.unsupported", "jdk.crypto.ec", "java.naming", "java.sql")
+            modules("java.instrument", "jdk.unsupported", "jdk.security.auth", "jdk.crypto.ec", "java.naming", "java.sql")
             linux { iconFile.set(project.file("src/main/resources/onda.png")) }
         }
     }

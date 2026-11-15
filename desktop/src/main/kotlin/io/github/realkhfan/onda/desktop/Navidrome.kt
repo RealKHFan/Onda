@@ -33,6 +33,13 @@ object Navidrome {
         all.values.toList()
     }
 
+    /** The server's playlists (one request each, capped so a huge server can't stall the sync). */
+    suspend fun playlists(cfg: Subsonic.Config): List<Subsonic.Playlist> = withContext(Dispatchers.IO) {
+        Subsonic.parsePlaylistList(Subsonic.unwrap(Http.get(Subsonic.url(cfg, "getPlaylists"), readTimeoutMs = 30_000))).take(200).map { (id, name) ->
+            Subsonic.Playlist(id, name, Subsonic.parsePlaylistSongs(Subsonic.unwrap(Http.get(Subsonic.url(cfg, "getPlaylist", "id=${Http.enc(id)}"), readTimeoutMs = 30_000))))
+        }
+    }
+
     fun tracks(songs: List<Subsonic.Song>, cfg: Subsonic.Config?, kbps: Int): List<Track> = if (cfg == null) emptyList() else songs.map { s ->
         Track(PREFIX + s.id, Subsonic.streamUrl(cfg, s.id, kbps), s.title, s.artist.ifBlank { "Unknown artist" }, s.album.ifBlank { "Unknown album" },
             s.albumArtist.ifBlank { s.artist.ifBlank { "Unknown artist" } }, s.track, s.durationSec * 1000L, "Music server",
