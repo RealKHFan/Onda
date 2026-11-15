@@ -12,6 +12,9 @@ import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.util.concurrent.Executors
 import kotlin.test.Test
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.focusRequester
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
@@ -157,5 +160,28 @@ class ToolsTest {
         } finally {
             onUi { s.collection.playlists.filter { it.name == "night drive" }.forEach { s.deletePlaylist(it.id) } }
         }
+    }
+}
+
+class TextBoxTest {
+    // A plain text field lets Space and arrows through to the window, where they pause or seek the music.
+    @OptIn(androidx.compose.ui.InternalComposeUiApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
+    @Test fun spaceAndArrowsTypedInATextFieldNeverReachThePlayerShortcuts() {
+        var text by androidx.compose.runtime.mutableStateOf("ab")
+        val focus = androidx.compose.ui.focus.FocusRequester()
+        val scene = androidx.compose.ui.ImageComposeScene(400, 200) {
+            TextBox(text, { text = it }, modifier = androidx.compose.ui.Modifier.focusRequester(focus))
+            androidx.compose.runtime.LaunchedEffect(Unit) { focus.requestFocus() }
+        }
+        repeat(3) { scene.render(it * 16_000_000L) }
+        val K = androidx.compose.ui.input.key.Key
+        val down = androidx.compose.ui.input.key.KeyEventType.KeyDown
+        fun used(k: androidx.compose.ui.input.key.Key, ctrl: Boolean = false) =
+            scene.sendKeyEvent(androidx.compose.ui.input.key.KeyEvent(k, down, isCtrlPressed = ctrl))
+        assertTrue(used(K.Spacebar))
+        assertTrue(used(K.DirectionUp))
+        assertTrue(!used(K.F, ctrl = true)) // Ctrl+F still opens Search
+        assertTrue(!used(K.Escape)) // and Esc still goes back
+        scene.close()
     }
 }

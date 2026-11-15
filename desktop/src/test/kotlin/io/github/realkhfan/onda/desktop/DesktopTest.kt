@@ -78,6 +78,11 @@ class DesktopTest {
         repeat(3) { scene.render(176_000_000L + it * 16_000_000L) }
         File("build/screenshots/desktop-settings-tools.png").writeBytes(scene.render(240_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes)
         scene.close()
+        val edit = ImageComposeScene(1240, 800, Density(1f)) { OndaDesktop(state, player); EditDialog(state, state.local[2]) {} }
+        repeat(3) { edit.render(it * 16_000_000L) }
+        Thread.sleep(1500) // the catalog search (none on this machine)
+        File("build/screenshots/desktop-edit.png").writeBytes(edit.render(96_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes)
+        edit.close()
     }
 }
 

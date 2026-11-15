@@ -129,6 +129,12 @@ import io.github.realkhfan.onda.data.FreeCatalogs
 import io.github.realkhfan.onda.data.Lrclib
 import io.github.realkhfan.onda.data.Itunes
 import io.github.realkhfan.onda.data.Matcher
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onKeyEvent
 import io.github.realkhfan.onda.data.Overrides
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
@@ -248,7 +254,12 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         is View.ServerPlaylist -> SongList(ctx, v.p.name, "Playlist · Music server", state.serverPlaylistTracks(v.p), back = back) {
                             DownloadAll(ctx, state.serverPlaylistTracks(v.p))
                         }
-                        is View.LocalList -> SongList(ctx, v.title, v.subtitle, v.tracks, art = v.art, back = back)
+                        is View.LocalList -> {
+                            val tracks = v.tracks.map { state.byId[it.id] ?: it } // edited details show at once
+                            SongList(ctx, v.title, v.subtitle, tracks, art = v.art, back = back) {
+                                IconButton(onClick = { naming = Naming.EditMany(tracks.filterNot(state::isPreviewRow)) }) { Icon(Icons.Rounded.Edit, "Edit details of all songs", tint = TextDim) }
+                            }
+                        }
                         is View.CatalogArtist -> CatalogArtistPage(ctx, v.a, back)
                         is View.CatalogAlbum -> CatalogAlbumPage(ctx, v.a, back)
                     }
@@ -294,6 +305,8 @@ private sealed interface Naming {
     data class Rename(val id: String, val name: String) : Naming
     data class Delete(val id: String, val name: String) : Naming
     data class Edit(val t: Track) : Naming
+    /** The same artist or album for every song of a list (an album, an artist). */
+    data class EditMany(val tracks: List<Track>) : Naming
 }
 
 @Composable
@@ -305,26 +318,25 @@ private fun NamingDialog(state: AppState, n: Naming, close: () -> Unit) {
             dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
         return
     }
-    if (n is Naming.Edit) {
-        var title by remember { mutableStateOf(n.t.title) }
-        var artist by remember { mutableStateOf(n.t.artist) }
-        var album by remember { mutableStateOf(n.t.album) }
-        AlertDialog(onDismissRequest = close, title = { Text("Edit details") },
+    if (n is Naming.Edit) return EditDialog(state, n.t, close)
+    if (n is Naming.EditMany) {
+        var artist by remember { mutableStateOf("") }
+        var album by remember { mutableStateOf("") }
+        AlertDialog(onDismissRequest = close, title = { Text("Edit ${n.tracks.size} songs") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(title, { title = it }, label = { Text("Title") }, singleLine = true)
-                    OutlinedTextField(artist, { artist = it }, label = { Text("Artist") }, singleLine = true)
-                    OutlinedTextField(album, { album = it }, label = { Text("Album") }, singleLine = true)
-                    Text("Shown in Onda; the file itself isn't changed. Right-click → Restore original tags undoes it.", color = TextDim, fontSize = 12.sp)
+                    TextBox(artist, { artist = it }, label = { Text("Artist for all") }, placeholder = { Text("Leave empty to keep each song's") })
+                    TextBox(album, { album = it }, label = { Text("Album for all") }, placeholder = { Text("Leave empty to keep each song's") })
+                    Text("Titles stay. Shown in Onda; the files aren't changed.", color = TextDim, fontSize = 12.sp)
                 }
             },
-            confirmButton = { TextButton(onClick = { Overrides.edit(n.t, title, artist, album); close() }) { Text("Save", color = Accent) } },
+            confirmButton = { TextButton(onClick = { n.tracks.forEach { Overrides.edit(it, it.title, artist, album) }; close() }) { Text("Save", color = Accent) } },
             dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
         return
     }
     var name by remember { mutableStateOf(if (n is Naming.Rename) n.name else "") }
     AlertDialog(onDismissRequest = close, title = { Text(if (n is Naming.Rename) "Rename playlist" else "New playlist") },
-        text = { OutlinedTextField(name, { name = it }, singleLine = true, placeholder = { Text("Name") }) },
+        text = { TextBox(name, { name = it }, singleLine = true, placeholder = { Text("Name") }) },
         confirmButton = {
             TextButton(onClick = {
                 when (n) {
@@ -627,7 +639,7 @@ private fun Songs(ctx: Ctx) {
     if (all.isEmpty() && !state.scanning) return Note("No music yet. Add a folder or your Navidrome server in Settings.")
     Column {
         Row(Modifier.padding(24.dp, 16.dp, 24.dp, 0.dp)) {
-            OutlinedTextField(filter, { filter = it }, placeholder = { Text("Filter your songs") }, singleLine = true, modifier = Modifier.width(360.dp))
+            TextBox(filter, { filter = it }, placeholder = { Text("Filter your songs") }, singleLine = true, modifier = Modifier.width(360.dp))
         }
         SongList(ctx, "Songs", "Your library", shown)
     }
@@ -725,7 +737,7 @@ private fun Search(ctx: Ctx) {
             Column(Modifier.padding(24.dp)) {
                 Text("Search", color = TextMain, fontSize = 30.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(12.dp))
-                OutlinedTextField(q, { q = it }, placeholder = { Text("Songs, artists and albums, here and online") }, singleLine = true, modifier = Modifier.width(480.dp))
+                TextBox(q, { q = it }, placeholder = { Text("Songs, artists and albums, here and online") }, singleLine = true, modifier = Modifier.width(480.dp))
                 problem?.let { Text(it, color = TextDim, modifier = Modifier.padding(top = 8.dp)) }
             }
         }
@@ -876,7 +888,7 @@ private fun SettingsPage(ctx: Ctx) {
                     OutlinedButton(onClick = { state.rescan() }, enabled = !state.scanning) { Text("Rescan") }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(typedFolder, { typedFolder = it }, label = { Text("Or type a folder path") },
+                    TextBox(typedFolder, { typedFolder = it }, label = { Text("Or type a folder path") },
                         placeholder = { Text("~/Music") }, singleLine = true, modifier = Modifier.width(420.dp))
                     OutlinedButton(onClick = {
                         val path = FolderPicker.resolve(typedFolder)
@@ -906,9 +918,9 @@ private fun SettingsPage(ctx: Ctx) {
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(url, { url = it }, label = { Text("Server address") }, placeholder = { Text("http://192.168.1.20:4533") }, singleLine = true, modifier = Modifier.width(420.dp))
-                    OutlinedTextField(user, { user = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.width(420.dp))
-                    OutlinedTextField(password, { password = it }, label = { Text("Password") }, singleLine = true, modifier = Modifier.width(420.dp),
+                    TextBox(url, { url = it }, label = { Text("Server address") }, placeholder = { Text("http://192.168.1.20:4533") }, singleLine = true, modifier = Modifier.width(420.dp))
+                    TextBox(user, { user = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.width(420.dp))
+                    TextBox(password, { password = it }, label = { Text("Password") }, singleLine = true, modifier = Modifier.width(420.dp),
                         visualTransformation = PasswordVisualTransformation())
                     Button(onClick = {
                         connecting = true; problem = null
@@ -927,8 +939,8 @@ private fun SettingsPage(ctx: Ctx) {
                     "details, and artist photos are fetched too. Your audio files are never changed.", color = TextDim, fontSize = 13.sp)
                 if (m.running) Button(onClick = { ctx.push(View.Match) }) { Text("Matching… view progress") }
                 else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { Matcher.start(state.library, onlyNew = true); ctx.push(View.Match) }) { Text("Match new songs") }
-                    OutlinedButton(onClick = { Matcher.start(state.library, onlyNew = false); ctx.push(View.Match) }) { Text("Match all songs") }
+                    Button(onClick = { Matcher.start(state.library, onlyNew = true, apple = state.settings.apple); ctx.push(View.Match) }) { Text("Match new songs") }
+                    OutlinedButton(onClick = { Matcher.start(state.library, onlyNew = false, apple = state.settings.apple); ctx.push(View.Match) }) { Text("Match all songs") }
                     if (m.proposals.isNotEmpty()) OutlinedButton(onClick = { ctx.push(View.Match) }) { Text("Review ${m.proposals.size}") }
                 }
                 OutlinedButton(onClick = { ctx.push(View.Rename) }) { Text("Rename files from tags") }
@@ -1363,6 +1375,88 @@ private fun DownloadAll(ctx: Ctx, tracks: List<Track>) {
     if (items.isNotEmpty()) IconButton(onClick = { ctx.download(items) }) { Icon(Icons.Rounded.Download, "Download ${items.size} songs", tint = TextDim) }
 }
 
+/** A text field whose keys stay in it: a space never pauses the music, arrows never seek. Enter runs [onEnter]. */
+@Composable
+internal fun TextBox(
+    value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, label: (@Composable () -> Unit)? = null,
+    placeholder: (@Composable () -> Unit)? = null, singleLine: Boolean = true,
+    visualTransformation: androidx.compose.ui.text.input.VisualTransformation = androidx.compose.ui.text.input.VisualTransformation.None,
+    onEnter: (() -> Unit)? = null,
+) = OutlinedTextField(value, onValueChange, modifier.onKeyEvent { e ->
+    if (e.type != KeyEventType.KeyDown) false
+    else if (e.key == Key.Enter && onEnter != null) { onEnter(); true }
+    else !e.isCtrlPressed && e.key != Key.Escape // Ctrl+F and Esc still work while typing
+}, label = label, placeholder = placeholder, singleLine = singleLine, visualTransformation = visualTransformation)
+
+/** Edit a song's details by hand, or search the catalogs and pick the right song: its title, artist, album and cover. */
+@Composable
+internal fun EditDialog(state: AppState, t: Track, close: () -> Unit) {
+    var title by remember { mutableStateOf(t.title) }
+    var artist by remember { mutableStateOf(t.artist) }
+    var album by remember { mutableStateOf(t.album) }
+    var picked by remember { mutableStateOf<RemoteTrack?>(null) }
+    var q by remember { mutableStateOf(io.github.realkhfan.onda.core.MetaMatch.query(t)) }
+    var results by remember { mutableStateOf<List<RemoteTrack>?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    fun search() {
+        if (q.isBlank()) return
+        searching = true
+        scope.launch {
+            results = coroutineScope {
+                val dz = async { runCatching { Deezer.search(q, 15) }.getOrDefault(emptyList()) }
+                val ap = async { if (state.settings.apple) runCatching { Itunes.searchSongs(q) }.getOrDefault(emptyList()) else emptyList() }
+                Match.mergeTracks(dz.await(), ap.await())
+            }
+            searching = false
+        }
+    }
+    LaunchedEffect(Unit) { search() }
+    AlertDialog(onDismissRequest = close, title = { Text("Edit details") }, modifier = Modifier.width(720.dp),
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        text = {
+            Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                Column(Modifier.width(280.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextBox(title, { title = it }, label = { Text("Title") })
+                    TextBox(artist, { artist = it }, label = { Text("Artist") })
+                    TextBox(album, { album = it }, label = { Text("Album") })
+                    Text("Shown in Onda; the file isn't changed. Right-click → Restore original tags undoes it.", color = TextDim, fontSize = 12.sp)
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextBox(q, { q = it }, label = { Text("Find the song online") }, onEnter = ::search, modifier = Modifier.fillMaxWidth())
+                    Text(if (searching) "Searching…" else "Click the right song to fill in its details and cover.", color = TextDim, fontSize = 12.sp)
+                    LazyColumn(Modifier.height(300.dp)) {
+                        items(results.orEmpty()) { r ->
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(if (picked == r) Raised else Color.Transparent)
+                                .clickable { picked = r; title = r.title; artist = r.artist; album = r.album.ifBlank { album } }.padding(6.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Art(r.cover, 40)
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(r.title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("${r.artist} · ${r.album}", color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                // The length tells versions apart (radio edit, extended, live).
+                                Text(time(r.durationSec * 1000L), color = TextDim, fontSize = 12.sp)
+                            }
+                        }
+                        if (results?.isEmpty() == true) item { Text("Nothing found. Try other words.", color = TextDim, modifier = Modifier.padding(8.dp)) }
+                    }
+                    if (t.durationMs > 0) Text("Your file: ${time(t.durationMs)}", color = TextDim, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val p = picked
+                if (p != null && p.title == title && p.artist == artist && (p.album.isBlank() || p.album == album)) Overrides.replace(t, p)
+                else Overrides.edit(t, title, artist, album, cover = p?.cover)
+                close()
+            }) { Text("Save", color = Accent) }
+        },
+        dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
+}
+
 /* ---------- Match metadata, rename files ---------- */
 
 /** Review of Deezer matches: keep your file's details or replace them, song by song or all at once. */
@@ -1408,7 +1502,7 @@ private fun ProposalCard(p: Matcher.Proposal) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             MatchSide("Your file", t.artUri, t.title, t.artist, t.album, t.durationMs, Modifier.weight(1f), null)
             Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, tint = TextDim, modifier = Modifier.padding(horizontal = 10.dp))
-            MatchSide("Deezer", m.cover, m.title, m.artist, m.album.ifBlank { t.album }, m.durationSec * 1000L, Modifier.weight(1f), t)
+            MatchSide(m.source.label, m.cover, m.title, m.artist, m.album.ifBlank { t.album }, m.durationSec * 1000L, Modifier.weight(1f), t)
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = { Matcher.decide(p, false) }) { Text("Keep", color = TextDim) }

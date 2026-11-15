@@ -42,7 +42,8 @@ object Matcher {
     private var job: Job? = null
 
     /** [tracks] are the songs as currently shown (with earlier matches applied). */
-    fun start(tracks: List<Track>, onlyNew: Boolean) {
+    /** [apple]: also ask Apple's catalog when Deezer has nothing (only when the user switched Apple search on). */
+    fun start(tracks: List<Track>, onlyNew: Boolean, apple: Boolean = false) {
         if (job?.isActive == true) return
         val reviewed = Overrides.reviewed.value
         val todo = if (onlyNew) tracks.filter { it.id !in reviewed } else tracks
@@ -52,7 +53,7 @@ object Matcher {
             var failuresInARow = 0
             for ((i, t) in todo.withIndex()) {
                 val candidates = try {
-                    Deezer.search(MetaMatch.query(t), limit = 10).also { failuresInARow = 0 }
+                    candidates(t, apple).also { failuresInARow = 0 }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -79,6 +80,18 @@ object Matcher {
             fetchArtistPictures(tracks, retryMissing = !onlyNew)
             _state.update { it.copy(running = false) }
         }
+    }
+
+    /** Searches the readings of the file one by one and stops at the first that finds the song. */
+    private suspend fun candidates(t: Track, apple: Boolean): List<RemoteTrack> {
+        val seen = ArrayList<RemoteTrack>()
+        for ((i, q) in MetaMatch.queries(t).withIndex()) {
+            if (i > 0) delay(120)
+            seen += Deezer.search(q, limit = 10)
+            if (MetaMatch.best(t, seen) != null) return seen
+        }
+        if (apple) for (q in MetaMatch.queries(t).take(1)) seen += Itunes.searchSongs(q)
+        return seen
     }
 
     fun stop() {

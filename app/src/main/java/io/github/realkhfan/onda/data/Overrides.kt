@@ -1,6 +1,7 @@
 package io.github.realkhfan.onda.data
 
 import io.github.realkhfan.onda.core.RemoteTrack
+import io.github.realkhfan.onda.core.Source
 import io.github.realkhfan.onda.core.Track
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,7 +46,8 @@ object Overrides {
         }
 
     fun replace(local: Track, r: RemoteTrack) {
-        _meta.value = _meta.value + (local.id to Meta(r.title, r.artist, r.album.ifBlank { local.album }, r.cover, r.id))
+        // Only a Deezer id is kept: it makes the song's link; an Apple id there would point to another song.
+        _meta.value = _meta.value + (local.id to Meta(r.title, r.artist, r.album.ifBlank { local.album }, r.cover, if (r.source == Source.DEEZER) r.id else 0))
         _reviewed.value = _reviewed.value + local.id
         val key = r.artist.lowercase()
         if (r.artistPicture != null && _artistPics.value[key].isNullOrBlank()) {
@@ -54,11 +56,11 @@ object Overrides {
         write()
     }
 
-    /** Details typed in by hand; a cover and Deezer link from an earlier match stay. Blank fields keep what was shown. */
-    fun edit(t: Track, title: String, artist: String, album: String) {
+    /** Details typed in by hand; a cover ([cover], or one from an earlier match) and Deezer link stay. Blank fields keep what was shown. */
+    fun edit(t: Track, title: String, artist: String, album: String, cover: String? = null) {
         val old = _meta.value[t.id]
         _meta.value = _meta.value + (t.id to Meta(title.trim().ifEmpty { t.title }, artist.trim().ifEmpty { t.artist },
-            album.trim().ifEmpty { t.album }, old?.cover, old?.deezerId ?: 0))
+            album.trim().ifEmpty { t.album }, cover ?: old?.cover, old?.deezerId ?: 0))
         _reviewed.value = _reviewed.value + t.id
         write()
     }

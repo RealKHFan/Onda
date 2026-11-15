@@ -13,6 +13,9 @@ object MetaMatch {
     private val versionWords =
         Regex("""\b(sped ?up|speed ?up|slowed|reverb|nightcore|remix|live|karaoke|instrumental|acoustic|8d)\b""", RegexOption.IGNORE_CASE)
 
+    // "17. Song", "03 - Song", "1) Song": a track number left in the title by a rip; "1-800…" and "99 Problems" stay.
+    private val trackNo = Regex("""^\s*\d{1,3}\s*(?:[.)]|\s-)\s+""")
+
     private fun versionOf(title: String): Set<String> =
         versionWords.findAll(title).map { it.value.lowercase().replace(" ", "") }.toSet()
 
@@ -25,8 +28,20 @@ object MetaMatch {
             artist = title.substringBefore(" - ").trim()
             title = title.substringAfter(" - ").trim()
         }
-        return title.replace(junk, "").trim() to artist
+        return title.replace(junk, "").replace(trackNo, "").trim() to artist
     }
+
+    /** Ways to read a file's title and artist: as tagged, and an "Artist - Title" title split apart (uploader names as artist). */
+    fun readings(t: Track): List<Pair<String, String>> {
+        val (title, artist) = cleaned(t)
+        val out = mutableListOf(title to artist)
+        if (artist.isNotEmpty() && " - " in title) out += title.substringAfter(" - ").trim() to title.substringBefore(" - ").trim()
+        return out.filter { it.first.isNotEmpty() }.distinct()
+    }
+
+    /** What to search for, best first; the last is the title alone, for files whose artist tag is wrong (an "OST" or a channel). */
+    fun queries(t: Track): List<String> =
+        (readings(t).map { (title, artist) -> "$artist $title".trim() } + readings(t).first().first).distinct()
 
     /** Both titles name the same version: a remix, live or sped-up take never stands in for the original. */
     fun sameVersion(a: String, b: String): Boolean = versionOf(a) == versionOf(b)
@@ -48,11 +63,13 @@ object MetaMatch {
         return named.isNotEmpty() && up.isNotEmpty() && !named.contains(up) && !up.contains(named)
     }
 
-    fun query(t: Track): String = cleaned(t).let { (title, artist) -> "$artist $title".trim() }
+    fun query(t: Track): String = queries(t).first()
 
-    /** HIGH: safe to replace in bulk. MAYBE: show for review. null: not the same song. */
-    fun judge(local: Track, c: RemoteTrack): Confidence? {
-        val (title, artist) = cleaned(local)
+    /** HIGH: safe to replace in bulk. MAYBE: show for review. null: not the same song. The best of the [readings] counts. */
+    fun judge(local: Track, c: RemoteTrack): Confidence? =
+        readings(local).mapNotNull { (title, artist) -> judge(title, artist, local, c) }.minByOrNull { it.ordinal }
+
+    private fun judge(title: String, artist: String, local: Track, c: RemoteTrack): Confidence? {
         val lt = Match.norm(title)
         val ct = Match.norm(c.title)
         if (lt.isEmpty() || ct.isEmpty()) return null

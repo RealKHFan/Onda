@@ -20,6 +20,20 @@ class MetaMatchTest {
         assertEquals("takayan Dopa", MetaMatch.query(local("takayan - Dopa (Official Video)")))
     }
 
+    @Test fun ripsWithArtistInTheTitleOrATrackNumberStillMatch() {
+        // An uploader's name as artist, the real artist in the title (invented names).
+        val rip = local("\$werve - bitkrush!", "swerve", sec = 150)
+        assertEquals(listOf("\$werve - bitkrush!" to "swerve", "bitkrush!" to "\$werve"), MetaMatch.readings(rip))
+        assertEquals(Confidence.HIGH, MetaMatch.judge(rip, remote("bitkrush!", "\$werve", 151)))
+        // A track number in the title and a soundtrack name as artist: the title alone is searched last, and it needs the length.
+        val ost = local("17. Hero Theme", "Some Show OST", sec = 200)
+        assertEquals(listOf("Some Show OST Hero Theme", "Hero Theme"), MetaMatch.queries(ost))
+        assertEquals(Confidence.MAYBE, MetaMatch.judge(ost, remote("Hero Theme", "A Composer", 201)))
+        assertNull(MetaMatch.judge(ost, remote("Hero Theme", "A Composer", 260)))
+        assertEquals("99 Problems" to "Band", MetaMatch.cleaned(local("99 Problems", "Band")))
+        assertEquals("1-800 Song" to "Band", MetaMatch.cleaned(local("1-800 Song", "Band")))
+    }
+
     @Test fun sameTitleArtistAndLengthIsConfident() {
         assertEquals(Confidence.HIGH, MetaMatch.judge(local("Dopa", "takayan", sec = 103), remote("Dopa", "Takayan", 104)))
     }
