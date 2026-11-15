@@ -1,6 +1,7 @@
 package io.github.realkhfan.onda.data
 
 import android.content.Context
+import org.json.JSONObject
 
 /** Small user settings, in the same "onda" prefs file the library uses for its folders. */
 object Prefs {
@@ -45,6 +46,34 @@ object Prefs {
     /** Off by default: downloads wait for Wi-Fi (or any unmetered network). */
     fun mobileDownloads(ctx: Context): Boolean = p(ctx).getBoolean("mobile_downloads", false)
     fun setMobileDownloads(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("mobile_downloads", on).apply()
+
+    /** On by default: when the queue runs out, similar songs keep playing. */
+    fun autoplay(ctx: Context): Boolean = p(ctx).getBoolean("autoplay", true)
+    fun setAutoplay(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("autoplay", on).apply()
+
+    /** Folder for the daily automatic backup (a tree URI), and when it last ran. */
+    fun backupTree(ctx: Context): String? = p(ctx).getString("backup_tree", null)
+    fun setBackupTree(ctx: Context, uri: String?) = p(ctx).edit().putString("backup_tree", uri).apply()
+    fun lastBackup(ctx: Context): Long = p(ctx).getLong("last_backup", 0)
+    fun setLastBackup(ctx: Context, at: Long) = p(ctx).edit().putLong("last_backup", at).apply()
+
+    // Settings that go into a backup. Not the server login (it's a credential) and not folders (their access is per phone).
+    private val bools = listOf("apple_search", "free_search", "release_alerts", "keep_playing", "mobile_downloads", "autoplay")
+
+    fun export(ctx: Context): JSONObject = JSONObject().also { o ->
+        val p = p(ctx)
+        bools.forEach { k -> if (p.contains(k)) o.put(k, p.getBoolean(k, false)) }
+        p.getString("jamendo_id", null)?.let { o.put("jamendo_id", it) }
+        if (p.contains("stream_kbps")) o.put("stream_kbps", p.getInt("stream_kbps", 0))
+    }
+
+    fun import(ctx: Context, o: JSONObject) {
+        val e = p(ctx).edit()
+        bools.forEach { k -> if (o.has(k)) e.putBoolean(k, o.optBoolean(k)) }
+        if (o.has("jamendo_id")) e.putString("jamendo_id", o.optString("jamendo_id").trim())
+        if (o.has("stream_kbps")) e.putInt("stream_kbps", o.optInt("stream_kbps"))
+        e.apply()
+    }
 
     /** Off by default: closing Onda from Recents pauses it and ends background playback. */
     fun keepPlaying(ctx: Context): Boolean = p(ctx).getBoolean("keep_playing", false)

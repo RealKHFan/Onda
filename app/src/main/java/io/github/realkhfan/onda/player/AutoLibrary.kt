@@ -115,10 +115,14 @@ class AutoLibrary(private val context: Context, private val scope: CoroutineScop
         )
         AutoTree.PLAYLISTS -> buildList {
             add(menu(AutoTree.LIKED, "Liked Songs"))
-            Discovery.Kind.entries.forEach { k -> if (Mixes.mixes.value[k]?.tracks?.isNotEmpty() == true) add(menu("mix:${k.name}", k.label)) }
+            Discovery.Kind.entries.forEach { k ->
+                Mixes.mixes.value[k]?.tracks?.takeIf { it.isNotEmpty() }?.let { add(menu("mix:${k.name}", k.label, art = it.firstNotNullOfOrNull(ArtProvider::uriFor))) }
+            }
             val ids = byId()
             PlaylistStore.playlists.value.forEach { pl ->
-                add(menu("pl:${pl.id}", pl.name, art = pl.trackIds.firstNotNullOfOrNull { ids[it]?.let(ArtProvider::uriFor) }))
+                add(menu("pl:${pl.id}", pl.name, art = pl.trackIds.firstNotNullOfOrNull {
+                    ids[it]?.let(ArtProvider::uriFor) ?: PlaylistStore.remote.value[it]?.let(ArtProvider::uriFor)
+                }))
             }
         }
         AutoTree.ALBUMS -> Grouping.albums(library()).map { a ->
@@ -131,7 +135,7 @@ class AutoLibrary(private val context: Context, private val scope: CoroutineScop
             when (song) {
                 is Track -> song.toMediaItem().forMenu(AutoTree.entry(parent, song.id), ArtProvider.uriFor(song))
                 is RemoteTrack -> MediaItem.Builder().setMediaId(AutoTree.entry(parent, song.key)).setMediaMetadata(
-                    MediaMetadata.Builder().setTitle(song.title).setArtist("Preview · ${song.artist}")
+                    MediaMetadata.Builder().setTitle(song.title).setArtist("Preview · ${song.artist}").setArtworkUri(ArtProvider.uriFor(song))
                         .setIsBrowsable(false).setIsPlayable(true).setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC).build(),
                 ).build()
                 else -> error("unknown song")

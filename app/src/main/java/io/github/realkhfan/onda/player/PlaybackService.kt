@@ -1,5 +1,12 @@
 package io.github.realkhfan.onda.player
 
+import kotlinx.coroutines.launch
+import io.github.realkhfan.onda.scan.MusicLibrary
+import io.github.realkhfan.onda.data.Overrides
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.common.Player
+import androidx.media3.common.MediaItem
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import io.github.realkhfan.onda.data.Prefs
@@ -30,7 +37,13 @@ class PlaybackService : MediaLibraryService() {
         AppData.load(this) // a car can start Onda without its screen
         PreviewResolver.freeSources = { Prefs.freeSearch(this) to Prefs.jamendoId(this) }
         // Previews queued as "dzpreview:<id>" get a fresh link right before they load.
-        val sources = ResolvingDataSource.Factory(DefaultDataSource.Factory(this), PreviewResolver)
+        // Streams (http/https) go through the playback cache; your files are read directly.
+        val cached = CacheDataSource.Factory()
+            .setCache(PlaybackCache.get(this))
+            .setUpstreamDataSourceFactory(DefaultHttpDataSource.Factory())
+            .setCacheKeyFactory { spec -> PlaybackCache.key(spec.uri.toString()) }
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        val sources = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, cached), PreviewResolver)
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(sources))
             .setAudioAttributes(
@@ -42,7 +55,32 @@ class PlaybackService : MediaLibraryService() {
             )
             .setHandleAudioBecomingNoisy(true)
             .build()
+        player.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = extendIfEnding(player)
+        })
         session = MediaLibrarySession.Builder(this, player, AutoLibrary(this, scope)).build()
+    }
+
+    private var extending = false
+
+    /** On the last song (repeat off), add similar songs so the music doesn't stop, if Settings allows. */
+    private fun extendIfEnding(p: Player) {
+        if (extending || !Prefs.autoplay(this) || p.repeatMode != Player.REPEAT_MODE_OFF) return
+        if (p.mediaItemCount == 0 || p.currentMediaItemIndex != p.mediaItemCount - 1) return
+        val items = (0 until p.mediaItemCount).map { p.getMediaItemAt(it) }
+        val artists = items.takeLast(5).reversed().mapNotNull { it.mediaMetadata.artist?.toString() }
+        extending = true
+        scope.launch {
+            try {
+                val lib = AppData.library(MusicLibrary.tracks.value, AppData.serverTracks(), Overrides.meta.value)
+                val more = Autoplay.similar(artists, items.map { it.mediaId }.toSet(), lib)
+                // Still on the last song (nothing was added meanwhile)?
+                if (more.isNotEmpty() && p.currentMediaItemIndex == p.mediaItemCount - 1) p.addMediaItems(more)
+            } catch (_: Exception) {
+            } finally {
+                extending = false
+            }
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = session

@@ -16,6 +16,7 @@ object Catalog {
         val audius = async { if (free) runCatching { FreeCatalogs.audius(query) } else none }
         val jamendo = async { if (jamendoId.isNotBlank()) runCatching { FreeCatalogs.jamendo(query, jamendoId) } else none }
         val archive = async { if (free) runCatching { FreeCatalogs.archive(query) } else Result.success(emptyList()) }
+        val openverse = async { if (free) runCatching { FreeCatalogs.openverse(query) } else none }
         val tracks = async { runCatching { Deezer.search(query) } }
         val artists = async { runCatching { Deezer.searchArtists(query) } }
         val albums = async { runCatching { Deezer.searchAlbums(query) } }
@@ -27,7 +28,8 @@ object Catalog {
         val au = audius.await()
         val ja = jamendo.await()
         val ia = archive.await()
-        val used = listOf(t, ar, al) + listOfNotNull(it.takeIf { apple }, au.takeIf { free }, ia.takeIf { free }, ja.takeIf { jamendoId.isNotBlank() })
+        val ov = openverse.await()
+        val used = listOf(t, ar, al) + listOfNotNull(it.takeIf { apple }, au.takeIf { free }, ia.takeIf { free }, ov.takeIf { free }, ja.takeIf { jamendoId.isNotBlank() })
         if (used.all { r -> r.isFailure }) throw t.exceptionOrNull()!!
         // AI-generated "artists" (community list + your own marks) never show up.
         val ai = UserCollection::isAi
@@ -35,7 +37,8 @@ object Catalog {
             tracks = Match.mergeTracks(t.getOrDefault(emptyList()), it.getOrDefault(emptyList())).filterNot { x -> ai(x.artist) },
             artists = ar.getOrDefault(emptyList()).filterNot { x -> ai(x.name) },
             albums = al.getOrDefault(emptyList()).filterNot { x -> ai(x.artist) },
-            free = Match.mergeTracks(ja.getOrDefault(emptyList()), au.getOrDefault(emptyList())).filterNot { x -> ai(x.artist) },
+            free = Match.mergeTracks(Match.mergeTracks(ja.getOrDefault(emptyList()), ov.getOrDefault(emptyList())), au.getOrDefault(emptyList()))
+                .distinctBy { x -> x.key }.filterNot { x -> ai(x.artist) },
             freeAlbums = ia.getOrDefault(emptyList()).filterNot { x -> ai(x.artist) },
         )
     }

@@ -1,5 +1,9 @@
 package io.github.realkhfan.onda.data
 
+import kotlinx.coroutines.delay
+import java.io.File
+import org.json.JSONObject
+import org.json.JSONArray
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -43,7 +47,14 @@ object Downloads {
     /** [replaces]: the server song's id, so playlists and likes move to the file once it's saved. */
     data class Item(val title: String, val artist: String, val url: String, val ext: String?, val replaces: String? = null)
 
-    data class State(val running: Boolean = false, val done: Int = 0, val total: Int = 0, val failed: Int = 0, val current: String? = null)
+    data class State(
+        val running: Boolean = false, val done: Int = 0, val total: Int = 0, val failed: Int = 0, val current: String? = null,
+        /** Stopped without a connection; the rest continues the next time Onda opens. */
+        val paused: Boolean = false,
+    )
+
+    /** A failure that retrying can't fix (not audio, no usable name, the file is gone). */
+    private class Permanent(message: String) : IOException(message)
 
     const val FOLDER = "Onda downloads"
     private const val CHANNEL = "downloads"
@@ -52,6 +63,31 @@ object Downloads {
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
     private val queue = ArrayDeque<Item>() // touched on the main thread only
+    private var pendingFile: File? = null
+
+    /** Unfinished downloads are kept on disk, so a closed app, a lost connection or Android's daily limit loses nothing. */
+    private fun persist() {
+        val f = pendingFile ?: return
+        runCatching {
+            val arr = JSONArray(queue.map {
+                JSONObject().put("t", it.title).put("a", it.artist).put("u", it.url).put("e", it.ext).put("r", it.replaces)
+            })
+            File(f.path + ".tmp").apply { writeText(arr.toString()) }.renameTo(f)
+        }
+    }
+
+    /** Called when Onda opens: continues downloads that didn't finish (quietly; a reason not to is just kept for later). */
+    fun resume(context: Context) {
+        pendingFile = File(context.filesDir, "downloads.json")
+        if (_state.value.running) return
+        val saved = runCatching {
+            val arr = JSONArray(pendingFile!!.readText())
+            (0 until arr.length()).map { i ->
+                arr.getJSONObject(i).let { Item(it.getString("t"), it.getString("a"), it.getString("u"), it.optString("e").ifBlank { null }, it.optString("r").ifBlank { null }) }
+            }
+        }.getOrDefault(emptyList())
+        if (saved.isNotEmpty()) start(context, saved)
+    }
 
     fun forTrack(t: Track, cfg: Subsonic.Config?): Item? =
         if (cfg != null && t.id.startsWith(Server.PREFIX)) {
@@ -73,9 +109,13 @@ object Downloads {
         if (!Prefs.mobileDownloads(context) && cm.isActiveNetworkMetered) {
             return "You're on mobile data. Downloads wait for Wi-Fi; allow mobile data in Settings → Downloads."
         }
+        if (pendingFile == null) pendingFile = File(context.filesDir, "downloads.json")
+        val new = items.filter { i -> queue.none { it.url == i.url } }.distinctBy { it.url }
+        if (new.isEmpty() && _state.value.running) return null
         val fresh = !_state.value.running
-        queue.addAll(items)
-        _state.value = if (fresh) State(running = true, total = items.size) else _state.value.let { it.copy(total = it.total + items.size) }
+        queue.addAll(new)
+        persist()
+        _state.value = if (fresh) State(running = true, total = queue.size) else _state.value.let { it.copy(total = it.total + new.size) }
         if (fresh) context.startForegroundService(Intent(context, DownloadService::class.java))
         return null
     }
@@ -87,25 +127,42 @@ object Downloads {
             val tree = targetFolder(ctx)?.let(Uri::parse) ?: throw IOException("No writable music folder")
             val dir = withContext(Dispatchers.IO) { downloadDir(ctx, tree) }
             val existing = withContext(Dispatchers.IO) { names(ctx, tree, dir) }
-            while (queue.isNotEmpty()) {
-                val item = queue.removeFirst()
+            outer@ while (queue.isNotEmpty()) {
+                val item = queue.first()
                 _state.value = _state.value.copy(current = item.title)
                 notify(ctx, progress = true)
-                try {
-                    val saved = withContext(Dispatchers.IO) { save(ctx, tree, dir, item, existing) }
-                    if (saved != null && item.replaces != null) moved[item.replaces] = saved
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    _state.value = _state.value.copy(failed = _state.value.failed + 1)
+                var attempt = 0
+                while (true) {
+                    try {
+                        val saved = withContext(Dispatchers.IO) { save(ctx, tree, dir, item, existing) }
+                        if (saved != null && item.replaces != null) moved[item.replaces] = saved
+                        break
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        if (e !is Permanent && !online(ctx)) {
+                            _state.value = _state.value.copy(paused = true) // keep it and everything after it
+                            break@outer
+                        }
+                        if (e is Permanent || ++attempt >= 3) {
+                            _state.value = _state.value.copy(failed = _state.value.failed + 1)
+                            break
+                        }
+                        delay(attempt * 5_000L) // a short hiccup: try again
+                    }
                 }
+                queue.removeFirst()
+                persist()
                 _state.value = _state.value.copy(done = _state.value.done + 1)
             }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
             _state.value = _state.value.let { it.copy(failed = it.failed + it.total - it.done, done = it.total) } // no folder: none could go
+            queue.clear()
+            persist()
         } finally {
+            // Whatever is left (paused, cancelled, Android's time limit) stays on disk for next time.
             queue.clear()
             _state.value = _state.value.copy(running = false, current = null)
             notify(ctx, progress = false)
@@ -150,12 +207,14 @@ object Downloads {
         conn.readTimeout = 30_000
         conn.setRequestProperty("User-Agent", "Onda")
         try {
-            if (conn.responseCode !in 200..299) throw IOException("HTTP ${conn.responseCode}")
+            val code = conn.responseCode
+            if (code in 400..499) throw Permanent("HTTP $code") // gone or not allowed: retrying won't help
+            if (code !in 200..299) throw IOException("HTTP $code")
             val type = conn.contentType.orEmpty()
             // A music server reports a refused download as JSON/XML; never save that as a song.
-            if ("json" in type || "xml" in type || type.startsWith("text/")) throw IOException("Not audio: $type")
+            if ("json" in type || "xml" in type || type.startsWith("text/")) throw Permanent("Not audio: $type")
             val ext = item.ext ?: FileNames.extFrom(conn.getHeaderField("Content-Disposition"), type)
-            val name = FileNames.forSong(item.title, item.artist, ext) ?: throw IOException("No usable name")
+            val name = FileNames.forSong(item.title, item.artist, ext) ?: throw Permanent("No usable name")
             if (name.lowercase() in existing) return null
             val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
             val doc = DocumentsContract.createDocument(ctx.contentResolver, dir, mime, name) ?: throw IOException("Can't create file")
@@ -180,6 +239,10 @@ object Downloads {
         val s = _state.value
         val open = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val b = Notification.Builder(ctx, CHANNEL).setSmallIcon(R.drawable.ic_stat_onda).setContentIntent(open)
+        if (s.paused) {
+            return b.setContentTitle("Downloads paused: no connection")
+                .setContentText("${s.total - s.done} left. They continue the next time you open Onda.").setAutoCancel(true).build()
+        }
         return if (progress) {
             b.setContentTitle("Downloading ${minOf(s.done + 1, s.total)} of ${s.total}").setContentText(s.current)
                 .setProgress(s.total, s.done, false).setOngoing(true).setOnlyAlertOnce(true).build()
@@ -189,6 +252,8 @@ object Downloads {
                 .setContentText("They're in your library, in “$FOLDER”.").setAutoCancel(true).build()
         }
     }
+
+    private fun online(ctx: Context) = ctx.getSystemService(ConnectivityManager::class.java).activeNetwork != null
 
     private fun notify(ctx: Context, progress: Boolean) {
         runCatching { ctx.getSystemService(NotificationManager::class.java).notify(NOTE_ID, notification(ctx, progress)) }

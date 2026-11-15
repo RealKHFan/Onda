@@ -1,5 +1,6 @@
 package io.github.realkhfan.onda.player
 
+import io.github.realkhfan.onda.core.RemoteTrack
 import android.content.ContentProvider
 import android.content.ContentValues
 import android.database.Cursor
@@ -23,6 +24,19 @@ class ArtProvider : ContentProvider() {
         const val AUTHORITY = "io.github.realkhfan.onda.art"
         private val NAME = Regex("""[A-Za-z0-9_-]{1,64}(\.jpg)?""")
         private const val MAX_BYTES = 5 shl 20
+        private val WEB_NAME = Regex("""[A-Za-z0-9_-]{8,1200}""")
+        // Only known cover hosts, so the provider can never be used to fetch anything else.
+        private val WEB_HOSTS = listOf(".dzcdn.net", ".mzstatic.com", "archive.org", ".audius.co", ".jamendo.com", ".wikimedia.org", ".openverse.org")
+
+        fun webAllowed(url: String): Boolean {
+            val host = runCatching { java.net.URI(url).takeIf { it.scheme == "https" }?.host }.getOrNull()?.lowercase() ?: return false
+            return WEB_HOSTS.any { h -> host.endsWith(h) || host == h.trimStart('.') }
+        }
+
+        fun uriFor(r: RemoteTrack): Uri? = r.cover?.takeIf(::webAllowed)?.let {
+            Uri.parse("content://$AUTHORITY/web/" + android.util.Base64.encodeToString(it.toByteArray(),
+                android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING))
+        }
 
         fun uriFor(t: Track): Uri? = when {
             t.artUri?.startsWith("file:") == true ->
@@ -38,14 +52,22 @@ class ArtProvider : ContentProvider() {
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
         if (mode != "r") throw SecurityException("Covers are read-only")
         val ctx = context ?: throw FileNotFoundException()
-        val name = uri.pathSegments.getOrNull(1)?.takeIf { NAME.matches(it) } ?: throw FileNotFoundException()
+        val seg = uri.pathSegments.getOrNull(1) ?: throw FileNotFoundException()
         val file = when (uri.pathSegments.firstOrNull()) {
-            "art" -> File(File(ctx.cacheDir, "art"), name)
-            "srv" -> serverCover(File(ctx.cacheDir, "server_art"), name)
+            "art" -> seg.takeIf { NAME.matches(it) }?.let { File(File(ctx.cacheDir, "art"), it) }
+            "srv" -> seg.takeIf { NAME.matches(it) }?.let { serverCover(File(ctx.cacheDir, "server_art"), it) }
+            "web" -> seg.takeIf { WEB_NAME.matches(it) }?.let { webCover(File(ctx.cacheDir, "web_art"), it) }
             else -> null
         }
         if (file == null || !file.isFile) throw FileNotFoundException(uri.toString())
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+    }
+
+    private fun webCover(dir: File, encoded: String): File? {
+        val url = runCatching { String(android.util.Base64.decode(encoded, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING)) }
+            .getOrNull()?.takeIf(::webAllowed) ?: return null
+        val name = java.security.MessageDigest.getInstance("SHA-1").digest(url.toByteArray()).joinToString("") { "%02x".format(it) }
+        return fetch(url, File(dir.apply { mkdirs() }, "$name.jpg"))
     }
 
     /** Runs on a binder thread, so the one-time download may block. */
@@ -53,8 +75,13 @@ class ArtProvider : ContentProvider() {
         val cfg = Server.config.value ?: return null
         val cover = Server.songs.value.firstOrNull { it.id == songId }?.coverArt ?: return null
         val file = File(dir.apply { mkdirs() }, cover.replace(Regex("[^A-Za-z0-9_-]"), "_").take(64) + ".jpg")
+        return fetch(Subsonic.coverUrl(cfg, cover), file)
+    }
+
+    private fun fetch(url: String, file: File): File? {
         if (file.isFile) return file
-        val conn = URL(Subsonic.coverUrl(cfg, cover)).openConnection() as HttpURLConnection
+        val dir = file.parentFile ?: return null
+        val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 10_000
         conn.readTimeout = 15_000
         conn.setRequestProperty("User-Agent", "Onda")

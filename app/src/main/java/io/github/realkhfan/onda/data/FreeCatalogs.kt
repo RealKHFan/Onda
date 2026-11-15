@@ -21,6 +21,7 @@ object FreeCatalogs {
         Source.AUDIUS -> "https://api.audius.co/v1/tracks/${Http.enc(ref)}/stream?app_name=Onda"
         Source.JAMENDO -> "https://prod-1.storage.jamendo.com/?trackid=${Http.enc(ref)}&format=mp32"
         Source.ARCHIVE -> "https://archive.org/download/" + ref.split('/').joinToString("/") { Http.enc(it).replace("+", "%20") }
+        Source.OPENVERSE -> ref.takeIf { it.startsWith("https://") } // the file's own address (Wikimedia, ccMixter)
         else -> null
     }
 
@@ -66,6 +67,30 @@ object FreeCatalogs {
                 canDownload = o.optBoolean("audiodownload_allowed"))
         }
     }
+
+    /* ---------- Openverse (Creative Commons audio: Jamendo, Wikimedia, ccMixter; no key) ---------- */
+
+    suspend fun openverse(query: String): List<RemoteTrack> = parseOpenverse(fetch(
+        "https://api.openverse.org/v1/audio/?q=${Http.enc(query)}&page_size=20&category=music&source=jamendo,wikimedia_audio,ccmixter",
+    ))
+
+    private val jamendoTrack = Regex("""trackid=(\d+)""")
+
+    fun parseOpenverse(json: String): List<RemoteTrack> =
+        objects(JSONObject(json).optJSONArray("results") ?: JSONArray()).mapNotNull { o ->
+            val title = o.str("title") ?: return@mapNotNull null
+            val artist = o.str("creator") ?: "Unknown artist"
+            val url = o.str("url") ?: return@mapNotNull null
+            val sec = o.optInt("duration") / 1000
+            val cover = o.str("thumbnail")
+            if (MetaMatch.namesOtherArtist(title, artist) || Discovery.isUnwanted(title, "")) return@mapNotNull null
+            // Jamendo songs become ordinary Jamendo songs, so they play and save the same way without a client ID.
+            jamendoTrack.find(url)?.groupValues?.get(1)?.let { id ->
+                return@mapNotNull RemoteTrack(0, title, artist, "", cover, stream(Source.JAMENDO, id), sec, Source.JAMENDO, ref = id)
+            }
+            if (!url.startsWith("https://")) return@mapNotNull null
+            RemoteTrack(0, title, artist, "", cover, url, sec, Source.OPENVERSE, ref = url)
+        }
 
     /* ---------- Internet Archive ---------- */
 

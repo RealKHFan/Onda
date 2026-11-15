@@ -2,6 +2,11 @@
 
 package io.github.realkhfan.onda.ui
 
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.runtime.mutableLongStateOf
+import io.github.realkhfan.onda.player.PlaybackCache
+import io.github.realkhfan.onda.data.Backup
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.PersonOff
 import androidx.compose.material.icons.rounded.Block
@@ -1069,6 +1074,30 @@ private fun SettingsScreen(
     var showLicenses by remember { mutableStateOf(false) }
     var keepPlaying by remember { mutableStateOf(Prefs.keepPlaying(ctx)) }
     var mobileDl by remember { mutableStateOf(Prefs.mobileDownloads(ctx)) }
+    var autoplay by remember { mutableStateOf(Prefs.autoplay(ctx)) }
+    var cacheMb by remember { mutableLongStateOf(PlaybackCache.get(ctx).cacheSpace shr 20) }
+    var backupTree by remember { mutableStateOf(Prefs.backupTree(ctx)) }
+    var backupNote by remember { mutableStateOf<String?>(null) }
+    var restoreFrom by remember { mutableStateOf<Uri?>(null) }
+    val bgScope = rememberCoroutineScope()
+    val saveBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) bgScope.launch {
+            backupNote = runCatching {
+                withContext(Dispatchers.IO) { ctx.contentResolver.openOutputStream(uri, "wt")!!.use { Backup.write(ctx, it) } }
+                "Backup saved."
+            }.getOrElse { "Couldn't save the backup." }
+        }
+    }
+    val pickBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { restoreFrom = it }
+    val pickBackupFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            runCatching {
+                ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+            Prefs.setBackupTree(ctx, uri.toString()); Prefs.setLastBackup(ctx, 0); backupTree = uri.toString()
+            bgScope.launch { withContext(Dispatchers.IO) { Backup.autoIfDue(ctx) }; backupNote = "Daily backups go to ${prettyFolder(uri.toString())}." }
+        }
+    }
     var releaseAlerts by remember { mutableStateOf(Prefs.releaseAlerts(ctx)) }
     fun setReleaseAlerts(on: Boolean) {
         releaseAlerts = on
@@ -1178,7 +1207,36 @@ private fun SettingsScreen(
                 }
                 Switch(checked = keepPlaying, onCheckedChange = { keepPlaying = it; Prefs.setKeepPlaying(ctx, it) })
             }
+            Row(Modifier.fillMaxWidth().clickable { autoplay = !autoplay; Prefs.setAutoplay(ctx, autoplay) }, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Similar songs when the queue ends", color = TextMain)
+                    Text("Keeps the music going with songs like the last ones (yours in full, others as previews or free full copies).",
+                        color = TextDim, fontSize = 12.sp)
+                }
+                Switch(checked = autoplay, onCheckedChange = { autoplay = it; Prefs.setAutoplay(ctx, it) })
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Playback cache: $cacheMb MB of 1,024 MB", color = TextMain)
+                    Text("Streamed songs are kept so replays and seeking use no data.", color = TextDim, fontSize = 12.sp)
+                }
+                TextButton(onClick = { PlaybackCache.clear(ctx); cacheMb = PlaybackCache.get(ctx).cacheSpace shr 20 }) { Text("Clear", color = Accent) }
+            }
             Spacer(Modifier.height(4.dp))
+            SectionLabel("Backup", Modifier.padding(0.dp))
+            Text("Playlists, likes, history, matches, followed artists, saved albums and settings in one file. " +
+                "Not your server login or music folders.", color = TextDim, fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { saveBackup.launch(Backup.name()) }) { Text("Back up now") }
+                OutlinedButton(onClick = { pickBackup.launch(arrayOf("application/zip", "application/octet-stream")) }) { Text("Restore") }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(backupTree?.let { "Daily backup: ${prettyFolder(it)} (newest 5 kept)" } ?: "Daily backup: off",
+                    color = TextMain, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                TextButton(onClick = { pickBackupFolder.launch(null) }) { Text(if (backupTree == null) "Choose folder" else "Change", color = Accent) }
+                if (backupTree != null) TextButton(onClick = { Prefs.setBackupTree(ctx, null); backupTree = null }) { Text("Off", color = TextDim) }
+            }
+            backupNote?.let { Text(it, color = TextMain, fontSize = 13.sp) }
             SectionLabel("Privacy", Modifier.padding(0.dp))
             Text(
                 "Search, previews and cover art come from Deezer's public API without an account. " +
@@ -1218,6 +1276,25 @@ private fun SettingsScreen(
             TextButton(onClick = { showLicenses = true }) { Text("Open-source licenses", color = Accent) }
             Text("Onda ${BuildConfig.VERSION_NAME}. No account, no tracking, no Google code.", color = TextDim, fontSize = 12.sp)
         }
+    }
+    restoreFrom?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { restoreFrom = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    restoreFrom = null
+                    bgScope.launch {
+                        val n = runCatching { withContext(Dispatchers.IO) { ctx.contentResolver.openInputStream(uri)!!.use { Backup.restore(ctx, it) } } }
+                        if (n.isSuccess) (ctx as? android.app.Activity)?.recreate()
+                        else backupNote = "That file isn't an Onda backup."
+                    }
+                }) { Text("Restore", color = ErrorRed) }
+            },
+            dismissButton = { TextButton(onClick = { restoreFrom = null }) { Text("Cancel", color = TextDim) } },
+            title = { Text("Restore this backup?") },
+            text = { Text("Your playlists, likes, history and settings are replaced by the backup's. A copy of the current ones is kept.", color = TextDim) },
+            containerColor = CardBg,
+        )
     }
     if (showLicenses) {
         AlertDialog(

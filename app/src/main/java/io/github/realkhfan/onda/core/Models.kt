@@ -43,7 +43,8 @@ data class FolderGroup(
 /** Where a catalog item comes from. The prefix keeps ids apart; [full] catalogs stream whole songs for free. */
 enum class Source(val prefix: String, val label: String, val full: Boolean) {
     DEEZER("dz:", "Deezer", false), ITUNES("it:", "Apple", false),
-    AUDIUS("au:", "Audius", true), JAMENDO("ja:", "Jamendo", true), ARCHIVE("ia:", "Internet Archive", true);
+    AUDIUS("au:", "Audius", true), JAMENDO("ja:", "Jamendo", true), ARCHIVE("ia:", "Internet Archive", true),
+    OPENVERSE("ov:", "Openverse", true);
 
     companion object {
         fun of(key: String): Source? = entries.firstOrNull { key.startsWith(it.prefix) }

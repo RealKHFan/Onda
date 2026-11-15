@@ -1,5 +1,8 @@
 package io.github.realkhfan.onda
 
+import kotlinx.coroutines.Dispatchers
+import io.github.realkhfan.onda.data.Backup
+import io.github.realkhfan.onda.data.Downloads
 import io.github.realkhfan.onda.data.AppData
 import android.Manifest
 import android.content.ComponentName
@@ -69,6 +72,8 @@ class MainActivity : ComponentActivity() {
         System.setProperty("http.agent", "Onda") // default would send the phone model to preview/art servers
 
         AppData.load(this)
+        Downloads.resume(this) // downloads that didn't finish last time
+        lifecycleScope.launch(Dispatchers.IO) { Backup.autoIfDue(applicationContext) }
         if (Prefs.releaseAlerts(this)) ReleaseJob.schedule(this)
         openReleaseFrom(intent)
         if (savedInstanceState == null) Server.sync() // refresh the server's song list once per app start
