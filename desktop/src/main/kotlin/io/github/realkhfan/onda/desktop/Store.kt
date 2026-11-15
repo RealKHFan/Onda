@@ -30,6 +30,8 @@ object Store {
     data class Settings(
         val folders: List<String> = emptyList(), val server: Subsonic.Config? = null, val kbps: Int = 0, val volume: Double = 0.8,
         val autoplay: Boolean = true, val background: Boolean = false, val releaseAlerts: Boolean = true,
+        /** [apple]: also search Apple's catalog; [listenBrainz]: its similar artists in mixes; [backupDir]: daily backup folder. */
+        val apple: Boolean = false, val listenBrainz: Boolean = true, val backupDir: String? = null,
     )
 
     fun settings(): Settings = runCatching {
@@ -41,12 +43,15 @@ object Store {
             volume = o.optDouble("volume", 0.8),
             autoplay = o.optBoolean("autoplay", true), background = o.optBoolean("background", false),
             releaseAlerts = o.optBoolean("releaseAlerts", true),
+            apple = o.optBoolean("apple", false), listenBrainz = o.optBoolean("listenBrainz", true),
+            backupDir = o.optString("backupDir").ifBlank { null },
         )
     }.getOrDefault(Settings())
 
     fun save(s: Settings) = write("settings.json", JSONObject()
         .put("folders", JSONArray(s.folders)).put("kbps", s.kbps).put("volume", s.volume)
         .put("autoplay", s.autoplay).put("background", s.background).put("releaseAlerts", s.releaseAlerts)
+        .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir)
         .put("server", s.server?.let { JSONObject().put("url", it.url).put("user", it.user).put("salt", it.salt).put("token", it.token) })
         .toString())
 
@@ -159,11 +164,11 @@ object Store {
     fun saveRecent(l: List<Player.Item>) = write("recent.json", JSONArray(l.map(::itemJson)).toString())
 
     fun json(r: RemoteTrack): JSONObject = JSONObject().put("id", r.id).put("title", r.title).put("artist", r.artist).put("album", r.album)
-        .put("cover", r.cover).put("duration", r.durationSec).put("src", r.source.name).put("ref", r.ref)
+        .put("cover", r.cover).put("duration", r.durationSec).put("src", r.source.name).put("ref", r.ref).put("dl", r.canDownload)
 
     fun remote(o: JSONObject) = RemoteTrack(o.optLong("id"), o.optString("title"), o.optString("artist"), o.optString("album"),
         o.optString("cover").ifBlank { null }, null, o.optInt("duration"),
-        Source.entries.firstOrNull { it.name == o.optString("src") } ?: Source.DEEZER, ref = o.optString("ref"))
+        Source.entries.firstOrNull { it.name == o.optString("src") } ?: Source.DEEZER, ref = o.optString("ref"), canDownload = o.optBoolean("dl"))
 
     data class Session(val items: List<Player.Item>, val index: Int, val positionMs: Long, val shuffle: Boolean, val repeat: Int)
 

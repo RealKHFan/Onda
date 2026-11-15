@@ -52,5 +52,6 @@ class FileNamesTest {
     @Test fun parentFolderComesFromTheDocumentId() {
         assertEquals("primary:Music/A", FileNames.parentOf(doc("A/x.mp3")))
         assertNull(FileNames.parentOf("srv:123"))
+        assertEquals("file:/home/me/Music/A", FileNames.parentOf("file:/home/me/Music/A/x.mp3"))
     }
 }

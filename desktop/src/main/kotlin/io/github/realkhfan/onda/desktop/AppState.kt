@@ -16,7 +16,9 @@ import io.github.realkhfan.onda.core.Track
 import io.github.realkhfan.onda.data.Deezer
 import io.github.realkhfan.onda.data.FreeCatalogs
 import io.github.realkhfan.onda.data.FullCopies
+import io.github.realkhfan.onda.data.ListenBrainz
 import io.github.realkhfan.onda.data.Lrclib
+import io.github.realkhfan.onda.data.Overrides
 import io.github.realkhfan.onda.data.Subsonic
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -53,20 +55,24 @@ class AppState(private val scope: CoroutineScope) {
     /** Catalog songs shown or played this run, so the heart and menus can save them. */
     private val seen = HashMap<String, RemoteTrack>()
 
-    init { Lrclib.init(Store.cache) }
+    init { Lrclib.init(Store.cache); Overrides.load(Store.data); ListenBrainz.load(Store.data) }
+
+    /** Details accepted from the online match (shown instead of the file's tags) and artist photos found with it. */
+    var meta by mutableStateOf(Overrides.meta.value); private set
+    var artistPics by mutableStateOf(Overrides.artistPics.value); private set
 
     private val serverTracks by derivedStateOf { Navidrome.tracks(serverSongs, settings.server, settings.kbps) }
 
     /** Your files and server songs; a local copy wins. */
-    val library by derivedStateOf { Match.mergeLibrary(local, serverTracks) }
+    val library by derivedStateOf { Overrides.apply(Match.mergeLibrary(local, serverTracks), meta) }
 
     /** Every song by id, server copies of your files included, so saved ids always resolve. */
-    val byId by derivedStateOf { (serverTracks + local).associateBy { it.id } }
+    val byId by derivedStateOf { Overrides.apply(serverTracks + local, meta).associateBy { it.id } }
 
     /** Albums from your folders, newest files first. */
     val recentlyAdded by derivedStateOf {
         val added = localCache.values.associate { it.second.id to it.first }
-        io.github.realkhfan.onda.core.Grouping.albums(local).sortedByDescending { a -> a.tracks.maxOf { added[it.id] ?: 0L } }.take(14)
+        io.github.realkhfan.onda.core.Grouping.albums(Overrides.apply(local, meta)).sortedByDescending { a -> a.tracks.maxOf { added[it.id] ?: 0L } }.take(14)
     }
 
     fun played(i: Player.Item) {
@@ -97,6 +103,9 @@ class AppState(private val scope: CoroutineScope) {
     fun setAutoplay(on: Boolean) = update(settings.copy(autoplay = on))
     fun setBackground(on: Boolean) = update(settings.copy(background = on))
     fun setReleaseAlerts(on: Boolean) = update(settings.copy(releaseAlerts = on))
+    fun setApple(on: Boolean) = update(settings.copy(apple = on))
+    fun setListenBrainz(on: Boolean) = update(settings.copy(listenBrainz = on))
+    fun setBackupDir(dir: String?) = update(settings.copy(backupDir = dir))
 
     /** Your artists, strongest first: followed ones, then plays, likes and your library (the phone's rule). */
     fun seeds(): List<String> =
@@ -116,7 +125,7 @@ class AppState(private val scope: CoroutineScope) {
         scope.launch {
             for (k in due) {
                 try {
-                    val m = Discover.mix(k, Discovery.period(k, today), seeds, known) { r -> r.key in playedKeys || own(r) != null || notWanted(r) }
+                    val m = Discover.mix(k, Discovery.period(k, today), seeds, known, settings.listenBrainz) { r -> r.key in playedKeys || own(r) != null || notWanted(r) }
                     if (m.tracks.isNotEmpty()) { mixes = mixes + (k to m); withContext(Dispatchers.IO) { Store.saveMixes(mixes) } }
                 } catch (e: CancellationException) {
                     throw e
@@ -154,14 +163,14 @@ class AppState(private val scope: CoroutineScope) {
         val inQueue = player.queue.map { it.id }.toSet()
         val last = player.queue.takeLast(5).reversed().map { it.artist }
         scope.launch {
-            val more = runCatching { Discover.similar(last, skip = { it.key in inQueue || notWanted(it) }) }.getOrDefault(emptyList()).mapNotNull(::item)
+            val more = runCatching { Discover.similar(last, settings.listenBrainz, skip = { it.key in inQueue || notWanted(it) }) }.getOrDefault(emptyList()).mapNotNull(::item)
             if (more.isNotEmpty() && player.index == player.queue.lastIndex) player.append(more)
         }
     }
 
     /* ---------- Backup ---------- */
 
-    private val backupFiles = listOf("collection.json", "plays.json", "recent.json")
+    private val backupFiles = listOf("collection.json", "plays.json", "recent.json", "overrides.json")
 
     /** One ZIP with playlists, likes, history and settings; not your server login or folders (they belong to this PC). */
     fun backup(to: java.io.File) {
@@ -172,9 +181,19 @@ class AppState(private val scope: CoroutineScope) {
             val s = settings
             z.putNextEntry(java.util.zip.ZipEntry("settings.json"))
             z.write(org.json.JSONObject().put("kbps", s.kbps).put("volume", s.volume).put("autoplay", s.autoplay)
-                .put("background", s.background).put("releaseAlerts", s.releaseAlerts).toString().toByteArray())
+                .put("background", s.background).put("releaseAlerts", s.releaseAlerts).put("apple", s.apple)
+                .put("listenBrainz", s.listenBrainz).toString().toByteArray())
             z.closeEntry()
         }
+    }
+
+    /** Once a day into the chosen folder, keeping the newest 5 of Onda's own backups there. Call off the UI thread. */
+    fun dailyBackup() {
+        val dir = settings.backupDir?.let { java.io.File(it) }?.takeIf { it.isDirectory } ?: return
+        fun mine() = dir.listFiles { f: java.io.File -> f.isFile && f.name.startsWith("onda-backup-") && f.name.endsWith(".zip") }.orEmpty().sortedByDescending { it.lastModified() }
+        if (mine().firstOrNull()?.let { System.currentTimeMillis() - it.lastModified() < 20 * 3_600_000L } == true) return
+        runCatching { backup(java.io.File(dir, "onda-backup-${java.time.LocalDate.now()}.zip")) }
+        mine().drop(5).forEach { it.delete() }
     }
 
     /** Replaces playlists, likes, history and settings with the backup's (a copy of the current ones is kept). Returns false if it isn't one. */
@@ -196,12 +215,13 @@ class AppState(private val scope: CoroutineScope) {
                 val o = org.json.JSONObject(text)
                 update(settings.copy(kbps = o.optInt("kbps", settings.kbps), volume = o.optDouble("volume", settings.volume),
                     autoplay = o.optBoolean("autoplay", settings.autoplay), background = o.optBoolean("background", settings.background),
-                    releaseAlerts = o.optBoolean("releaseAlerts", settings.releaseAlerts)))
+                    releaseAlerts = o.optBoolean("releaseAlerts", settings.releaseAlerts), apple = o.optBoolean("apple", settings.apple),
+                    listenBrainz = o.optBoolean("listenBrainz", settings.listenBrainz)))
             } else {
                 java.io.File(Store.data, "$name.tmp").apply { writeText(text) }.renameTo(java.io.File(Store.data, name))
             }
         }
-        collection = Store.collection(); plays = Store.plays(); recent = Store.recent()
+        collection = Store.collection(); plays = Store.plays(); recent = Store.recent(); Overrides.load(Store.data)
         return true
     }
 
@@ -213,6 +233,10 @@ class AppState(private val scope: CoroutineScope) {
     fun isPreviewRow(t: Track) = t.folderName == PREVIEW && t.uri.isEmpty()
 
     /** Can the heart / playlists hold this id? (Your songs, or a catalog song seen this run.) */
+    /** The catalog song behind a row: a saved preview, or the Deezer match you accepted for a file. */
+    fun remoteFor(t: Track): RemoteTrack? = collection.remote.firstOrNull { it.key == t.id } ?: seen[t.id]
+        ?: meta[t.id]?.deezerId?.takeIf { it > 0 }?.let { RemoteTrack(it, t.title, t.artist, t.album, null, null, 0) }
+
     fun remember(r: RemoteTrack) { seen[r.key] = r }
     fun canSave(id: String) = byId.containsKey(id) || seen.containsKey(id) || collection.remote.any { it.key == id }
 
@@ -222,8 +246,11 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     fun start() {
+        scope.launch { Overrides.meta.collect { meta = it } }
+        scope.launch { Overrides.artistPics.collect { artistPics = it } }
         if (settings.folders.isNotEmpty()) rescan()
         if (settings.server != null) sync()
+        Downloads.resume(this)
     }
 
     private fun update(s: Store.Settings) { settings = s; Store.save(s) }
@@ -240,16 +267,50 @@ class AppState(private val scope: CoroutineScope) {
 
     fun rescan() {
         if (scanning) return
+        scope.launch { rescanNow() }
+    }
+
+    /** Reads your folders again (only changed files are opened); waits for a scan already running. */
+    suspend fun rescanNow() {
+        while (scanning) kotlinx.coroutines.delay(100)
         scanning = true
-        scope.launch {
-            try {
-                val found = withContext(Dispatchers.IO) { Scanner.scan(settings.folders, localCache).also(Store::saveLocal) }
-                localCache = found
-                local = found.values.map { it.second }
-            } finally {
-                scanning = false
-            }
+        try {
+            val found = withContext(Dispatchers.IO) { Scanner.scan(settings.folders, localCache).also(Store::saveLocal) }
+            localCache = found
+            local = found.values.map { it.second }
+        } finally {
+            scanning = false
         }
+    }
+
+    fun launch(block: suspend CoroutineScope.() -> Unit) = scope.launch(block = block)
+
+    /** Spotify import: songs into the playlist of that name (made if needed), plus likes, Want to listen and history. */
+    fun importSpotify(lists: List<Pair<String, List<String>>>, catalog: List<RemoteTrack>, liked: List<String>,
+                      want: List<RemoteTrack>, newPlays: List<Discovery.Play>) {
+        var c = collection.copy(remote = (collection.remote + catalog.map { it.copy(preview = null) }).distinctBy { it.key })
+        for ((name, ids) in lists) {
+            val pl = c.playlists.firstOrNull { it.name == name }
+            c = if (pl == null) c.copy(playlists = c.playlists + Store.Playlist(UUID.randomUUID().toString(), name, ids.distinct()))
+            else c.copy(playlists = c.playlists.map { if (it.id == pl.id) it.copy(trackIds = (it.trackIds + ids).distinct()) else it })
+        }
+        c = c.copy(liked = liked.filterNot { it in c.liked }.distinct() + c.liked,
+            want = c.want + want.filterNot { w -> c.want.any { it.key == w.key } }.distinctBy { it.key })
+        change(c)
+        plays = (plays + newPlays).distinctBy { Triple(it.artist, it.title, it.atMs / 60_000) }.sortedBy { it.atMs }.takeLast(3000)
+        Store.savePlays(plays)
+    }
+
+    /** A file was renamed or a server song downloaded: likes, playlists, history and matches move to the new id. */
+    fun migrateIds(moved: Map<String, String>) {
+        if (moved.isEmpty()) return
+        fun m(id: String) = moved[id] ?: id
+        change(collection.copy(liked = collection.liked.map(::m).distinct(),
+            playlists = collection.playlists.map { it.copy(trackIds = it.trackIds.map(::m)) }))
+        // A file's id is its file URI, so a moved song plays from its new place.
+        recent = recent.map { i -> moved[i.id]?.let { i.copy(id = it, uri = it) } ?: i }.distinctBy { it.id }; Store.saveRecent(recent)
+        plays = plays.map { it.copy(key = m(it.key)) }; Store.savePlays(plays)
+        Overrides.migrateIds(moved)
     }
 
     /* ---------- Server ---------- */

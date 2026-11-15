@@ -1,6 +1,5 @@
 package io.github.realkhfan.onda.data
 
-import android.content.Context
 import io.github.realkhfan.onda.core.RemoteTrack
 import io.github.realkhfan.onda.core.Track
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,8 +30,9 @@ object Overrides {
 
     private var file: File? = null
 
-    fun load(context: Context) {
-        file = File(context.filesDir, "overrides.json")
+    /** [dir]: the app's own storage (the phone's files folder, the desktop's data folder). */
+    fun load(dir: File) {
+        file = File(dir, "overrides.json")
         read()
     }
 

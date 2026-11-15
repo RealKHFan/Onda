@@ -15,7 +15,7 @@ object AppData {
         val c = context.applicationContext
         MusicLibrary.load(c)
         PlaylistStore.load(c)
-        Overrides.load(c)
+        Overrides.load(c.filesDir)
         Lrclib.init(c.cacheDir)
         Server.load(c)
         PlayLog.load(c)
@@ -23,7 +23,7 @@ object AppData {
         ArtistIds.load(c)
         Releases.load(c)
         UserCollection.load(c)
-        ListenBrainz.load(c)
+        ListenBrainz.load(c.filesDir)
     }
 
     /** Your library as shown: files and server songs (a local copy wins), with accepted matches applied. */

@@ -21,7 +21,7 @@ Onda is offline-first: it plays music you own or can legally stream, and works f
 - **Android Auto:** playlists, albums, artists, search and voice.
 
 ## Linux (early)
-A desktop version for Linux lives in `desktop/` (Compose for Desktop, GStreamer for playback). It plays your music folders and your Navidrome server, searches the catalogs with previews and free full songs, and has a queue, shuffle and repeat. Build it with `./gradlew :desktop:createDistributable`; `desktop/packaging/install.sh` adds it to your app menu without root.
+A desktop version for Linux lives in `desktop/` (Compose for Desktop, GStreamer for playback). It plays your music folders and your Navidrome server, searches the catalogs with previews and free full songs, and has Daily 10 / Weekly 30 mixes, new releases, synced lyrics, metadata matching, downloads, Spotify import, backups and your desktop's media controls (MPRIS). Build it with `./gradlew :desktop:createDistributable`; `desktop/packaging/install.sh` adds it to your app menu without root.
 
 ## Privacy
 - No account, no analytics, no crash reporting, no device ID. Your history never leaves the phone.

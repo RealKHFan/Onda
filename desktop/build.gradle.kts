@@ -17,6 +17,10 @@ sourceSets.main {
         "io/github/realkhfan/onda/data/FreeCatalogs.kt",
         "io/github/realkhfan/onda/data/FullCopies.kt",
         "io/github/realkhfan/onda/data/Lrclib.kt",
+        "io/github/realkhfan/onda/data/Itunes.kt",
+        "io/github/realkhfan/onda/data/ListenBrainz.kt",
+        "io/github/realkhfan/onda/data/Matcher.kt",
+        "io/github/realkhfan/onda/data/Overrides.kt",
         "io/github/realkhfan/onda/desktop/**",
     )
 }
@@ -47,7 +51,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Rpm)
             packageName = "Onda"
-            packageVersion = "0.3.0"
+            packageVersion = "0.4.0"
             description = "Privacy-first music player"
             modules("java.instrument", "jdk.unsupported", "jdk.security.auth", "jdk.crypto.ec", "java.naming", "java.sql")
             linux { iconFile.set(project.file("src/main/resources/onda.png")) }

@@ -54,7 +54,7 @@ object Backup {
             if (n == SETTINGS) Prefs.import(ctx, JSONObject(text))
             else File(ctx.filesDir, "$n.tmp").apply { writeText(text) }.renameTo(File(ctx.filesDir, n))
         }
-        PlaylistStore.load(ctx); Overrides.load(ctx); UserCollection.load(ctx); PlayLog.load(ctx)
+        PlaylistStore.load(ctx); Overrides.load(ctx.filesDir); UserCollection.load(ctx); PlayLog.load(ctx)
         Releases.load(ctx); ArtistIds.load(ctx); Mixes.load(ctx); Server.load(ctx)
         return found.size
     }

@@ -71,6 +71,12 @@ class DesktopTest {
         repeat(3) { scene.render(it * 16_000_000L) }
         File("build/screenshots").mkdirs()
         File("build/screenshots/desktop-home.png").writeBytes(scene.render(64_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes)
+        state.navRequest = "settings"
+        repeat(3) { scene.render(80_000_000L + it * 16_000_000L) }
+        File("build/screenshots/desktop-settings.png").writeBytes(scene.render(160_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes)
+        repeat(10) { scene.sendPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Scroll, androidx.compose.ui.geometry.Offset(700f, 400f), scrollDelta = androidx.compose.ui.geometry.Offset(0f, 1f)) }
+        repeat(3) { scene.render(176_000_000L + it * 16_000_000L) }
+        File("build/screenshots/desktop-settings-tools.png").writeBytes(scene.render(240_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes)
         scene.close()
     }
 }

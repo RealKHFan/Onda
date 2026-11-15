@@ -113,7 +113,16 @@ class PlayerFeaturesTest {
 class QueueEditingTest {
     private val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private fun <T> onUi(block: () -> T): T = runBlocking { withContext(ui) { block() } }
-    private fun item(n: Int) = Player.Item("id$n", "Song $n", "Artist", "Album", null, "file:///nowhere/$n.mp3")
+    // A real (silent) file: a missing one makes the player skip ahead on its own while the test edits the queue.
+    private val silence: String by lazy {
+        val f = File.createTempFile("onda", ".wav")
+        val rate = 8000; val n = rate * 20
+        val b = ByteBuffer.allocate(44 + n * 2).order(ByteOrder.LITTLE_ENDIAN)
+        b.put("RIFF".toByteArray()).putInt(36 + n * 2).put("WAVEfmt ".toByteArray()).putInt(16).putShort(1).putShort(1)
+            .putInt(rate).putInt(rate * 2).putShort(2).putShort(16).put("data".toByteArray()).putInt(n * 2)
+        f.writeBytes(b.array()); f.toURI().toString()
+    }
+    private fun item(n: Int) = Player.Item("id$n", "Song $n", "Artist", "Album", null, silence)
 
     @Test fun removeMoveAppendAndClear() {
         val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }

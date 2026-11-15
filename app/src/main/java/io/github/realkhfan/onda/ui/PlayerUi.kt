@@ -339,6 +339,13 @@ private fun LyricsPanel(player: PlayerState, posMs: Long, tint: Color, onClose: 
             }
             Spacer(Modifier.height(12.dp))
             val l = (load as? LyricsLoad.Ready)?.lyrics
+            val hint = when {
+                player.isPreview || l == null || l.instrumental -> null
+                l.synced.isNotEmpty() -> if (l.verified) null else "These lyrics may be from another version of this song."
+                !l.plain.isNullOrBlank() -> if (l.verified) "These lyrics aren't synced to the song." else "These lyrics aren't synced and may be from another version of this song."
+                else -> null
+            }
+            hint?.let { Text(it, color = Dim, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
             Box(Modifier.weight(1f)) {
                 when {
                     player.isPreview -> Note("Lyrics are available for songs you own.")

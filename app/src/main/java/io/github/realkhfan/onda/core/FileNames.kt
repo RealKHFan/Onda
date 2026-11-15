@@ -63,8 +63,9 @@ object FileNames {
         return out
     }
 
-    /** The folder part of a document id inside a SAF document URI ("primary:Music/A/x.m4a" -> "primary:Music/A"). */
+    /** The folder part of a document id inside a SAF document URI ("primary:Music/A/x.m4a" -> "primary:Music/A"), or of a file URI. */
     fun parentOf(documentUri: String): String? {
+        if (documentUri.startsWith("file:")) return documentUri.substringBeforeLast('/', "").ifEmpty { null }
         val encoded = documentUri.substringAfterLast("/document/", "").ifEmpty { return null }
         val docId = URLDecoder.decode(encoded, "UTF-8")
         return docId.substringBeforeLast('/', "").ifEmpty { null }

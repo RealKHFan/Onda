@@ -56,6 +56,7 @@ fun main() {
                 e.key == Key.DirectionDown -> { player.changeVolume(player.volume - 0.05); state.setVolume(player.volume) }
                 e.isCtrlPressed && e.key == Key.L -> player.current?.id?.takeIf(state::canSave)?.let(state::toggleLike)
                 e.isCtrlPressed && e.key == Key.F -> state.navRequest = "search"
+                e.isCtrlPressed && e.key == Key.Comma -> state.navRequest = "settings"
                 e.key == Key.Escape -> state.navRequest = "back"
                 else -> return false
             }
@@ -83,7 +84,7 @@ fun main() {
                 var tick = 0
                 while (true) {
                     // Mixes and new releases once the library has loaded, then every half hour (each checks if it's due).
-                    if (tick % 120 == 1) { state.refreshMixes(); state.checkReleases() }
+                    if (tick % 120 == 1) { state.refreshMixes(); state.checkReleases(); withContext(Dispatchers.IO) { state.dailyBackup() } }
                     delay(15_000); tick++
                     saveSession()
                 }

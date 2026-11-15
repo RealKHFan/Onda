@@ -127,6 +127,18 @@ import io.github.realkhfan.onda.core.Track
 import io.github.realkhfan.onda.data.Deezer
 import io.github.realkhfan.onda.data.FreeCatalogs
 import io.github.realkhfan.onda.data.Lrclib
+import io.github.realkhfan.onda.data.Itunes
+import io.github.realkhfan.onda.data.Matcher
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragData
+import androidx.compose.ui.draganddrop.dragData
+import io.github.realkhfan.onda.core.Confidence
+import androidx.compose.runtime.collectAsState
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import io.github.realkhfan.onda.data.Subsonic
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -158,6 +170,8 @@ private sealed interface View {
     data class CatalogArtist(val a: RemoteArtist) : View
     data class CatalogAlbum(val a: RemoteAlbum) : View
     data class Mix(val kind: Discovery.Kind) : View
+    data object Match : View
+    data object Rename : View
 }
 
 private enum class Panel { NONE, QUEUE, LYRICS }
@@ -173,6 +187,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
         LaunchedEffect(state.navRequest) {
             when (state.navRequest) {
                 "search" -> go(View.Search)
+                "settings" -> go(View.Settings)
                 "back" -> if (stack.size > 1) stack.removeAt(stack.lastIndex)
             }
             state.navRequest = null
@@ -181,10 +196,25 @@ fun OndaDesktop(state: AppState, player: Player?) {
         var lyricsBig by remember { mutableStateOf(false) }
         var naming by remember { mutableStateOf<Naming?>(null) }
         val scope = rememberCoroutineScope()
-        val ctx = Ctx(state, player, ::push, { naming = it }) { name ->
+        var toast by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(toast) { if (toast != null) { delay(3500); toast = null } }
+        val ctx = Ctx(state, player, ::push, { naming = it }, { toast = it }) { name ->
             scope.launch { Deezer.searchArtists(name).firstOrNull { Match.norm(it.name) == Match.norm(name) }?.let { push(View.CatalogArtist(it)) } }
         }
-        Column(Modifier.fillMaxSize().background(Bg)) {
+        // Folders dropped on the window (from Dolphin, say) become music folders.
+        val drop = remember(state) {
+            object : DragAndDropTarget {
+                @OptIn(ExperimentalComposeUiApi::class)
+                override fun onDrop(event: DragAndDropEvent): Boolean {
+                    val files = (event.dragData() as? DragData.FilesList)?.readFiles().orEmpty()
+                    val dirs = files.mapNotNull { runCatching { File(java.net.URI(it)) }.getOrNull() }.filter { it.isDirectory }
+                    dirs.forEach { state.addFolder(it.absolutePath) }
+                    toast = if (dirs.isNotEmpty()) "Added ${dirs.joinToString { it.name }} to your music folders" else "Drop a folder to add it to your music folders."
+                    return dirs.isNotEmpty()
+                }
+            }
+        }
+        Column(Modifier.fillMaxSize().background(Bg).dragAndDropTarget(shouldStartDragAndDrop = { true }, target = drop)) {
             Row(Modifier.weight(1f)) {
                 Sidebar(state, stack.first(), ::go) { naming = Naming.New() }
                 Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -198,7 +228,9 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         View.Artists -> Artists(state, { a -> push(View.LocalList(a.name, "Artist", a.artUri, a.tracks)) }) { push(View.CatalogArtist(it)) }
                         is View.Mix -> MixPage(ctx, v.kind, back)
                         View.Search -> Search(ctx)
-                        View.Settings -> SettingsPage(state)
+                        View.Settings -> SettingsPage(ctx)
+                        View.Match -> MatchPage(ctx, back)
+                        View.Rename -> RenamePage(ctx, back)
                         View.Liked -> SongList(ctx, "Liked Songs", "Playlist", state.likedTracks, back = back)
                         View.Want -> WantPage(ctx, back)
                         is View.Playlist -> {
@@ -208,10 +240,13 @@ fun OndaDesktop(state: AppState, player: Player?) {
                                     onMove = { from, to -> state.movePlaylistTrack(pl.id, from, to) }) {
                                     IconButton(onClick = { naming = Naming.Rename(pl.id, pl.name) }) { Icon(Icons.Rounded.Edit, "Rename playlist", tint = TextDim) }
                                     IconButton(onClick = { naming = Naming.Delete(pl.id, pl.name) }) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) }
+                                    DownloadAll(ctx, state.playlistTracks(pl.id))
                                 }
                             }
                         }
-                        is View.ServerPlaylist -> SongList(ctx, v.p.name, "Playlist · Music server", state.serverPlaylistTracks(v.p), back = back)
+                        is View.ServerPlaylist -> SongList(ctx, v.p.name, "Playlist · Music server", state.serverPlaylistTracks(v.p), back = back) {
+                            DownloadAll(ctx, state.serverPlaylistTracks(v.p))
+                        }
                         is View.LocalList -> SongList(ctx, v.title, v.subtitle, v.tracks, art = v.art, back = back)
                         is View.CatalogArtist -> CatalogArtistPage(ctx, v.a, back)
                         is View.CatalogAlbum -> CatalogAlbumPage(ctx, v.a, back)
@@ -220,6 +255,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                 if (player != null && panel == Panel.QUEUE) QueuePanel(player) { panel = Panel.NONE }
                 if (player != null && panel == Panel.LYRICS && !lyricsBig) LyricsPanel(player, onExpand = { lyricsBig = true }) { panel = Panel.NONE }
             }
+            toast?.let { Text(it, color = TextMain, modifier = Modifier.fillMaxWidth().background(Color(0xFF2E2E38)).padding(24.dp, 10.dp)) }
             PlayerBar(ctx, panel) { panel = if (panel == it) Panel.NONE else it }
         }
         naming?.let { n -> NamingDialog(state, n) { naming = null } }
@@ -235,8 +271,15 @@ private class Ctx(
     val player: Player?,
     val push: (View) -> Unit,
     val dialog: (Naming) -> Unit,
+    /** A short message above the player bar. */
+    val toast: (String) -> Unit,
     val openArtistByName: (String) -> Unit,
 ) {
+    fun download(items: List<Downloads.Item>) = toast(Downloads.start(state, items) ?: "Downloading to “${Downloads.FOLDER}” in your music folder")
+    fun copy(text: String, what: String) {
+        java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(text), null)
+        toast("$what copied")
+    }
     fun play(list: List<Track>, i: Int) { player?.play(list.map(state::item), i) }
     fun playRemote(list: List<RemoteTrack>, i: Int) {
         val items = list.mapNotNull(state::item)
@@ -345,12 +388,27 @@ private fun TrackRow(ctx: Ctx, list: List<Track>, i: Int, numbered: Boolean, inP
             add(ContextMenuItem("Go to artist") {
                 Grouping.artists(s.library).firstOrNull { Match.norm(it.name) == Match.norm(t.artist) }?.let { a -> ctx.push(View.LocalList(a.name, "Artist", a.artUri, a.tracks)) }
             })
+            Downloads.forTrack(t, s.settings.server)?.let { d -> add(ContextMenuItem("Download") { ctx.download(listOf(d)) }) }
+            val r = s.remoteFor(t)?.takeIf { it.source == io.github.realkhfan.onda.core.Source.DEEZER || it.source == io.github.realkhfan.onda.core.Source.ITUNES }
+            add(ContextMenuItem(if (r != null) "Copy link" else "Copy song name") { ctx.copy(shareText(t.title, t.artist, r), if (r != null) "Link" else "Song name") })
+            if (s.meta.containsKey(t.id)) add(ContextMenuItem("Restore original tags") { io.github.realkhfan.onda.data.Overrides.restore(t.id); ctx.toast("Original tags restored") })
         }
     }) {
         SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
             note = if (s.isPreviewRow(t)) "Preview" else null,
             trailing = { if (s.isLiked(t.id)) Icon(Icons.Rounded.Favorite, "Liked", tint = Accent, modifier = Modifier.padding(12.dp)) }) { ctx.play(list, i) }
     }
+}
+
+/** "Title — Artist" and, for a Deezer or Apple song, its public page. */
+private fun shareText(title: String, artist: String, r: RemoteTrack?): String {
+    val link = when (r?.source) {
+        null -> null
+        io.github.realkhfan.onda.core.Source.DEEZER -> "https://www.deezer.com/track/${r.id}"
+        io.github.realkhfan.onda.core.Source.ITUNES -> "https://music.apple.com/song/${r.id}"
+        else -> null
+    }
+    return "$title — $artist" + (link?.let { "\n$it" } ?: "")
 }
 
 /** A catalog song (preview or free full song): + saves it to Want to listen. */
@@ -374,6 +432,9 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
             add(ContextMenuItem(if (s.isHidden(r.key)) "Suggest this song again" else "Not interested in this song") { s.toggleHidden(r.key) })
             add(ContextMenuItem(if (s.isBlocked(r.artist)) "Suggest ${r.artist} again" else "Don't suggest ${r.artist}") { s.toggleBlocked(r.artist) })
             add(ContextMenuItem("Go to artist") { ctx.openArtistByName(r.artist) })
+            Downloads.forRemote(r)?.let { d -> add(ContextMenuItem("Download") { ctx.download(listOf(d)) }) }
+            val linked = r.source == io.github.realkhfan.onda.core.Source.DEEZER || r.source == io.github.realkhfan.onda.core.Source.ITUNES
+            add(ContextMenuItem(if (linked) "Copy link" else "Copy song name") { ctx.copy(shareText(r.title, r.artist, r.takeIf { linked }), if (linked) "Link" else "Song name") })
         }
     }) {
         SongRow(if (numbered) i + 1 else null, r.title, r.artist, r.album, r.durationSec * 1000L, r.cover, ctx.player?.current?.id == r.key,
@@ -584,7 +645,7 @@ private fun Artists(state: AppState, onOpen: (ArtistGroup) -> Unit, onOpenFollow
         }
         items(artists) { a ->
             Row(Modifier.fillMaxWidth().clickable { onOpen(a) }.padding(horizontal = 24.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Art(a.artUri, 48, round = true)
+                Art(state.artistPics[a.name.lowercase()]?.ifBlank { null } ?: a.artUri, 48, round = true)
                 Spacer(Modifier.width(14.dp))
                 Column {
                     Text(a.name, color = TextMain)
@@ -628,10 +689,11 @@ private fun Search(ctx: Ctx) {
             val al = async { runCatching { Deezer.searchAlbums(q) } }
             val ov = async { runCatching { FreeCatalogs.openverse(q) } }
             val au = async { runCatching { FreeCatalogs.audius(q) } }
+            val ap = async { if (state.settings.apple) runCatching { Itunes.searchSongs(q) } else Result.success(emptyList()) }
             // AI "artists" never show; remixes, sped-up, live and karaoke only when the search words ask for them.
             val versions = Discovery.asksFor(q)
             fun ok(t: RemoteTrack) = !state.isAi(t.artist) && (versions || !Discovery.isUnwanted(t.title, t.album))
-            online = dz.await().getOrDefault(emptyList()).filter(::ok)
+            online = Match.mergeTracks(dz.await().getOrDefault(emptyList()), ap.await().getOrDefault(emptyList())).filter(::ok)
             artists = ar.await().getOrDefault(emptyList()).filterNot { state.isAi(it.name) }
             albums = al.await().getOrDefault(emptyList()).filterNot { state.isAi(it.artist) }
             free = (ov.await().getOrDefault(emptyList()) + au.await().getOrDefault(emptyList())).filter(::ok).take(10)
@@ -760,7 +822,8 @@ private fun CatalogAlbumPage(ctx: Ctx, album: RemoteAlbum, back: (() -> Unit)?) 
 }
 
 @Composable
-private fun SettingsPage(state: AppState) {
+private fun SettingsPage(ctx: Ctx) {
+    val state = ctx.state
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf("") }
     var user by remember { mutableStateOf("") }
@@ -836,10 +899,65 @@ private fun SettingsPage(state: AppState) {
                 }
             }
         }
+        item { Section("Match metadata online") }
+        item {
+            val m by Matcher.state.collectAsState()
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Looks your songs up on Deezer. You review each change (Keep or Replace); songs without a match keep their own " +
+                    "details, and artist photos are fetched too. Your audio files are never changed.", color = TextDim, fontSize = 13.sp)
+                if (m.running) Button(onClick = { ctx.push(View.Match) }) { Text("Matching… view progress") }
+                else Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { Matcher.start(state.library, onlyNew = true); ctx.push(View.Match) }) { Text("Match new songs") }
+                    OutlinedButton(onClick = { Matcher.start(state.library, onlyNew = false); ctx.push(View.Match) }) { Text("Match all songs") }
+                    if (m.proposals.isNotEmpty()) OutlinedButton(onClick = { ctx.push(View.Match) }) { Text("Review ${m.proposals.size}") }
+                }
+                OutlinedButton(onClick = { ctx.push(View.Rename) }) { Text("Rename files from tags") }
+                Text("Names your files “Artist - Title”. You see every change first, and can undo it.", color = TextDim, fontSize = 12.sp)
+            }
+        }
+        item { Section("Import from Spotify") }
+        item {
+            val imp = SpotifyImports.state
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("In Spotify: Account → Privacy settings → Download your data → Account data. Spotify emails you a ZIP a few days " +
+                    "later; pick it here. Exportify CSV files work too. Nothing is sent to Spotify.", color = TextDim, fontSize = 13.sp)
+                if (imp.running) {
+                    Text(if (imp.total == 0) "Reading the export…" else "Finding songs: ${imp.done} of ${imp.total}", color = TextMain, fontSize = 13.sp)
+                    LinearProgressIndicator({ if (imp.total == 0) 0f else imp.done.toFloat() / imp.total }, Modifier.width(420.dp), color = Accent, trackColor = Raised)
+                } else {
+                    imp.result?.let { Text(it, color = TextMain, fontSize = 13.sp) }
+                    imp.error?.let { Text(it, color = ErrorRed, fontSize = 13.sp) }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            when (val r = FolderPicker.file(false, System.getProperty("user.home") + "/Downloads", "Spotify export (ZIP, JSON or CSV)")) {
+                                is FolderPicker.Result.Picked -> state.launch { SpotifyImports.run(File(r.path), state) }
+                                FolderPicker.Result.NoPicker -> ctx.toast("No file picker found on this system.")
+                                FolderPicker.Result.Cancelled -> {}
+                            }
+                        }
+                    }) { Text("Choose Spotify export") }
+                }
+            }
+        }
+        item { Section("Downloads") }
+        item {
+            val dl = Downloads.state
+            val target = Downloads.target(state)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(if (target != null) "Saved as music files in “${Downloads.FOLDER}” inside $target, so they're part of your library and play " +
+                    "offline. Songs from your music server, and free songs whose artist allows it. Right-click a song → Download."
+                else "Add a music folder first: downloads are saved as files there.", color = TextDim, fontSize = 13.sp)
+                if (dl.running) {
+                    Text("Downloading ${minOf(dl.done + 1, dl.total)} of ${dl.total}: ${dl.current.orEmpty()}", color = TextMain, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    LinearProgressIndicator({ dl.done.toFloat() / dl.total.coerceAtLeast(1) }, Modifier.width(420.dp), color = Accent, trackColor = Raised)
+                } else if (dl.paused) Text("Paused without a connection: ${dl.total - dl.done} left, they continue the next time you open Onda.", color = TextMain, fontSize = 13.sp)
+            }
+        }
         item { Section("Playback and discovery") }
         item { Toggle("Similar songs when the queue ends", "Keeps the music going with songs like the last ones.", state.settings.autoplay, state::setAutoplay) }
         item { Toggle("Keep playing when the window is closed", "Reopen Onda from the app menu or your desktop's media controls.", state.settings.background, state::setBackground) }
         item { Toggle("New release notifications", "A desktop notification when an artist you listen to releases something.", state.settings.releaseAlerts, state::setReleaseAlerts) }
+        item { Toggle("ListenBrainz suggestions", "Adds similar artists from ListenBrainz's open listening data to your mixes and similar songs. Only artist names are sent.", state.settings.listenBrainz, state::setListenBrainz) }
         item { Section("Backup") }
         item {
             var note by remember { mutableStateOf<String?>(null) }
@@ -868,11 +986,24 @@ private fun SettingsPage(state: AppState) {
                     }) { Text("Restore") }
                 }
                 note?.let { Text(it, color = TextMain, fontSize = 13.sp) }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(state.settings.backupDir?.let { "Daily backup: $it (newest 5 kept)" } ?: "Daily backup: off", color = TextMain, fontSize = 13.sp)
+                    TextButton(onClick = {
+                        scope.launch {
+                            when (val r = FolderPicker.pick(state.settings.backupDir ?: System.getProperty("user.home"))) {
+                                is FolderPicker.Result.Picked -> { state.setBackupDir(r.path); state.launch { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { state.dailyBackup() } } }
+                                FolderPicker.Result.NoPicker -> note = "No folder picker found on this system."
+                                FolderPicker.Result.Cancelled -> {}
+                            }
+                        }
+                    }) { Text(if (state.settings.backupDir == null) "Choose folder" else "Change", color = Accent) }
+                    if (state.settings.backupDir != null) TextButton(onClick = { state.setBackupDir(null) }) { Text("Off", color = TextDim) }
+                }
             }
         }
         item { Section("Keyboard") }
         item {
-            Text("Space play/pause · Ctrl+→ / Ctrl+← next / previous · → / ← seek 5 s · ↑ / ↓ volume · Ctrl+L like · Ctrl+F search · Esc back",
+            Text("Space play/pause · Ctrl+→ / Ctrl+← next / previous · → / ← seek 5 s · ↑ / ↓ volume · Ctrl+L like · Ctrl+F search · Ctrl+, settings · Esc back",
                 color = TextDim, fontSize = 13.sp)
         }
         item { Section("Privacy") }
@@ -881,6 +1012,7 @@ private fun SettingsPage(state: AppState) {
                 "search words or song names and your IP address, nothing else. Media keys and the desktop's media controls only see what's playing.",
                 color = TextDim, fontSize = 13.sp)
         }
+        item { Toggle("Also search Apple's catalog", "Finds songs Deezer is missing. Apple then also sees your search words and IP address.", state.settings.apple, state::setApple) }
     }
 }
 
@@ -959,6 +1091,15 @@ private fun LyricsLines(player: Player, ls: LyricsState, big: Boolean) {
     val list = rememberLazyListState()
     LaunchedEffect(active) { if (active >= 0) list.animateScrollToItem((active - if (big) 4 else 3).coerceAtLeast(0)) }
     val (on, off) = if (big) 40.sp to 32.sp else 26.sp to 20.sp
+    val l = ls.lyrics
+    val hint = when {
+        l == null || l.instrumental -> null
+        lines.isNotEmpty() -> if (l.verified) null else "These lyrics may be from another version of this song."
+        l.plain != null -> if (l.verified) "These lyrics aren't synced to the song." else "These lyrics aren't synced and may be from another version of this song."
+        else -> null
+    }
+    Column {
+    hint?.let { Text(it, color = TextMain.copy(alpha = 0.7f), fontSize = 13.sp, modifier = Modifier.padding(if (big) 52.dp else 20.dp, 0.dp, 16.dp, 4.dp)) }
     when {
         player.current == null -> Note("Nothing is playing.")
         !ls.full -> Note("Lyrics are shown for full songs.")
@@ -976,6 +1117,7 @@ private fun LyricsLines(player: Player, ls: LyricsState, big: Boolean) {
         ls.lyrics.plain != null -> Text(ls.lyrics.plain, color = TextMain, fontSize = if (big) 28.sp else 18.sp,
             modifier = Modifier.padding(if (big) 48.dp else 16.dp).verticalScroll(rememberScrollState()))
         else -> Note("No lyrics for this song.")
+    }
     }
 }
 
@@ -1182,4 +1324,128 @@ private fun DragHandle(s: ReorderState, index: Int, count: Int, label: String, o
                     onDragCancel = { s.dragging = -1; s.offset = 0f },
                 )
             })
+}
+
+/** Downloads every song of a list that may be downloaded (server songs, free songs whose artist allows it). */
+@Composable
+private fun DownloadAll(ctx: Ctx, tracks: List<Track>) {
+    val s = ctx.state
+    val items = tracks.mapNotNull { t -> Downloads.forTrack(t, s.settings.server) ?: s.remoteFor(t)?.let(Downloads::forRemote) }
+    if (items.isNotEmpty()) IconButton(onClick = { ctx.download(items) }) { Icon(Icons.Rounded.Download, "Download ${items.size} songs", tint = TextDim) }
+}
+
+/* ---------- Match metadata, rename files ---------- */
+
+/** Review of Deezer matches: keep your file's details or replace them, song by song or all at once. */
+@Composable
+private fun MatchPage(ctx: Ctx, back: (() -> Unit)?) {
+    val s by Matcher.state.collectAsState()
+    val confident = s.proposals.count { it.confidence == Confidence.HIGH }
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { Header("Match metadata", "Your audio files are never changed", back = back) }
+        item {
+            Column(Modifier.padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (s.running) {
+                    Text("Checking ${s.done} of ${s.total} songs on Deezer…", color = TextMain)
+                    LinearProgressIndicator({ if (s.total == 0) 0f else s.done.toFloat() / s.total }, Modifier.width(480.dp), color = Accent, trackColor = Raised)
+                    OutlinedButton(onClick = { Matcher.stop() }) { Text("Stop") }
+                }
+                s.error?.let { Text(it, color = ErrorRed, fontSize = 13.sp) }
+                Text("${s.proposals.size} to review · ${s.alreadyRight} already correct · ${s.noMatch} not found (kept as they are)", color = TextDim, fontSize = 13.sp)
+                if (s.proposals.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (confident > 0) Button(onClick = { Matcher.replaceAllConfident() }) { Text("Replace all confident ($confident)") }
+                    OutlinedButton(onClick = { Matcher.keepAll() }) { Text("Keep all") }
+                }
+            }
+        }
+        items(s.proposals, key = { it.track.id }) { p -> ProposalCard(p) }
+        if (!s.running && s.proposals.isEmpty()) item {
+            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(if (s.total == 0) "No new songs to check." else "All done. Songs without a match keep their own details.", color = TextDim)
+                OutlinedButton(onClick = { ctx.push(View.Rename) }) { Text("Rename files to match their tags") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProposalCard(p: Matcher.Proposal) {
+    val t = p.track
+    val m = p.match
+    Column(Modifier.padding(24.dp, 6.dp).width(760.dp).clip(RoundedCornerShape(8.dp)).background(Raised).padding(14.dp)) {
+        Text(if (p.confidence == Confidence.HIGH) "Confident match" else "Possible match — check it",
+            color = if (p.confidence == Confidence.HIGH) Accent else TextDim, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            MatchSide("Your file", t.artUri, t.title, t.artist, t.album, t.durationMs, Modifier.weight(1f), null)
+            Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, tint = TextDim, modifier = Modifier.padding(horizontal = 10.dp))
+            MatchSide("Deezer", m.cover, m.title, m.artist, m.album.ifBlank { t.album }, m.durationSec * 1000L, Modifier.weight(1f), t)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = { Matcher.decide(p, false) }) { Text("Keep", color = TextDim) }
+            Spacer(Modifier.width(4.dp))
+            Button(onClick = { Matcher.decide(p, true) }) { Text("Replace") }
+        }
+    }
+}
+
+/** One side of the comparison; on the Deezer side, what differs from the file is highlighted. */
+@Composable
+private fun MatchSide(label: String, art: String?, title: String, artist: String, album: String, durationMs: Long, modifier: Modifier, compare: Track?) {
+    fun color(differs: Boolean) = if (compare != null && differs) Accent else TextMain
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Art(art, 56)
+        Spacer(Modifier.width(10.dp))
+        Column {
+            Text(label, color = TextDim, fontSize = 11.sp)
+            Text(title, color = color(title != compare?.title), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(artist, color = color(artist != compare?.artist), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
+            Text(album, color = color(album != compare?.album), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
+            // A big length gap usually means another edit or version of the song.
+            if (durationMs > 0) Text(time(durationMs), color = color(compare != null && compare.durationMs > 0 && kotlin.math.abs(compare.durationMs - durationMs) > 3000), fontSize = 13.sp)
+        }
+    }
+}
+
+/** Every rename is shown first; after renaming, Undo puts the old names back. */
+@Composable
+private fun RenamePage(ctx: Ctx, back: (() -> Unit)?) {
+    val state = ctx.state
+    val plan = remember(state.library) { Renames.plan(state.library) }
+    var result by remember { mutableStateOf<Renames.Result?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    fun run(p: List<io.github.realkhfan.onda.core.FileNames.Rename>, undo: Boolean) {
+        busy = true
+        state.launch {
+            val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Renames.apply(p) }
+            state.rescanNow()
+            state.migrateIds(r.moved)
+            result = if (undo) null else r
+            busy = false
+            ctx.toast(if (undo) "Old names restored" else "Renamed ${r.moved.size} files")
+        }
+    }
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { Header("Rename files from tags", "“Artist - Title”, from each song's details · the audio and tags stay as they are", back = back) }
+        item {
+            Column(Modifier.padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val r = result
+                when {
+                    busy -> LinearProgressIndicator(Modifier.width(480.dp), color = Accent, trackColor = Raised)
+                    r != null -> {
+                        Text("Renamed ${r.moved.size} files." + if (r.failed.isEmpty()) "" else " ${r.failed.size} couldn't be renamed (name taken or folder read-only).", color = TextMain)
+                        if (r.undo.isNotEmpty()) OutlinedButton(onClick = { run(r.undo, undo = true) }) { Text("Undo") }
+                    }
+                    plan.isEmpty() -> Text("All your files are already named after their details.", color = TextDim)
+                    else -> Button(onClick = { run(plan, undo = false) }) { Text("Rename ${plan.size} files") }
+                }
+            }
+        }
+        if (result == null && !busy) items(plan, key = { it.id }) { r ->
+            Column(Modifier.padding(24.dp, 6.dp)) {
+                Text(r.from, color = TextDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("→ ${r.to}", color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
 }

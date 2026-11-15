@@ -1,6 +1,5 @@
 package io.github.realkhfan.onda.data
 
-import android.content.Context
 import io.github.realkhfan.onda.core.Match
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -20,8 +19,8 @@ object ListenBrainz {
     private val lock = Mutex()
     private var file: File? = null
 
-    fun load(context: Context) {
-        file = File(context.filesDir, "mbids.json")
+    fun load(dir: File) {
+        file = File(dir, "mbids.json")
         runCatching { JSONObject(file!!.readText()).let { o -> o.keys().forEach { mbids[it] = o.getString(it) } } }
     }
 

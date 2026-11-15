@@ -5,6 +5,7 @@ import io.github.realkhfan.onda.core.Match
 import io.github.realkhfan.onda.core.RemoteAlbum
 import io.github.realkhfan.onda.core.RemoteTrack
 import io.github.realkhfan.onda.data.Deezer
+import io.github.realkhfan.onda.data.ListenBrainz
 import io.github.realkhfan.onda.data.FreeCatalogs
 import io.github.realkhfan.onda.data.FullCopies
 import kotlinx.coroutines.delay
@@ -36,7 +37,7 @@ object Discover {
     data class Mix(val kind: Discovery.Kind, val period: String, val tracks: List<RemoteTrack>)
 
     /** [known]: artists you already have or play (Weekly is new artists only); [skip]: songs to leave out. */
-    suspend fun mix(kind: Discovery.Kind, period: String, seeds: List<String>, known: Set<String>, skip: (RemoteTrack) -> Boolean): Mix {
+    suspend fun mix(kind: Discovery.Kind, period: String, seeds: List<String>, known: Set<String>, listenBrainz: Boolean, skip: (RemoteTrack) -> Boolean): Mix {
         val seedIds = seeds.take(kind.seeds).map { artistId(it) }.filter { it > 0 }
         val perSeed = if (seedIds.size < kind.seeds / 2) kind.relatedPerSeed * 2 else kind.relatedPerSeed
         val related = LinkedHashSet<Long>()
@@ -45,6 +46,7 @@ object Discover {
                 .filter { !kind.newArtistsOnly || Match.norm(it.name) !in known }.take(perSeed).forEach { related += it.id }
             delay(120)
         }
+        if (listenBrainz) related += brainz(seeds.take(4), perSeed * 2, known.takeIf { kind.newArtistsOnly }.orEmpty(), max = seedIds.size * perSeed * 2)
         val sources = ((if (kind.newArtistsOnly) emptyList() else seedIds) + related).distinct().take(30)
         val per = if (sources.size < 12) 10 else 5
         val candidates = ArrayList<RemoteTrack>()
@@ -56,17 +58,30 @@ object Discover {
     }
 
     /** For "similar songs when the queue ends": popular songs of artists related to the last ones played. */
-    suspend fun similar(lastArtists: List<String>, skip: (RemoteTrack) -> Boolean, n: Int = 10): List<RemoteTrack> {
-        val seeds = lastArtists.distinctBy(Match::norm).take(5).map { artistId(it) }.filter { it > 0 }
-        val related = seeds.flatMap { runCatching { Deezer.related(it, 4) }.getOrDefault(emptyList()) }.distinctBy { it.id }.shuffled().take(8)
+    suspend fun similar(lastArtists: List<String>, listenBrainz: Boolean, skip: (RemoteTrack) -> Boolean, n: Int = 10): List<RemoteTrack> {
+        val names = lastArtists.distinctBy(Match::norm).take(5)
+        val seeds = names.map { artistId(it) }.filter { it > 0 }
+        val related = seeds.flatMap { runCatching { Deezer.related(it, 4) }.getOrDefault(emptyList()) }.map { it.id }.distinct().shuffled().take(8)
+        val brainz = if (listenBrainz) brainz(names.take(2), 4, emptySet(), max = 4).shuffled() else emptyList()
         val per = HashMap<String, Int>()
-        return (related.map { it.id } + seeds).distinct()
+        return (related + brainz + seeds).distinct()
             .flatMap { runCatching { Deezer.artistTop(it, 5) }.getOrDefault(emptyList()) }
             .filter { it.preview != null && !skip(it) && !Discovery.isUnwanted(it.title, it.album) }
             .distinctBy { Match.norm(it.artist) + "|" + Match.norm(it.title) }
             .shuffled()
             .filter { t -> val a = Match.norm(t.artist); ((per[a] ?: 0) < 2).also { ok -> if (ok) per[a] = (per[a] ?: 0) + 1 } }
             .take(n)
+    }
+
+    /** ListenBrainz's similar artists (open listening data) as Deezer ids; errors just mean none. Only artist names are sent. */
+    private suspend fun brainz(names: List<String>, perName: Int, skipNames: Set<String>, max: Int): List<Long> {
+        val out = LinkedHashSet<Long>()
+        for (name in names) for (similar in ListenBrainz.similar(name, perName)) {
+            if (out.size >= max) return out.toList()
+            if (Match.norm(similar) in skipNames) continue
+            artistId(similar).takeIf { it > 0 }?.let { out += it }
+        }
+        return out.toList()
     }
 
     /** Recent releases (not compilations) of up to 30 of your artists. */
