@@ -1,0 +1,1416 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
+package io.github.realkhfan.onda.ui
+
+import io.github.realkhfan.onda.data.UserCollection
+import io.github.realkhfan.onda.data.AppData
+import androidx.compose.material.icons.rounded.Download
+import io.github.realkhfan.onda.data.Downloads
+import io.github.realkhfan.onda.data.SpotifyImporter
+import android.net.Uri
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import android.content.Context
+import android.content.Intent
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AddCircleOutline
+import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.QueuePlayNext
+import androidx.compose.material.icons.rounded.RemoveCircleOutline
+import androidx.compose.material.icons.rounded.Restore
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
+import io.github.realkhfan.onda.BuildConfig
+import io.github.realkhfan.onda.core.Album
+import io.github.realkhfan.onda.core.ArtistGroup
+import io.github.realkhfan.onda.core.FolderGroup
+import io.github.realkhfan.onda.core.Grouping
+import io.github.realkhfan.onda.core.Match
+import io.github.realkhfan.onda.core.RemoteTrack
+import io.github.realkhfan.onda.core.Track
+import io.github.realkhfan.onda.data.Deezer
+import io.github.realkhfan.onda.data.PlaylistStore
+import io.github.realkhfan.onda.core.RemoteAlbum
+import io.github.realkhfan.onda.core.RemoteArtist
+import io.github.realkhfan.onda.core.RemoteResults
+import io.github.realkhfan.onda.core.Source
+import io.github.realkhfan.onda.core.Discovery
+import io.github.realkhfan.onda.data.Catalog
+import io.github.realkhfan.onda.data.Mixes
+import io.github.realkhfan.onda.data.PlayLog
+import io.github.realkhfan.onda.data.Matcher
+import io.github.realkhfan.onda.data.Overrides
+import io.github.realkhfan.onda.data.Prefs
+import io.github.realkhfan.onda.data.ReleaseJob
+import io.github.realkhfan.onda.data.Releases
+import io.github.realkhfan.onda.data.Server
+import io.github.realkhfan.onda.player.PlayerState
+import io.github.realkhfan.onda.player.QueueItem
+import io.github.realkhfan.onda.player.toMediaItem
+import io.github.realkhfan.onda.player.toPreviewItem
+import io.github.realkhfan.onda.scan.MusicLibrary
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
+import kotlin.random.Random
+
+private sealed interface Route
+private data class PlaylistRoute(val id: String) : Route
+private data object LikedRoute : Route
+private data object WantRoute : Route
+private data class TracksRoute(
+    val title: String, val subtitle: String, val art: String?, val tracks: List<Track>, val kind: String,
+    val round: Boolean = false,
+) : Route
+private data object QueueRoute : Route
+private data object SettingsRoute : Route
+private data object MatchRoute : Route
+private data object RenameRoute : Route
+private data class MixRoute(val kind: Discovery.Kind) : Route
+private data class RemoteArtistRoute(val artist: RemoteArtist) : Route
+private data class RemoteAlbumRoute(val album: RemoteAlbum) : Route
+
+private const val LIKED_ID = "liked"
+private const val SWIPE_FRACTION = 0.4f
+private val WantBg = Color(0xFF3A2F5C)
+
+/** Set by MainActivity so the Settings screen can touch the library with the Activity context. */
+object LibraryActions {
+    var removeFolder: ((String) -> Unit)? = null
+    var addFolder: (() -> Unit)? = null
+    var rescan: (() -> Unit)? = null
+}
+
+internal class MenuAction(val label: String, val icon: ImageVector, val run: () -> Unit)
+
+private data class MenuFor(val track: Track, val playlistId: String?, val fromPlayer: Boolean)
+
+@Composable
+fun OndaApp(player: PlayerState?) {
+    val ctx = LocalContext.current
+    val localTracks by MusicLibrary.tracks.collectAsState()
+    val serverCfg by Server.config.collectAsState()
+    val serverSongs by Server.songs.collectAsState()
+    val serverKbps by Server.kbps.collectAsState()
+    val meta by Overrides.meta.collectAsState()
+    val artistPics by Overrides.artistPics.collectAsState()
+    val matching by Matcher.state.collectAsState()
+    val serverTracks = remember(serverSongs, serverCfg, serverKbps) { Server.toTracks(serverSongs, serverCfg, serverKbps) }
+    // What the app shows: local files plus server songs you don't have locally, with accepted Deezer matches on top.
+    val tracks = remember(localTracks, serverTracks, meta) { AppData.library(localTracks, serverTracks, meta) }
+    // Lookups also know server songs hidden by a local twin, so playlists that saved one still find it.
+    val everyTrack = remember(localTracks, serverTracks, meta) { AppData.everyTrack(localTracks, serverTracks, meta) }
+    val folders by MusicLibrary.folders.collectAsState()
+    val scanning by MusicLibrary.scanning.collectAsState()
+    val playlists by PlaylistStore.playlists.collectAsState()
+    val liked by PlaylistStore.liked.collectAsState()
+    val want by PlaylistStore.want.collectAsState()
+    val followed by UserCollection.followed.collectAsState()
+    val savedAlbums by UserCollection.albums.collectAsState()
+    val aiMarked by UserCollection.aiMarked.collectAsState()
+    val remoteSongs by PlaylistStore.remote.collectAsState()
+
+    val byId = remember(everyTrack) { everyTrack.associateBy { it.id } }
+    val songs = remember(tracks) { Grouping.songsSorted(tracks) }
+    val albums = remember(tracks) { Grouping.albums(tracks) }
+    // Artist photos come from Deezer (fetched by a match run), never from a song's cover.
+    val artists = remember(tracks, artistPics) {
+        Grouping.artists(tracks).map { a -> a.copy(artUri = artistPics[a.tracks.first().artistKey]?.takeIf { it.isNotBlank() }) }
+    }
+    val folderGroups = remember(tracks) { Grouping.folders(tracks) }
+    val likedTracks = remember(liked, byId) { liked.mapNotNull { byId[it] } }
+    val wantKeys = remember(want) { want.map { it.key }.toSet() }
+    val byTitle = remember(tracks) { tracks.groupBy { Match.norm(it.title) } }
+    val localFor: (RemoteTrack) -> Track? = remember(byTitle) {
+        { r: RemoteTrack -> byTitle[Match.norm(r.title)]?.firstOrNull { Match.same(it.title, it.artist, r.title, r.artist) } }
+    }
+    val playlistArt: (PlaylistStore.Playlist) -> String? =
+        { pl -> pl.trackIds.firstNotNullOfOrNull { byId[it]?.artUri ?: remoteSongs[it]?.cover } }
+
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    // Screens opened on top of the current tab; Back pops one (album -> artist -> search results).
+    val stack = remember { mutableStateListOf<Route>() }
+    val detail = stack.lastOrNull()
+    fun push(r: Route) { stack.add(r) }
+    fun pop() { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
+    var fullPlayer by remember { mutableStateOf(false) }
+    var menuFor by remember { mutableStateOf<MenuFor?>(null) }
+    var remoteMenu by remember { mutableStateOf<RemoteTrack?>(null) }
+    var remoteMenuPlaylist by remember { mutableStateOf<String?>(null) } // set when opened from a playlist row
+    var addTrack by remember { mutableStateOf<Track?>(null) }
+    var pendingAdd by remember { mutableStateOf<Track?>(null) }
+    var showCreate by remember { mutableStateOf(false) }
+    var showDevices by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
+
+    var query by rememberSaveable { mutableStateOf("") }
+    var results by remember { mutableStateOf(RemoteResults()) }
+    var appleOn by remember { mutableStateOf(Prefs.appleSearch(ctx)) }
+    var freeOn by remember { mutableStateOf(Prefs.freeSearch(ctx)) }
+    var jamendoId by remember { mutableStateOf(Prefs.jamendoId(ctx)) }
+    var searchState by remember { mutableStateOf(SearchState.Idle) }
+    var searchError by remember { mutableStateOf<String?>(null) }
+
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
+    val tint = rememberArtTint(player?.artUri)
+
+    LaunchedEffect(query, appleOn, freeOn, jamendoId) {
+        val q = query.trim()
+        if (q.length < 2) {
+            results = RemoteResults(); searchState = SearchState.Idle
+            return@LaunchedEffect
+        }
+        delay(350) // wait until typing pauses, so not every keystroke becomes a request
+        searchState = SearchState.Loading
+        try {
+            results = Catalog.search(q, appleOn, freeOn, jamendoId)
+            searchState = SearchState.Done
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Shown small under the message, so a non-permission failure (e.g. an HTTP error) is visible.
+            searchError = e.javaClass.simpleName + (e.message?.let { ": $it" } ?: "")
+            searchState = SearchState.Error
+        }
+    }
+
+    // One message at a time: a new one replaces the old instead of queueing up behind it.
+    fun toast(msg: String) {
+        scope.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar(msg) }
+    }
+    fun download(items: List<Downloads.Item>) {
+        toast(Downloads.start(ctx, items) ?: "Downloading ${songCount(items.size)}…")
+    }
+    /** The download button's action for a list, or null when nothing in it may be downloaded (your server's songs, free songs that allow it). */
+    fun downloadAll(list: List<Track>, free: List<RemoteTrack> = emptyList()): (() -> Unit)? =
+        (list.mapNotNull { Downloads.forTrack(it, serverCfg) } + free.mapNotNull { Downloads.forRemote(it) })
+            .takeIf { it.isNotEmpty() }?.let { items -> { download(items) } }
+    fun queue(t: Track) {
+        player?.addToQueue(t.toMediaItem()); toast("Added to queue")
+    }
+    fun albumRoute(a: Album) = TracksRoute(a.title, "Album · ${a.artist}", a.artUri, a.tracks, "Album")
+    fun artistRoute(a: ArtistGroup) =
+        TracksRoute(a.name, "Artist · ${songCount(a.tracks.size)}", a.artUri, a.tracks, "Artist", round = true)
+    fun playRemote(r: RemoteTrack, kind: String, label: String) {
+        val p = player ?: return
+        localFor(r)?.let { p.play(listOf(it), 0, kind, label); return } // you own it: play the full song
+        r.toPreviewItem()?.let { p.playItems(listOf(it), 0, kind, label); return }
+        scope.launch { // saved songs have no preview stored (the links expire), so fetch a fresh one
+            val fresh = Catalog.freshPreview(r)
+            if (fresh != null) p.playItems(listOf(r.toMediaItem(fresh)), 0, kind, label) else toast("No preview available")
+        }
+    }
+    /** Plays a catalog list (album, popular songs) as a queue: owned songs in full, the rest as previews.
+     *  [index] -1 starts at the first playable song. */
+    fun playRemoteList(list: List<RemoteTrack>, index: Int, kind: String, label: String) {
+        val p = player ?: return
+        val playable = list.mapIndexedNotNull { i, t ->
+            (localFor(t)?.toMediaItem() ?: t.toPreviewItem())?.let { i to it }
+        }
+        val start = if (index < 0) 0 else playable.indexOfFirst { it.first == index }
+        if (playable.isEmpty() || start < 0) {
+            toast("No preview for this song in your country"); return
+        }
+        p.playItems(playable.map { it.second }, start, kind, label)
+    }
+    val rowCtx = RemoteRowContext(localFor, wantKeys, player?.currentId) { PlaylistStore.toggleWant(it) }
+
+    // Daily 10 / Weekly 30: built from what you play, like, save and own; rebuilt when the day / week changes.
+    val plays by PlayLog.plays.collectAsState()
+    val mixes by Mixes.mixes.collectAsState()
+    val mixesBuilding by Mixes.building.collectAsState()
+    val mixesProblem by Mixes.problem.collectAsState()
+    val taste = remember(plays, likedTracks, want, tracks) {
+        val played = plays.map { it.key }.toSet()
+        Mixes.Taste(
+            // Artists you follow come first; AI "artists" never seed anything.
+            seeds = (followed.map { it.name } + Discovery.seedArtists(plays, likedTracks, want, tracks, System.currentTimeMillis()))
+                .distinctBy { Match.norm(it) }.filterNot { UserCollection.isAi(it) },
+            known = (tracks.map { it.artist } + plays.map { it.artist } + likedTracks.map { it.artist }).map { Match.norm(it) }.toSet(),
+            skip = { r -> r.key in played || localFor(r) != null || UserCollection.isAi(r.artist) },
+        )
+    }
+    LaunchedEffect(taste.seeds.isNotEmpty(), java.time.LocalDate.now()) {
+        if (taste.seeds.isNotEmpty()) Mixes.refresh(taste)
+    }
+    // New releases follow the same artists you play most; the check itself runs at most every 6 h.
+    val releases by Releases.items.collectAsState()
+    LaunchedEffect(taste.seeds) {
+        Releases.setArtists(taste.seeds)
+        Releases.refreshIfDue(ctx)
+    }
+    val openRelease by Releases.open.collectAsState()
+    LaunchedEffect(openRelease) {
+        openRelease?.let { push(RemoteAlbumRoute(it)); Releases.open.value = null }
+    }
+
+    // A song that can't play (server offline, preview gone) says why once.
+    LaunchedEffect(player?.error) {
+        player?.error?.let { toast(it); player.clearError() }
+    }
+
+    // System Back / edge-back pops the in-app screen instead of closing the app. One enabled at a time.
+    BackHandler(enabled = fullPlayer) { fullPlayer = false }
+    BackHandler(enabled = !fullPlayer && !drawerState.isOpen && stack.isNotEmpty()) { pop() }
+    BackHandler(enabled = !fullPlayer && !drawerState.isOpen && stack.isEmpty() && tab != 0) { tab = 0 }
+
+    Box(Modifier.fillMaxSize()) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            // Swipe only closes it; it opens from the avatar, so right-swipes stay free for "add to queue".
+            gesturesEnabled = drawerState.isOpen,
+            drawerContent = {
+                DrawerSheet(onSettings = { scope.launch { drawerState.close() }; push(SettingsRoute) })
+            },
+        ) {
+            Scaffold(
+                containerColor = Bg,
+                bottomBar = {
+                    Column {
+                        if (player?.hasItem == true) MiniPlayer(player, tint) { fullPlayer = true }
+                        NavBar(tab) { tab = it; stack.clear() }
+                    }
+                },
+            ) { pad ->
+                Box(Modifier.padding(pad).fillMaxSize()) {
+                    when (val d = detail) {
+                        SettingsRoute -> SettingsScreen(
+                            folders, scanning, appleOn,
+                            onAppleChange = { appleOn = it; Prefs.setAppleSearch(ctx, it) },
+                            freeOn = freeOn,
+                            onFreeChange = { freeOn = it; Prefs.setFreeSearch(ctx, it) },
+                            jamendoId = jamendoId,
+                            onJamendoChange = { jamendoId = it; Prefs.setJamendoId(ctx, it) },
+                            matchRunning = matching.running,
+                            onMatch = { onlyNew -> Matcher.start(tracks, onlyNew); push(MatchRoute) },
+                            onViewMatch = { push(MatchRoute) },
+                            onRename = { push(RenameRoute) },
+                            onImport = { uris -> SpotifyImporter.start(ctx, uris, tracks) },
+                        ) { pop() }
+                        MatchRoute -> MatchScreen(onBack = { pop() }, onRename = { push(RenameRoute) })
+                        RenameRoute -> RenameScreen(
+                            localTracks = tracks.filter { it.fileName.isNotEmpty() }, folders = folders, onBack = { pop() },
+                            onReAddFolder = { LibraryActions.addFolder?.invoke() },
+                            onRescan = { LibraryActions.rescan?.invoke() },
+                        )
+                        is MixRoute -> MixScreen(
+                            d.kind, mixes[d.kind], d.kind in mixesBuilding, mixesProblem, noTaste = taste.seeds.isEmpty(),
+                            row = rowCtx, onBack = { pop() },
+                            onPlayList = { list, i -> playRemoteList(list, i, "Playlist", d.kind.label) },
+                            onRetry = { Mixes.refresh(taste) },
+                        )
+                        QueueRoute -> QueueScreen(player) { pop() }
+                        LikedRoute -> TrackListScreen(
+                            title = "Liked Songs", subtitle = "Playlist · ${songCount(likedTracks.size)}", art = null,
+                            tracks = likedTracks, kind = "Playlist", sourceId = LIKED_ID, player = player,
+                            tile = Icons.Rounded.Favorite,
+                            emptyText = "Songs you like show up here. Tap ♥ in the player or Add to Liked Songs in a song's ⋮ menu.",
+                            onBack = { pop() }, onMenu = { menuFor = MenuFor(it, LIKED_ID, false) }, onQueue = ::queue,
+                            onDownload = downloadAll(likedTracks),
+                        )
+                        WantRoute -> WantScreen(want, rowCtx, onBack = { pop() }, onPlay = { playRemote(it, "Playlist", "Want to listen") })
+                        is RemoteArtistRoute -> RemoteArtistScreen(
+                            d.artist, rowCtx, onBack = { pop() },
+                            onPlayList = { list, i, label -> playRemoteList(list, i, "Artist", label) },
+                            onOpenAlbum = { push(RemoteAlbumRoute(it)) },
+                        )
+                        is RemoteAlbumRoute -> RemoteAlbumScreen(
+                            d.album, rowCtx, onBack = { pop() },
+                            onPlayList = { list, i, label -> playRemoteList(list, i, "Album", label) },
+                            onOpenArtist = { push(RemoteArtistRoute(it)) },
+                            onDownload = { list -> download(list.mapNotNull { Downloads.forRemote(it) }) },
+                        )
+                        is PlaylistRoute -> {
+                            val pl = playlists.firstOrNull { it.id == d.id }
+                            if (pl == null) {
+                                LaunchedEffect(Unit) { pop() }
+                            } else {
+                                // Imported catalog songs you've since added play in full; the rest are previews.
+                                val (owned, previews) = remember(pl, byId, remoteSongs, localFor) {
+                                    val own = LinkedHashSet<Track>()
+                                    val pre = ArrayList<RemoteTrack>()
+                                    pl.trackIds.forEach { id ->
+                                        byId[id]?.let { own += it } ?: remoteSongs[id]?.let { r -> localFor(r)?.let { own += it } ?: pre.add(r) }
+                                    }
+                                    own.toList() to pre.toList()
+                                }
+                                TrackListScreen(
+                                    title = pl.name, subtitle = "Playlist · ${songCount(pl.trackIds.size)}", art = playlistArt(pl),
+                                    tracks = owned, kind = "Playlist", sourceId = pl.id, player = player,
+                                    previews = previews, row = rowCtx,
+                                    onPlayPreview = { i -> playRemoteList(previews, i, "Playlist", pl.name) },
+                                    onPreviewMenu = { remoteMenu = it; remoteMenuPlaylist = pl.id },
+                                    emptyText = "This playlist is empty. Add songs with Add to playlist in any song's ⋮ menu.",
+                                    onBack = { pop() }, onMenu = { menuFor = MenuFor(it, pl.id, false) }, onQueue = ::queue,
+                                    onDelete = { confirmDelete = pl },
+                                    onDownload = downloadAll(owned, previews),
+                                )
+                            }
+                        }
+                        is TracksRoute -> TrackListScreen(
+                            title = d.title, subtitle = d.subtitle, art = d.art, tracks = d.tracks, kind = d.kind,
+                            sourceId = null, player = player, round = d.round,
+                            onBack = { pop() }, onMenu = { menuFor = MenuFor(it, null, false) }, onQueue = ::queue,
+                            onDownload = downloadAll(d.tracks),
+                        )
+                        null -> when (tab) {
+                            0 -> HomeScreen(
+                                playlists, playlistArt, scanning, folders.isEmpty(),
+                                onAvatar = { scope.launch { drawerState.open() } },
+                                onAddFolder = { LibraryActions.addFolder?.invoke() },
+                                onOpenLiked = { push(LikedRoute) },
+                                onOpenWant = { push(WantRoute) },
+                                onOpenPlaylist = { push(PlaylistRoute(it)) },
+                                onShuffleAll = {
+                                    if (songs.isNotEmpty()) {
+                                        player?.play(songs, Random.nextInt(songs.size), "Library", "All songs", shuffled = true)
+                                    }
+                                },
+                                mixes = mixes, building = mixesBuilding,
+                                onOpenMix = { push(MixRoute(it)) },
+                                releases = releases,
+                                onOpenRelease = { push(RemoteAlbumRoute(it)) },
+                            )
+                            1 -> SearchScreen(
+                                query, { query = it }, searchState, results, rowCtx,
+                                errorDetail = searchError,
+                                onOpenAppInfo = { openAppInfo(ctx) },
+                                onPlay = { playRemote(it, "Search", query.trim()) },
+                                onOpenArtist = { push(RemoteArtistRoute(it)) },
+                                onOpenAlbum = { push(RemoteAlbumRoute(it)) },
+                            )
+                            else -> LibraryScreen(
+                                playlists = playlists, playlistArt = playlistArt,
+                                likedCount = likedTracks.size, wantCount = want.size,
+                                albums = albums, artists = artists, folders = folderGroups, songs = songs,
+                                savedAlbums = savedAlbums, followed = followed,
+                                onOpenRemoteAlbum = { push(RemoteAlbumRoute(it)) },
+                                onOpenRemoteArtist = { push(RemoteArtistRoute(it)) },
+                                currentId = player?.currentId,
+                                onAvatar = { scope.launch { drawerState.open() } },
+                                onCreate = { showCreate = true },
+                                onOpenLiked = { push(LikedRoute) },
+                                onOpenWant = { push(WantRoute) },
+                                onOpenPlaylist = { push(PlaylistRoute(it)) },
+                                onOpenAlbum = { push(albumRoute(it)) },
+                                onOpenArtist = { push(artistRoute(it)) },
+                                onOpenFolder = { push(TracksRoute(it.name, "Folder · ${songCount(it.tracks.size)}", null, it.tracks, "Folder")) },
+                                onPlaySongs = { list, i -> player?.play(list, i, "Library", "Your library") },
+                                onMenu = { menuFor = MenuFor(it, null, false) },
+                                onQueue = ::queue,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        val p = player
+        AnimatedVisibility(
+            visible = fullPlayer && p?.hasItem == true,
+            enter = slideInVertically(tween(320)) { it },
+            exit = slideOutVertically(tween(260)) { it },
+        ) {
+            if (p != null) {
+                val remote = currentRemote(p)
+                FullPlayer(
+                    player = p,
+                    tint = tint,
+                    saved = if (remote != null) remote.key in wantKeys else liked.contains(p.currentId),
+                    onClose = { fullPlayer = false },
+                    onSave = {
+                        if (remote != null) PlaylistStore.toggleWant(remote) else p.currentId?.let { PlaylistStore.toggleLike(it) }
+                    },
+                    onMenu = {
+                        if (remote != null) remoteMenu = remote
+                        else p.currentId?.let { byId[it] }?.let { menuFor = MenuFor(it, p.sourceId, true) }
+                    },
+                    onQueue = { fullPlayer = false; push(QueueRoute) },
+                    onDevices = { showDevices = true },
+                )
+            }
+        }
+
+        // Outside the Scaffold so messages also show above the full player.
+        SnackbarHost(
+            snackbar,
+            Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(
+                bottom = when {
+                    fullPlayer -> 24.dp
+                    player?.hasItem == true -> 150.dp
+                    else -> 90.dp
+                },
+            ),
+        )
+    }
+
+    menuFor?.let { m ->
+        val t = m.track
+        val pid = m.playlistId
+        val isLiked = liked.contains(t.id)
+        val album = albums.firstOrNull { it.key == t.albumKey }
+        val artist = artists.firstOrNull { a -> a.tracks.firstOrNull()?.artistKey == t.artistKey }
+        val inPlaylist = when (pid) {
+            null -> false
+            LIKED_ID -> m.fromPlayer && isLiked // inside Liked Songs the ♥ row already covers it
+            else -> playlists.firstOrNull { it.id == pid }?.trackIds?.contains(t.id) == true
+        }
+        val actions = buildList {
+            if (!m.fromPlayer) {
+                add(MenuAction(if (isLiked) "Remove from Liked Songs" else "Add to Liked Songs",
+                    if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) { PlaylistStore.toggleLike(t.id) })
+            }
+            add(MenuAction("Share", Icons.Rounded.Share) { share(ctx, "${t.title} — ${t.artist}") })
+            add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTrack = t })
+            Downloads.forTrack(t, serverCfg)?.let { item -> add(MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) }) }
+            if (inPlaylist && pid != null) {
+                add(MenuAction("Remove from this playlist", Icons.Rounded.RemoveCircleOutline) {
+                    if (pid == LIKED_ID) PlaylistStore.toggleLike(t.id) else PlaylistStore.removeFromPlaylist(pid, t.id)
+                })
+            }
+            if (!m.fromPlayer) {
+                add(MenuAction("Play next", Icons.Rounded.QueuePlayNext) { player?.playNext(t.toMediaItem()); toast("Playing next") })
+            }
+            add(MenuAction("Add to queue", Icons.AutoMirrored.Rounded.PlaylistAdd) { queue(t) })
+            if (m.fromPlayer) {
+                add(MenuAction("Go to queue", Icons.AutoMirrored.Rounded.QueueMusic) { fullPlayer = false; push(QueueRoute) })
+            }
+            if (album != null) add(MenuAction("Go to album", Icons.Rounded.Album) { fullPlayer = false; push(albumRoute(album)) })
+            if (artist != null) add(MenuAction("Go to artist", Icons.Rounded.Person) { fullPlayer = false; push(artistRoute(artist)) })
+            if (meta.containsKey(t.id)) {
+                add(MenuAction("Restore original tags", Icons.Rounded.Restore) { Overrides.restore(t.id); toast("Original tags restored") })
+            }
+        }
+        SongMenu(t.title, t.artist, t.artUri, actions) { menuFor = null }
+    }
+
+    remoteMenu?.let { r ->
+        val wanted = r.key in wantKeys
+        val link = if (r.source == Source.DEEZER) "\nhttps://www.deezer.com/track/${r.id}" else ""
+        val inPlaylist = remoteMenuPlaylist
+        val actions = listOfNotNull(
+            MenuAction("Share", Icons.Rounded.Share) { share(ctx, "${r.title} — ${r.artist}$link") },
+            MenuAction(if (wanted) "Remove from Want to listen" else "Add to Want to listen",
+                if (wanted) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder) { PlaylistStore.toggleWant(r) },
+            Downloads.forRemote(r)?.let { item -> MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) } },
+            inPlaylist?.let { pl ->
+                MenuAction("Remove from this playlist", Icons.Rounded.RemoveCircleOutline) { PlaylistStore.removeFromPlaylist(pl, r.key) }
+            },
+            MenuAction("Go to queue", Icons.AutoMirrored.Rounded.QueueMusic) { fullPlayer = false; push(QueueRoute) },
+        )
+        SongMenu(r.title, r.artist, r.cover, actions) { remoteMenu = null; remoteMenuPlaylist = null }
+    }
+
+    addTrack?.let { t ->
+        AddToPlaylistSheet(
+            playlists,
+            onDismiss = { addTrack = null },
+            onPick = { pl -> PlaylistStore.addToPlaylist(pl.id, listOf(t.id)); addTrack = null; toast("Added to ${pl.name}") },
+            onCreate = { pendingAdd = t; addTrack = null; showCreate = true },
+        )
+    }
+
+    if (showCreate) {
+        CreatePlaylistDialog(
+            onDismiss = { showCreate = false; pendingAdd = null },
+            onCreate = { name ->
+                val id = PlaylistStore.createPlaylist(name)
+                pendingAdd?.let { PlaylistStore.addToPlaylist(id, listOf(it.id)); toast("Added to ${name.ifBlank { "New playlist" }}") }
+                pendingAdd = null; showCreate = false
+            },
+        )
+    }
+
+    confirmDelete?.let { pl ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            confirmButton = {
+                TextButton(onClick = { PlaylistStore.deletePlaylist(pl.id); confirmDelete = null; pop() }) {
+                    Text("Delete", color = ErrorRed)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel", color = TextDim) } },
+            title = { Text("Delete “${pl.name}”?") },
+            text = { Text("Only the playlist is removed. Your music files stay untouched.", color = TextDim) },
+            containerColor = CardBg,
+        )
+    }
+
+    if (showDevices) DevicesSheet { showDevices = false }
+}
+
+private fun currentRemote(p: PlayerState): RemoteTrack? {
+    val key = p.currentId ?: return null
+    val source = Source.of(key) ?: return null
+    val rest = key.removePrefix(source.prefix)
+    return if (source.full) RemoteTrack(0, p.title, p.artist, p.album, p.artUri, null, 0, source, ref = rest)
+    else RemoteTrack(rest.toLongOrNull() ?: return null, p.title, p.artist, "", p.artUri, null, 0, source)
+}
+
+/* ---------------- Home ---------------- */
+
+@Composable
+private fun HomeScreen(
+    playlists: List<PlaylistStore.Playlist>,
+    playlistArt: (PlaylistStore.Playlist) -> String?,
+    scanning: Boolean,
+    noFolders: Boolean,
+    onAvatar: () -> Unit,
+    onAddFolder: () -> Unit,
+    onOpenLiked: () -> Unit,
+    onOpenWant: () -> Unit,
+    onOpenPlaylist: (String) -> Unit,
+    onShuffleAll: () -> Unit,
+    mixes: Map<Discovery.Kind, Mixes.Mix>,
+    building: Set<Discovery.Kind>,
+    onOpenMix: (Discovery.Kind) -> Unit,
+    releases: List<RemoteAlbum>,
+    onOpenRelease: (RemoteAlbum) -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        TopBar("Onda", onAvatar)
+        if (noFolders) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Add the folders your music lives in to get started.", color = TextDim)
+                Button(onClick = onAddFolder) { Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(8.dp)); Text("Add music folder") }
+            }
+            return
+        }
+        if (scanning) Text("Scanning…", color = TextDim, modifier = Modifier.padding(16.dp, 0.dp))
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            item { ShortcutTile("Liked Songs", onOpenLiked) { IconTile(Icons.Rounded.Favorite, 56.dp) } }
+            item { ShortcutTile("Want to listen", onOpenWant) { IconTile(Icons.Rounded.Bookmark, 56.dp, WantBg, Accent) } }
+            item { ShortcutTile("Shuffle all", onShuffleAll) { IconTile(Icons.Rounded.Shuffle, 56.dp, CardBg, Accent) } }
+            // A few playlists as shortcuts; the rest are in Your Library, so the mixes stay near the top.
+            items(playlists.take(3)) { pl -> ShortcutTile(pl.name, { onOpenPlaylist(pl.id) }) { Art(playlistArt(pl), 56.dp) } }
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text("Made for you", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 20.sp,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
+            }
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Discovery.Kind.entries.forEach { k ->
+                        MixCard(k, mixes[k], k in building, Modifier.weight(1f)) { onOpenMix(k) }
+                    }
+                }
+            }
+            if (releases.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text("New releases", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 20.sp,
+                        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
+                }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    val today = remember { java.time.LocalDate.now() }
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(releases.take(20), key = { it.id }) { a -> ReleaseCard(a, today) { onOpenRelease(a) } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShortcutTile(title: String, onClick: () -> Unit, leading: @Composable () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(6.dp)).background(Raised).clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        leading()
+        Spacer(Modifier.width(10.dp))
+        Text(title, color = TextMain, fontWeight = FontWeight.SemiBold, maxLines = 2, fontSize = 13.sp,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(end = 8.dp))
+    }
+}
+
+/* ---------------- Library ---------------- */
+
+@Composable
+private fun LibraryScreen(
+    playlists: List<PlaylistStore.Playlist>,
+    playlistArt: (PlaylistStore.Playlist) -> String?,
+    likedCount: Int,
+    wantCount: Int,
+    albums: List<Album>,
+    artists: List<ArtistGroup>,
+    folders: List<FolderGroup>,
+    songs: List<Track>,
+    currentId: String?,
+    onAvatar: () -> Unit,
+    onCreate: () -> Unit,
+    onOpenLiked: () -> Unit,
+    onOpenWant: () -> Unit,
+    onOpenPlaylist: (String) -> Unit,
+    onOpenAlbum: (Album) -> Unit,
+    onOpenArtist: (ArtistGroup) -> Unit,
+    onOpenFolder: (FolderGroup) -> Unit,
+    savedAlbums: List<RemoteAlbum>,
+    followed: List<RemoteArtist>,
+    onOpenRemoteAlbum: (RemoteAlbum) -> Unit,
+    onOpenRemoteArtist: (RemoteArtist) -> Unit,
+    onPlaySongs: (List<Track>, Int) -> Unit,
+    onMenu: (Track) -> Unit,
+    onQueue: (Track) -> Unit,
+) {
+    var chip by rememberSaveable { mutableIntStateOf(0) }
+    var searching by rememberSaveable { mutableStateOf(false) }
+    var q by rememberSaveable { mutableStateOf("") }
+    BackHandler(enabled = searching) { searching = false; q = "" }
+
+    val ql = q.trim().lowercase()
+    val fPl = remember(ql, playlists) { if (ql.isEmpty()) emptyList() else playlists.filter { it.name.lowercase().contains(ql) } }
+    val fAr = remember(ql, artists) { if (ql.isEmpty()) emptyList() else artists.filter { it.name.lowercase().contains(ql) }.take(20) }
+    val fAl = remember(ql, albums) {
+        if (ql.isEmpty()) emptyList() else albums.filter { it.title.lowercase().contains(ql) || it.artist.lowercase().contains(ql) }.take(20)
+    }
+    val fSo = remember(ql, songs) {
+        if (ql.isEmpty()) emptyList()
+        else songs.filter {
+            it.title.lowercase().contains(ql) || it.artist.lowercase().contains(ql) || it.album.lowercase().contains(ql)
+        }.take(100)
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(16.dp, 16.dp, 8.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Avatar(onAvatar)
+            Spacer(Modifier.width(12.dp))
+            Text("Your Library", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f))
+            IconButton(onClick = { searching = !searching; if (!searching) q = "" }) {
+                Icon(if (searching) Icons.Rounded.Close else Icons.Rounded.Search,
+                    if (searching) "Close library search" else "Search your library", tint = TextMain)
+            }
+            IconButton(onClick = onCreate) { Icon(Icons.Rounded.Add, "Create playlist", tint = TextMain) }
+        }
+        if (searching) {
+            SearchField(q, { q = it }, "Search your library", Modifier.padding(16.dp, 0.dp, 16.dp, 8.dp), autoFocus = true)
+        } else {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(16.dp, 0.dp, 16.dp, 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf("Playlists", "Albums", "Artists", "Folders").forEachIndexed { i, l -> Chip(l, chip == i) { chip = i } }
+            }
+        }
+        LazyColumn(Modifier.fillMaxSize()) {
+            if (searching) {
+                when {
+                    ql.isEmpty() -> item {
+                        Text("Search your songs, albums, artists and playlists.", color = TextDim, modifier = Modifier.padding(24.dp))
+                    }
+                    fPl.isEmpty() && fAr.isEmpty() && fAl.isEmpty() && fSo.isEmpty() -> item {
+                        Text("Nothing in your library matches “${q.trim()}”.", color = TextDim, modifier = Modifier.padding(24.dp))
+                    }
+                }
+                if (fPl.isNotEmpty()) item { SectionLabel("Playlists") }
+                items(fPl) { pl ->
+                    GroupRow(pl.name, "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) }) { Art(playlistArt(pl), 52.dp) }
+                }
+                if (fAr.isNotEmpty()) item { SectionLabel("Artists") }
+                items(fAr) { a -> GroupRow(a.name, "Artist", { onOpenArtist(a) }) { Art(a.artUri, 52.dp, round = true) } }
+                if (fAl.isNotEmpty()) item { SectionLabel("Albums") }
+                items(fAl) { a -> GroupRow(a.title, "Album · ${a.artist}", { onOpenAlbum(a) }) { Art(a.artUri, 52.dp) } }
+                if (fSo.isNotEmpty()) item { SectionLabel("Songs") }
+                itemsIndexed(fSo) { i, t ->
+                    SwipeTrackRow(t, t.id == currentId, onQueue = { onQueue(t) }, onMenu = { onMenu(t) }) { onPlaySongs(fSo, i) }
+                }
+            } else {
+                when (chip) {
+                    0 -> {
+                        item {
+                            GroupRow("Liked Songs", "Playlist · ${songCount(likedCount)}", onOpenLiked) { IconTile(Icons.Rounded.Favorite, 52.dp) }
+                        }
+                        item {
+                            GroupRow("Want to listen", "Previews · ${songCount(wantCount)}", onOpenWant) {
+                                IconTile(Icons.Rounded.Bookmark, 52.dp, WantBg, Accent)
+                            }
+                        }
+                        items(playlists) { pl ->
+                            GroupRow(pl.name, "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) }) {
+                                Art(playlistArt(pl), 52.dp)
+                            }
+                        }
+                        if (playlists.isEmpty()) item {
+                            Text("Tap + to create your first playlist.", color = TextDim, modifier = Modifier.padding(24.dp))
+                        }
+                    }
+                    1 -> {
+                        items(savedAlbums) { a -> GroupRow(a.title, "Saved · ${a.artist}", { onOpenRemoteAlbum(a) }) { Art(a.cover, 52.dp) } }
+                        items(albums) { a -> GroupRow(a.title, "Album · ${a.artist}", { onOpenAlbum(a) }) { Art(a.artUri, 52.dp) } }
+                    }
+                    2 -> {
+                        items(followed) { a -> GroupRow(a.name, "Following", { onOpenRemoteArtist(a) }) { Art(a.picture, 52.dp, round = true) } }
+                        items(artists) { a -> GroupRow(a.name, "Artist", { onOpenArtist(a) }) { Art(a.artUri, 52.dp, round = true) } }
+                    }
+                    else -> items(folders) { f ->
+                        GroupRow(f.name, "Folder · ${songCount(f.tracks.size)}", { onOpenFolder(f) }) {
+                            Art(f.tracks.firstNotNullOfOrNull { it.artUri }, 52.dp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* ---------------- Track list (playlist / album / artist / folder) ---------------- */
+
+@Composable
+private fun TrackListScreen(
+    title: String,
+    subtitle: String,
+    art: String?,
+    tracks: List<Track>,
+    kind: String,
+    sourceId: String?,
+    player: PlayerState?,
+    onBack: () -> Unit,
+    onMenu: (Track) -> Unit,
+    onQueue: (Track) -> Unit,
+    tile: ImageVector? = null,
+    round: Boolean = false,
+    emptyText: String? = null,
+    onDelete: (() -> Unit)? = null,
+    previews: List<RemoteTrack> = emptyList(),
+    row: RemoteRowContext? = null,
+    onPlayPreview: (index: Int) -> Unit = {},
+    onPreviewMenu: (RemoteTrack) -> Unit = {},
+    onDownload: (() -> Unit)? = null,
+) {
+    Column(Modifier.fillMaxSize()) {
+        BackTopBar(title, onBack) {
+            if (onDownload != null) IconButton(onClick = onDownload) { Icon(Icons.Rounded.Download, "Download $title", tint = TextDim) }
+            if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) }
+        }
+        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (tile != null) IconTile(tile, 96.dp) else Art(art, 96.dp, round = round)
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(subtitle, color = TextDim, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            if (tracks.isNotEmpty()) player?.play(tracks, 0, kind, title, sourceId, shuffled = false) else onPlayPreview(-1)
+                        },
+                        enabled = tracks.isNotEmpty() || previews.isNotEmpty(),
+                    ) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
+                    OutlinedButton(
+                        onClick = { player?.play(tracks, Random.nextInt(tracks.size), kind, title, sourceId, shuffled = true) },
+                        enabled = tracks.isNotEmpty(),
+                    ) { Icon(Icons.Rounded.Shuffle, null); Text("Shuffle") }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        if (tracks.isEmpty() && previews.isEmpty() && emptyText != null) Text(emptyText, color = TextDim, modifier = Modifier.padding(24.dp))
+        LazyColumn(Modifier.fillMaxSize()) {
+            itemsIndexed(tracks) { i, t ->
+                SwipeTrackRow(t, player?.currentId == t.id, onQueue = { onQueue(t) }, onMenu = { onMenu(t) }) {
+                    player?.play(tracks, i, kind, title, sourceId)
+                }
+            }
+            if (previews.isNotEmpty() && row != null) {
+                item { SectionLabel("Previews · not in your library") }
+                itemsIndexed(previews) { i, r -> RemoteRow(r, row, onPlay = { onPlayPreview(i) }, onMenu = { onPreviewMenu(r) }) }
+            }
+        }
+    }
+}
+
+/* ---------------- Queue ---------------- */
+
+@Composable
+private fun QueueScreen(player: PlayerState?, onBack: () -> Unit) {
+    val items = remember(player?.queueVersion, player?.currentId) { player?.queue() ?: emptyList() }
+    val now = items.firstOrNull { it.isCurrent }
+    val queued = items.filter { it.queued && !it.isCurrent }
+    val rest = items.filter { !it.queued && !it.isCurrent }
+    Column(Modifier.fillMaxSize()) {
+        BackTopBar("Queue", onBack)
+        LazyColumn(Modifier.fillMaxSize()) {
+            if (now == null) item { Text("Nothing is playing.", color = TextDim, modifier = Modifier.padding(24.dp)) }
+            if (now != null) {
+                item { SectionLabel("Now playing") }
+                item { QueueRow(now, onClick = null, onRemove = null) }
+            }
+            if (queued.isNotEmpty()) {
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionLabel("Next in queue", Modifier.weight(1f))
+                        TextButton(onClick = { player?.clearQueue() }) { Text("Clear queue", color = Accent) }
+                    }
+                }
+                items(queued) { q -> QueueRow(q, onClick = { player?.jumpTo(q.index) }, onRemove = { player?.removeAt(q.index) }) }
+            }
+            if (rest.isNotEmpty()) {
+                item { SectionLabel("Next from: ${player?.sourceLabel.orEmpty()}") }
+                items(rest) { q -> QueueRow(q, onClick = { player?.jumpTo(q.index) }, onRemove = { player?.removeAt(q.index) }) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueRow(q: QueueItem, onClick: (() -> Unit)?, onRemove: (() -> Unit)?) {
+    Row(
+        Modifier.fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Art(q.artUri, 44.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(q.title, color = if (q.isCurrent) Accent else TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(q.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (onRemove != null) IconButton(onClick = onRemove) { Icon(Icons.Rounded.Close, "Remove ${q.title} from queue", tint = TextDim) }
+    }
+}
+
+/* ---------------- Settings (in the drawer) ---------------- */
+
+@Composable
+private fun SettingsScreen(
+    folders: List<String>,
+    scanning: Boolean,
+    appleOn: Boolean,
+    onAppleChange: (Boolean) -> Unit,
+    freeOn: Boolean,
+    onFreeChange: (Boolean) -> Unit,
+    jamendoId: String,
+    onJamendoChange: (String) -> Unit,
+    matchRunning: Boolean,
+    onMatch: (onlyNew: Boolean) -> Unit,
+    onViewMatch: () -> Unit,
+    onRename: () -> Unit,
+    onImport: (List<Uri>) -> Unit,
+    onBack: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    val importing by SpotifyImporter.state.collectAsState()
+    val pickExport = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { onImport(it) }
+    var showLicenses by remember { mutableStateOf(false) }
+    var keepPlaying by remember { mutableStateOf(Prefs.keepPlaying(ctx)) }
+    var mobileDl by remember { mutableStateOf(Prefs.mobileDownloads(ctx)) }
+    var releaseAlerts by remember { mutableStateOf(Prefs.releaseAlerts(ctx)) }
+    fun setReleaseAlerts(on: Boolean) {
+        releaseAlerts = on
+        Prefs.setReleaseAlerts(ctx, on)
+        if (on) ReleaseJob.schedule(ctx) else ReleaseJob.cancel(ctx)
+    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        BackTopBar("Settings", onBack)
+        Column(Modifier.padding(20.dp, 0.dp, 20.dp, 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SectionLabel("Music folders", Modifier.padding(0.dp))
+            folders.forEach { uri ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.FolderOpen, null, tint = Accent)
+                    Spacer(Modifier.width(8.dp))
+                    Text(prettyFolder(uri), color = TextMain, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    IconButton(onClick = { LibraryActions.removeFolder?.invoke(uri) }) {
+                        Icon(Icons.Rounded.Delete, "Remove folder ${prettyFolder(uri)}", tint = TextDim)
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { LibraryActions.addFolder?.invoke() }) { Icon(Icons.Rounded.Add, null); Text("Add folder") }
+                OutlinedButton(onClick = { LibraryActions.rescan?.invoke() }, enabled = !scanning) { Text(if (scanning) "Scanning…" else "Rescan") }
+            }
+            Spacer(Modifier.height(4.dp))
+            ServerSection()
+            Spacer(Modifier.height(4.dp))
+            SectionLabel("Match metadata online", Modifier.padding(0.dp))
+            Text(
+                "Looks your songs up on Deezer. You review each change (Keep or Replace); songs without a match keep " +
+                    "their own details, and artist photos are fetched too. Your audio files are never changed.",
+                color = TextDim, fontSize = 13.sp,
+            )
+            if (matchRunning) {
+                Button(onClick = onViewMatch) { Text("Matching… view progress") }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onMatch(true) }) { Text("Match new songs") }
+                    OutlinedButton(onClick = { onMatch(false) }) { Text("Match all songs") }
+                }
+            }
+            OutlinedButton(onClick = onRename) { Text("Rename files from tags") }
+            Text("Names your files “Artist - Title”. You see every change first, and can undo it.",
+                color = TextDim, fontSize = 12.sp)
+            Spacer(Modifier.height(4.dp))
+            SectionLabel("Import from Spotify", Modifier.padding(0.dp))
+            Text("In Spotify: Account → Privacy settings → Download your data → Account data. Spotify emails you a " +
+                "ZIP a few days later; pick it here. Exportify CSV files work too. Nothing is sent to Spotify.",
+                color = TextDim, fontSize = 13.sp)
+            when {
+                importing.running -> {
+                    Text(if (importing.total == 0) "Reading the export…" else "Finding songs: ${importing.done} of ${importing.total}",
+                        color = TextMain, fontSize = 13.sp)
+                    LinearProgressIndicator(
+                        progress = { if (importing.total == 0) 0f else importing.done.toFloat() / importing.total },
+                        modifier = Modifier.fillMaxWidth(), color = Accent, trackColor = Raised,
+                    )
+                }
+                else -> {
+                    importing.result?.let { Text(it, color = TextMain, fontSize = 13.sp) }
+                    importing.error?.let { Text(it, color = ErrorRed, fontSize = 13.sp) }
+                    OutlinedButton(onClick = { pickExport.launch(arrayOf("*/*")) }) { Text("Choose Spotify export") }
+                }
+            }
+            SectionLabel("Downloads", Modifier.padding(0.dp))
+            val dlFolder = Downloads.targetFolder(ctx)
+            Text(
+                if (dlFolder != null) "Saved as music files in “${Downloads.FOLDER}” inside ${prettyFolder(dlFolder)}, so they're part of " +
+                    "your library and play offline. Songs from your music server, and free songs whose artist allows it."
+                else "Add a music folder first: downloads are saved as files there.",
+                color = TextDim, fontSize = 13.sp,
+            )
+            val dl by Downloads.state.collectAsState()
+            if (dl.running) {
+                Text("Downloading ${minOf(dl.done + 1, dl.total)} of ${dl.total}: ${dl.current.orEmpty()}", color = TextMain, fontSize = 13.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                LinearProgressIndicator(progress = { dl.done.toFloat() / dl.total.coerceAtLeast(1) },
+                    modifier = Modifier.fillMaxWidth(), color = Accent, trackColor = Raised)
+            }
+            Row(Modifier.fillMaxWidth().clickable { mobileDl = !mobileDl; Prefs.setMobileDownloads(ctx, mobileDl) },
+                verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Download on mobile data", color = TextMain)
+                    Text("Off: downloads only start on Wi-Fi.", color = TextDim, fontSize = 12.sp)
+                }
+                Switch(checked = mobileDl, onCheckedChange = { mobileDl = it; Prefs.setMobileDownloads(ctx, it) })
+            }
+            SectionLabel("New releases", Modifier.padding(0.dp))
+            Row(Modifier.fillMaxWidth().clickable { setReleaseAlerts(!releaseAlerts) }, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Notify me about new releases", color = TextMain)
+                    Text("From the artists you listen to most. Checked twice a day; only artist ids go to Deezer.",
+                        color = TextDim, fontSize = 12.sp)
+                }
+                Switch(checked = releaseAlerts, onCheckedChange = { setReleaseAlerts(it) })
+            }
+            Spacer(Modifier.height(4.dp))
+            SectionLabel("Playback", Modifier.padding(0.dp))
+            Row(
+                Modifier.fillMaxWidth().clickable { keepPlaying = !keepPlaying; Prefs.setKeepPlaying(ctx, keepPlaying) },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Keep playing after closing Onda", color = TextMain)
+                    Text("Off: swiping Onda away from Recents pauses it and ends background playback.",
+                        color = TextDim, fontSize = 12.sp)
+                }
+                Switch(checked = keepPlaying, onCheckedChange = { keepPlaying = it; Prefs.setKeepPlaying(ctx, it) })
+            }
+            Spacer(Modifier.height(4.dp))
+            SectionLabel("Privacy", Modifier.padding(0.dp))
+            Text(
+                "Search, previews and cover art come from Deezer's public API without an account. " +
+                    "Deezer sees your search words and IP address, nothing else. Free songs stream straight " +
+                    "from the catalog they come from. Revoke Onda's Network " +
+                    "permission and it keeps working offline with your own files.",
+                color = TextDim, fontSize = 13.sp,
+            )
+            Row(Modifier.fillMaxWidth().clickable { onAppleChange(!appleOn) }, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Also search Apple's catalog", color = TextMain)
+                    Text("Finds songs Deezer is missing. Apple then also sees your search words and IP address.",
+                        color = TextDim, fontSize = 12.sp)
+                }
+                Switch(checked = appleOn, onCheckedChange = onAppleChange)
+            }
+            Row(Modifier.fillMaxWidth().clickable { onFreeChange(!freeOn) }, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text("Free full songs in search", color = TextMain)
+                    Text("Adds whole songs from Audius and free albums from the Internet Archive. They then also " +
+                        "see your search words and IP address.", color = TextDim, fontSize = 12.sp)
+                }
+                Switch(checked = freeOn, onCheckedChange = onFreeChange)
+            }
+            OutlinedTextField(
+                value = jamendoId,
+                onValueChange = onJamendoChange,
+                label = { Text("Jamendo client ID (optional)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text("Adds Jamendo's free Creative Commons songs. Get a free client ID at devportal.jamendo.com " +
+                "(needs a Jamendo account). Leave empty to keep Jamendo off.", color = TextDim, fontSize = 12.sp)
+            OutlinedButton(onClick = { openAppInfo(ctx) }) { Text("Network permission (Android settings)") }
+            Text("Opens Onda's app info. Go to Permissions → Network.", color = TextDim, fontSize = 12.sp)
+            TextButton(onClick = { showLicenses = true }) { Text("Open-source licenses", color = Accent) }
+            Text("Onda ${BuildConfig.VERSION_NAME}. No account, no tracking, no Google code.", color = TextDim, fontSize = 12.sp)
+        }
+    }
+    if (showLicenses) {
+        AlertDialog(
+            onDismissRequest = { showLicenses = false },
+            confirmButton = { TextButton(onClick = { showLicenses = false }) { Text("Close") } },
+            title = { Text("Licenses") },
+            text = {
+                Text(
+                    "Onda is licensed under GPL-3.0.\n\n" +
+                        "Uses: AndroidX / Jetpack Compose & Media3 (Apache-2.0), Coil and OkHttp (Apache-2.0), " +
+                        "Kotlin & coroutines (Apache-2.0). Full license texts ship with each library. AI artist list: " +
+                        "CennoxX/spotify-ai-blocker (MIT).",
+                    color = TextDim,
+                )
+            },
+            containerColor = CardBg,
+        )
+    }
+}
+
+@Composable
+private fun DrawerSheet(onSettings: () -> Unit) {
+    ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.55f), drawerContainerColor = CardBg) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Onda", color = Accent, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+            Row(Modifier.fillMaxWidth().clickable(onClick = onSettings).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Settings, null, tint = TextMain)
+                Spacer(Modifier.width(12.dp))
+                Text("Settings", color = TextMain, fontSize = 16.sp)
+            }
+        }
+    }
+}
+
+/* ---------------- shared pieces ---------------- */
+
+@Composable
+private fun TopBar(title: String, onAvatar: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(16.dp, 16.dp, 16.dp, 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Avatar(onAvatar)
+        Spacer(Modifier.width(12.dp))
+        Text(title, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+    }
+}
+
+@Composable
+internal fun BackTopBar(title: String, onBack: () -> Unit, actions: @Composable RowScope.() -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = TextMain) }
+        Text(title, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp, maxLines = 1,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        actions()
+    }
+}
+
+@Composable
+private fun Avatar(onClick: () -> Unit) {
+    Box(
+        Modifier.size(34.dp).clip(CircleShape).background(Accent).clickable(onClickLabel = "Open menu", onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { Text("R", color = Color(0xFF141018), fontWeight = FontWeight.Bold) }
+}
+
+@Composable
+private fun NavBar(selected: Int, onSelect: (Int) -> Unit) {
+    NavigationBar(containerColor = CardBg) {
+        listOf(
+            Triple("Home", Icons.Rounded.Home, 0),
+            Triple("Search", Icons.Rounded.Search, 1),
+            Triple("Your Library", Icons.Rounded.LibraryMusic, 2),
+        ).forEach { (label, icon, i) ->
+            NavigationBarItem(
+                selected = selected == i, onClick = { onSelect(i) },
+                icon = { Icon(icon, null) }, label = { Text(label, fontSize = 11.sp) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = Accent, selectedTextColor = Accent, indicatorColor = Raised,
+                    unselectedIconColor = TextDim, unselectedTextColor = TextDim,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+internal fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.clip(RoundedCornerShape(50)).background(if (selected) Accent else Raised).clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+    ) { Text(label, color = if (selected) Color(0xFF141018) else TextDim, fontSize = 13.sp) }
+}
+
+@Composable
+internal fun SectionLabel(text: String, modifier: Modifier = Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp)) {
+    Text(text, color = TextDim, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = modifier)
+}
+
+/** A song row. Dragging it right past 40% and letting go adds it to the queue, exactly once. */
+@Composable
+private fun SwipeTrackRow(t: Track, playing: Boolean, onQueue: () -> Unit, onMenu: () -> Unit, onClick: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    val fire by rememberUpdatedState(onQueue)
+    var dx by remember { mutableFloatStateOf(0f) }
+    var width by remember { mutableFloatStateOf(1f) }
+    val armed = dx > width * SWIPE_FRACTION
+    Box(Modifier.fillMaxWidth().onSizeChanged { width = it.width.toFloat() }) {
+        if (dx > 0f) {
+            Row(Modifier.matchParentSize().background(Raised).padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null, tint = if (armed) Accent else TextDim)
+                Spacer(Modifier.width(8.dp))
+                Text("Add to queue", color = if (armed) Accent else TextDim, fontSize = 13.sp)
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth()
+                .offset { IntOffset(dx.roundToInt(), 0) }
+                .background(Bg)
+                .pointerInput(Unit) {
+                    var wasArmed = false
+                    val back: () -> Unit = { wasArmed = false; scope.launch { animate(dx, 0f) { v, _ -> dx = v } } }
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            if (dx > size.width * SWIPE_FRACTION) fire() // decided once, on release
+                            back()
+                        },
+                        onDragCancel = back,
+                    ) { change, amount ->
+                        change.consume()
+                        dx = (dx + amount).coerceIn(0f, size.width.toFloat())
+                        val nowArmed = dx > size.width * SWIPE_FRACTION
+                        if (nowArmed && !wasArmed) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        wasArmed = nowArmed
+                    }
+                }
+                .clickable(onClick = onClick)
+                .padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Art(t.artUri, 48.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(t.title, color = if (playing) Accent else TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(t.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            IconButton(onClick = onMenu) { Icon(Icons.Rounded.MoreVert, "More options for ${t.title}", tint = TextDim) }
+        }
+    }
+}
+
+@Composable
+private fun GroupRow(title: String, subtitle: String, onClick: () -> Unit, leading: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        leading()
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+internal fun Art(uri: String?, side: Dp, modifier: Modifier = Modifier, round: Boolean = false) {
+    val shape = if (round) CircleShape else RoundedCornerShape(if (side in 1.dp..56.dp) 4.dp else 8.dp)
+    val sized = if (side > 0.dp) modifier.size(side) else modifier
+    Box(sized.clip(shape).background(Raised), contentAlignment = Alignment.Center) {
+        if (uri != null) {
+            AsyncImage(model = uri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        } else {
+            Icon(if (round) Icons.Rounded.Person else Icons.Rounded.MusicNote, null, tint = Accent) // round = an artist
+        }
+    }
+}
+
+@Composable
+internal fun IconTile(icon: ImageVector, side: Dp, bg: Color = Accent, fg: Color = Color(0xFF141018)) {
+    Box(Modifier.size(side).clip(RoundedCornerShape(4.dp)).background(bg), contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = fg, modifier = Modifier.size(side * 0.42f))
+    }
+}
+
+/* ---------------- sheets / dialogs ---------------- */
+
+@Composable
+private fun SongMenu(title: String, artist: String, art: String?, actions: List<MenuAction>, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Art(art, 48.dp)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            HorizontalDivider(color = Raised)
+            actions.forEach { a -> MenuRow(a.label, a.icon) { onDismiss(); a.run() } }
+        }
+    }
+}
+
+@Composable
+private fun MenuRow(label: String, icon: ImageVector, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp, 14.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = TextMain)
+        Spacer(Modifier.width(16.dp))
+        Text(label, color = TextMain)
+    }
+}
+
+@Composable
+private fun AddToPlaylistSheet(
+    playlists: List<PlaylistStore.Playlist>,
+    onDismiss: () -> Unit,
+    onPick: (PlaylistStore.Playlist) -> Unit,
+    onCreate: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+            Text("Add to playlist", color = TextMain, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
+            MenuRow("New playlist", Icons.Rounded.Add, onCreate)
+            HorizontalDivider(color = Raised)
+            playlists.forEach { pl -> MenuRow(pl.name, Icons.Rounded.MusicNote) { onPick(pl) } }
+        }
+    }
+}
+
+@Composable
+private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = { onCreate(name.trim()) }) { Text("Create", color = Accent) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextDim) } },
+        title = { Text("New playlist") },
+        text = { OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, placeholder = { Text("Name") }) },
+        containerColor = CardBg,
+    )
+}
+
+internal fun songCount(n: Int): String = "$n song${if (n == 1) "" else "s"}"
+
+private fun prettyFolder(treeUri: String): String =
+    treeUri.substringAfterLast("%3A").substringAfterLast("%2F").ifBlank { treeUri }
+        .let { java.net.URLDecoder.decode(it, "UTF-8") }
+
+/** Android's own "App info" page for Onda, where GrapheneOS keeps the Network toggle. */
+private fun openAppInfo(ctx: Context) {
+    ctx.startActivity(
+        Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", ctx.packageName, null)),
+    )
+}
+
+private fun share(ctx: Context, text: String) {
+    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
+    ctx.startActivity(Intent.createChooser(send, null))
+}
