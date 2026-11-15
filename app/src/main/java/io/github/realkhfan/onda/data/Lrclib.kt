@@ -45,6 +45,23 @@ object Lrclib {
         return pick(arr, durationSec)?.put(VERIFIED, durationSec > 0) ?: closest(arr, title, artist)?.put(VERIFIED, false)
     }
 
+    /** A version of a song's lyrics on LRCLIB, to pick from when the one found is wrong. */
+    data class Choice(val id: Long, val track: String, val artist: String, val album: String, val durationSec: Int, val lyrics: Lyrics)
+
+    /** Every version LRCLIB has for this title and artist, with lyrics; nothing is cached (the user is choosing). */
+    suspend fun choices(title: String, artist: String): List<Choice> = withContext(Dispatchers.IO) {
+        val arr = JSONArray(Http.getOrNull("$API/search?track_name=${Http.enc(title)}&artist_name=${Http.enc(artist)}") ?: "[]")
+        (0 until arr.length()).map { arr.getJSONObject(it) }.map { o ->
+            Choice(o.optLong("id"), o.optString("trackName"), o.optString("artistName"), o.optString("albumName"),
+                o.optDouble("duration", 0.0).toInt(), parse(o.put(VERIFIED, true)))
+        }.filter { it.lyrics.synced.isNotEmpty() || !it.lyrics.plain.isNullOrBlank() }
+    }
+
+    /** The version the user picked (by LRCLIB id); it counts as verified. */
+    suspend fun byId(id: Long): Lyrics? = withContext(Dispatchers.IO) {
+        Http.getOrNull("$API/get/$id")?.let { parse(JSONObject(it).put(VERIFIED, true)) }
+    }
+
     /** Same title and artist at any length: shown with a note, since it may be another edit or version. */
     fun closest(arr: JSONArray, title: String, artist: String): JSONObject? {
         val t = Match.norm(title)

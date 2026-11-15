@@ -41,7 +41,7 @@ private fun startLog() = runCatching {
     System.err.println("Onda started ${java.time.LocalDateTime.now()} · drawing: ${System.getProperty("skiko.renderApi") ?: "graphics card"}")
 }
 
-fun main() {
+fun main(args: Array<String>) {
     System.setProperty("http.agent", "Onda") // the default would send the Java version and OS to every server
     // A game can hold the graphics card so Onda's window never appears: drawing on the CPU avoids it.
     if (Store.settings().software) System.setProperty("skiko.renderApi", "SOFTWARE")
@@ -53,11 +53,12 @@ fun main() {
         val state = remember { AppState(scope) }
         val player = remember {
             runCatching { Player(scope) }.onFailure { System.err.println("Onda: GStreamer could not start: $it") }.getOrNull()
-                ?.also { p -> p.resolver = state::resolve; p.onLastSong = { state.extend(p) }; p.prefetch = state::prefetch
+                ?.also { p -> p.gapless = state.settings.gapless; p.resolver = state::resolve; p.onLastSong = { state.extend(p) }; p.prefetch = state::prefetch
                     p.gain = { if (state.settings.normalize) Loudness.factor(it.id) else 1.0 } }
         }
         val mpris = remember { arrayOfNulls<Mpris>(1) }
-        var visible by remember { mutableStateOf(true) }
+        // Started with your desktop session: no window until you open Onda (from the app menu, or the media widget).
+        var visible by remember { mutableStateOf("--background" !in args) }
         fun saveSession() {
             player?.takeIf { it.queue.isNotEmpty() }?.let { Store.saveSession(Store.Session(it.queue, it.index, it.positionMs, it.shuffle, it.repeat)) }
         }
@@ -115,8 +116,8 @@ fun main() {
         ) {
             LaunchedEffect(Unit) {
                 mainWindow[0] = window
-                System.err.println("Onda: window shown after ${System.currentTimeMillis() - started} ms")
-                bringToFront(window)
+                System.err.println("Onda: window ready after ${System.currentTimeMillis() - started} ms")
+                if (visible) bringToFront(window)
                 state.start()
                 if (player == null) return@LaunchedEffect
                 player.changeVolume(state.settings.volume)
@@ -128,7 +129,7 @@ fun main() {
                     var restored = true // the song from last time isn't news
                     snapshotFlow { player.current }.collect { cur ->
                         if (!restored && cur != null && state.settings.songNotify && player.playing && !window.isFocused) {
-                            val icon = cur.art?.takeIf { it.startsWith("file:") }?.let { runCatching { java.io.File(java.net.URI(it)).path }.getOrNull() }
+                            val icon = cur.art?.let { a -> if (a.startsWith("/")) a else if (a.startsWith("file:")) runCatching { java.io.File(java.net.URI(a)).path }.getOrNull() else null }
                             Discover.notify(cur.title, cur.artist, icon ?: "io.github.realkhfan.Onda")
                         }
                         restored = false

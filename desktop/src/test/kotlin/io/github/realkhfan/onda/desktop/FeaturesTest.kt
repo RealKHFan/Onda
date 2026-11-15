@@ -73,6 +73,49 @@ class FeaturesTest {
         onUi { p.close() }
     }
 
+    @Test fun gaplessHandsOverTheNextFile() {
+        val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
+        var ends = 0
+        val items = listOf(Player.Item("1", "One", "A", "B", null, wav(1.0)), Player.Item("2", "Two", "A", "B", null, wav(3.0)))
+        onUi { p.onLastSong = { ends++ }; p.play(items, 0) }
+        Thread.sleep(1700)
+        assertEquals(1, onUi { p.index })
+        assertTrue(onUi { p.playing })
+        assertTrue(onUi { p.positionMs } < 1500) // the second song, from its start
+        assertEquals(1, ends) // "similar songs when the queue ends" still hears about the last song
+        onUi { p.close() }
+    }
+
+    @Test fun wantedSongsLeaveTheListOnceInTheLibraryAndPicksAreKept() {
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        val mine = t("file:/tmp/onda-test/paper.mp3", "Paper Moon", "Velvet Hours")
+        val wanted = io.github.realkhfan.onda.core.RemoteTrack(424242, "Paper Moon", "Velvet Hours", "Tides", null, null, 200)
+        val other = io.github.realkhfan.onda.core.RemoteTrack(434343, "Open Fields", "Lumen Trio", "Meadows", null, null, 200)
+        try {
+            onUi { s.local = listOf(mine); if (!s.isWanted(wanted)) s.toggleWant(wanted); if (!s.isWanted(other)) s.toggleWant(other) }
+            assertEquals(listOf(wanted.key), onUi { s.cleanWant().map { it.key } })
+            assertTrue(onUi { !s.isWanted(wanted) && s.isWanted(other) })
+            onUi { s.setLyricsPick(mine.id, 123, 500) }
+            assertEquals(123L to 500L, Store.settings().picks[mine.id])
+        } finally {
+            onUi { if (s.isWanted(other)) s.toggleWant(other); s.setLyricsPick(mine.id, 0, 0) }
+        }
+    }
+
+    @Test fun autostartEntryStartsInTheBackground() {
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        val before = s.autostart
+        try {
+            onUi { s.setAutostart(true) }
+            val f = File(System.getenv("XDG_CONFIG_HOME") ?: (System.getProperty("user.home") + "/.config"), "autostart/io.github.realkhfan.Onda.desktop")
+            assertTrue(f.readText().contains("--background") && f.readText().contains("Exec=\""))
+            onUi { s.setAutostart(false) }
+            assertFalse(f.exists())
+        } finally {
+            onUi { s.setAutostart(before) }
+        }
+    }
+
     @Test fun equalizerIsInThePlaybackChain() {
         val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
         assertTrue(p.hasEqualizer)

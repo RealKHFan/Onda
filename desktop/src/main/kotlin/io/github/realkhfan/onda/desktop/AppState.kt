@@ -68,7 +68,8 @@ class AppState(private val scope: CoroutineScope) {
     private val serverTracks by derivedStateOf { Navidrome.tracks(serverSongs, settings.server, settings.kbps) }
 
     /** Your files and server songs; a local copy wins. */
-    val library by derivedStateOf { Overrides.apply(Match.mergeLibrary(local, serverTracks), meta) }
+    /** Hidden songs (duplicates you hid) stay out of the library; playlists that hold them still play them. */
+    val library by derivedStateOf { Overrides.apply(Match.mergeLibrary(local, serverTracks), meta).filterNot { it.id in collection.hidden } }
 
     /** Every song by id, server copies of your files included, so saved ids always resolve. */
     val byId by derivedStateOf { Overrides.apply(serverTracks + local, meta).associateBy { it.id } }
@@ -95,6 +96,8 @@ class AppState(private val scope: CoroutineScope) {
     fun isBlocked(name: String) = Match.norm(name) in collection.blocked
     fun toggleBlocked(name: String) = Match.norm(name).let { k -> change(collection.copy(blocked = if (k in collection.blocked) collection.blocked - k else collection.blocked + k)) }
     fun isHidden(key: String) = key in collection.hidden
+    /** Brings back library songs hidden as duplicates (suggestions you hid stay hidden). */
+    fun showHiddenSongs() = change(collection.copy(hidden = collection.hidden.filterNot { it.startsWith("file:") || it.startsWith(Navidrome.PREFIX) }))
     fun toggleHidden(key: String) = change(collection.copy(hidden = if (key in collection.hidden) collection.hidden - key else collection.hidden + key))
     /** Left out of suggestions: a hidden song, an artist you don't want suggested, or an AI "artist". */
     fun notWanted(r: RemoteTrack) = isHidden(r.key) || isBlocked(r.artist) || isAi(r.artist)
@@ -113,6 +116,45 @@ class AppState(private val scope: CoroutineScope) {
     fun setEqualizer(gains: List<Double>, preset: String) = update(settings.copy(eq = gains, eqPreset = preset))
     fun setSoftware(on: Boolean) = update(settings.copy(software = on))
     fun setSongNotify(on: Boolean) = update(settings.copy(songNotify = on))
+    fun setGapless(on: Boolean) = update(settings.copy(gapless = on))
+    fun togglePin(id: String) = update(settings.copy(pinned = if (id in settings.pinned) settings.pinned - id else listOf(id) + settings.pinned))
+
+    /** Lyrics you picked for a song (LRCLIB id, 0 = the one found) and how far they're shifted (ms; + = shown earlier). */
+    fun lyricsPick(id: String): Pair<Long, Long> = settings.picks[id] ?: (0L to 0L)
+    fun setLyricsPick(id: String, lrclibId: Long, shiftMs: Long) =
+        update(settings.copy(picks = if (lrclibId == 0L && shiftMs == 0L) settings.picks - id else settings.picks + (id to (lrclibId to shiftMs))))
+
+    /** Starts with your desktop session ([background]: without the window, like after closing it with music on). */
+    private val autostartFile = java.io.File(System.getenv("XDG_CONFIG_HOME") ?: (System.getProperty("user.home") + "/.config"), "autostart/io.github.realkhfan.Onda.desktop")
+    var autostart by mutableStateOf(autostartFile.isFile); private set
+    fun setAutostart(on: Boolean, background: Boolean = true) {
+        runCatching {
+            if (!on) autostartFile.delete()
+            else {
+                val exe = ProcessHandle.current().info().command().orElse(System.getProperty("user.home") + "/.local/bin/onda")
+                autostartFile.parentFile.mkdirs()
+                autostartFile.writeText("[Desktop Entry]\nType=Application\nName=Onda\nExec=\"$exe\"" + (if (background) " --background" else "") +
+                    "\nIcon=io.github.realkhfan.Onda\nX-GNOME-Autostart-enabled=true\n")
+            }
+        }
+        autostart = autostartFile.isFile
+    }
+
+    private fun afterLibraryChange() {
+        measureLoudness()
+        val got = cleanWant()
+        if (got.isNotEmpty()) Discover.notify(if (got.size == 1) "“${got[0].title}” is in your library now" else "${got.size} songs you wanted are in your library now",
+            "Removed from Want to listen.")
+    }
+
+    /** Songs from Want to listen that are now in your library (a download, a scan, a match) leave the list. */
+    fun cleanWant(): List<RemoteTrack> {
+        if (library.isEmpty() || collection.want.isEmpty()) return emptyList()
+        val got = collection.want.filter { w -> library.any { Match.same(it.title, it.artist, w.title, w.artist) } }
+        if (got.isNotEmpty()) change(collection.copy(want = collection.want - got.toSet()))
+        return got
+    }
+
     fun setZoom(z: Float) = update(settings.copy(zoom = (Math.round(z * 10) / 10f).coerceIn(0.7f, 1.6f)))
 
     fun setNormalize(on: Boolean) { update(settings.copy(normalize = on)); if (on) measureLoudness() else Loudness.stop() }
@@ -321,7 +363,7 @@ class AppState(private val scope: CoroutineScope) {
         } finally {
             scanning = false
         }
-        measureLoudness()
+        afterLibraryChange()
     }
 
     fun launch(block: suspend CoroutineScope.() -> Unit) = scope.launch(block = block)
@@ -389,7 +431,7 @@ class AppState(private val scope: CoroutineScope) {
                 val lists = Navidrome.playlists(cfg)
                 serverPlaylists = lists
                 withContext(Dispatchers.IO) { Store.saveServerPlaylists(lists) }
-                measureLoudness()
+                afterLibraryChange()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

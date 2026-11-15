@@ -38,6 +38,8 @@ object Store {
         val eq: List<Double> = List(10) { 0.0 }, val eqPreset: String = "Flat",
         /** [software]: draw without the graphics card (when a game holds it); [songNotify]: a notification per song; [zoom]: UI size. */
         val software: Boolean = false, val songNotify: Boolean = false, val zoom: Float = 1f,
+        /** [gapless]: no pause between files; [pinned]: playlist ids shown first; [picks]: song id to chosen lyrics (LRCLIB id, timing shift ms). */
+        val gapless: Boolean = true, val pinned: List<String> = emptyList(), val picks: Map<String, Pair<Long, Long>> = emptyMap(),
     )
 
     fun settings(): Settings = runCatching {
@@ -54,6 +56,9 @@ object Store {
             eq = o.optJSONArray("eq")?.let { a -> List(10) { a.optDouble(it, 0.0) } } ?: List(10) { 0.0 }, eqPreset = o.optString("eqPreset", "Flat"),
             software = o.optBoolean("software"), songNotify = o.optBoolean("songNotify"),
             zoom = o.optDouble("zoom", 1.0).toFloat().coerceIn(0.7f, 1.6f),
+            gapless = o.optBoolean("gapless", true),
+            pinned = o.optJSONArray("pinned")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty(),
+            picks = o.optJSONObject("picks")?.let { p -> p.keySet().associateWith { k -> p.getJSONArray(k).let { it.getLong(0) to it.getLong(1) } } }.orEmpty(),
         )
     }.getOrDefault(Settings())
 
@@ -62,6 +67,8 @@ object Store {
         .put("autoplay", s.autoplay).put("background", s.background).put("releaseAlerts", s.releaseAlerts)
         .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir).put("normalize", s.normalize)
         .put("eq", org.json.JSONArray(s.eq)).put("eqPreset", s.eqPreset).put("software", s.software).put("songNotify", s.songNotify).put("zoom", s.zoom.toDouble())
+        .put("gapless", s.gapless).put("pinned", org.json.JSONArray(s.pinned))
+        .put("picks", JSONObject().apply { s.picks.forEach { (k, v) -> put(k, org.json.JSONArray().put(v.first).put(v.second)) } })
         .put("server", s.server?.let { JSONObject().put("url", it.url).put("user", it.user).put("salt", it.salt).put("token", it.token) })
         .toString())
 

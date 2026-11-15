@@ -129,6 +129,9 @@ import io.github.realkhfan.onda.data.FreeCatalogs
 import io.github.realkhfan.onda.data.Lrclib
 import io.github.realkhfan.onda.data.Itunes
 import io.github.realkhfan.onda.data.Matcher
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.OpenInFull
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.SliderDefaults
@@ -198,6 +201,11 @@ private sealed interface View {
     data object Match : View
     data object Rename : View
     data object Stats : View
+    data object History : View
+    data object Duplicates : View
+    /** null: your music folders. */
+    data class Folder(val path: String?) : View
+    data class LibraryArtist(val name: String) : View
 }
 
 private enum class Panel { NONE, QUEUE, LYRICS }
@@ -246,14 +254,18 @@ fun OndaDesktop(state: AppState, player: Player?) {
                 Column(Modifier.weight(1f).fillMaxHeight()) {
                     if (player == null) Note("Onda needs GStreamer to play music. On Bazzite it's already there; on other systems install gstreamer1 and its plugins.")
                     if (player != null && panel == Panel.LYRICS && lyricsBig) {
-                        LyricsFull(player, onCollapse = { lyricsBig = false }) { panel = Panel.NONE; lyricsBig = false }
+                        LyricsFull(state, player, onCollapse = { lyricsBig = false }) { panel = Panel.NONE; lyricsBig = false }
                     } else when (val v = stack.last()) {
                         View.Home -> HomePage(ctx, ::push)
                         View.Songs -> Songs(ctx)
                         View.Albums -> Albums(state, { a -> push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }) { push(View.CatalogAlbum(it)) }
-                        View.Artists -> Artists(state, { a -> push(View.LocalList(a.name, "Artist", a.artUri, a.tracks)) }) { push(View.CatalogArtist(it)) }
+                        View.Artists -> Artists(state, { a -> push(View.LibraryArtist(a.name)) }) { push(View.CatalogArtist(it)) }
                         is View.Mix -> MixPage(ctx, v.kind, back)
                         View.Stats -> StatsPage(ctx)
+                        View.History -> HistoryPage(ctx)
+                        View.Duplicates -> DuplicatesPage(ctx, back)
+                        is View.Folder -> FolderPage(ctx, v.path, back)
+                        is View.LibraryArtist -> LibraryArtistPage(ctx, v.name, back)
                         View.Search -> Search(ctx)
                         View.Settings -> SettingsPage(ctx)
                         View.Match -> MatchPage(ctx, back)
@@ -263,8 +275,9 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         is View.Playlist -> {
                             val pl = state.collection.playlists.firstOrNull { it.id == v.id }
                             if (pl == null) LaunchedEffect(Unit) { go(View.Songs) } else {
-                                SongList(ctx, pl.name, "Playlist", state.playlistTracks(pl.id), back = back, inPlaylist = pl.id,
+                                SongList(ctx, pl.name, "Playlist", state.playlistTracks(pl.id), back = back, inPlaylist = pl.id, mosaic = true,
                                     onMove = { from, to -> state.movePlaylistTrack(pl.id, from, to) }) {
+                                    IconButton(onClick = { state.togglePin(pl.id) }) { Icon(Icons.Rounded.PushPin, if (pl.id in state.settings.pinned) "Unpin" else "Pin to the top", tint = if (pl.id in state.settings.pinned) Accent else TextDim) }
                                     IconButton(onClick = { naming = Naming.Rename(pl.id, pl.name) }) { Icon(Icons.Rounded.Edit, "Rename playlist", tint = TextDim) }
                                     IconButton(onClick = { naming = Naming.Delete(pl.id, pl.name) }) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) }
                                     DownloadAll(ctx, state.playlistTracks(pl.id))
@@ -285,8 +298,8 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         is View.CatalogAlbum -> CatalogAlbumPage(ctx, v.a, back)
                     }
                 }
-                if (player != null && panel == Panel.QUEUE) QueuePanel(player) { panel = Panel.NONE }
-                if (player != null && panel == Panel.LYRICS && !lyricsBig) LyricsPanel(player, onExpand = { lyricsBig = true }) { panel = Panel.NONE }
+                if (player != null && panel == Panel.QUEUE) QueuePanel(player, onSave = { naming = Naming.New(null, player.queue.map { it.id }.filter(state::canSave).distinct()) }) { panel = Panel.NONE }
+                if (player != null && panel == Panel.LYRICS && !lyricsBig) LyricsPanel(state, player, onExpand = { lyricsBig = true }) { panel = Panel.NONE }
             }
             toast?.let { Text(it, color = TextMain, modifier = Modifier.fillMaxWidth().background(Color(0xFF2E2E38)).padding(24.dp, 10.dp)) }
             PlayerBar(ctx, panel) { panel = if (panel == it) Panel.NONE else it }
@@ -403,8 +416,8 @@ private fun NamingDialog(state: AppState, n: Naming, close: () -> Unit) {
 private fun Note(text: String) = Text(text, color = TextDim, modifier = Modifier.padding(32.dp))
 
 @Composable
-private fun Art(model: String?, size: Int, round: Boolean = false) {
-    Box(Modifier.size(size.dp).clip(if (round) CircleShape else RoundedCornerShape(6.dp)).background(Raised), contentAlignment = Alignment.Center) {
+private fun Art(model: String?, size: Int, round: Boolean = false, corner: Int = 6) {
+    Box(Modifier.size(size.dp).clip(if (round) CircleShape else RoundedCornerShape(corner.dp)).background(Raised), contentAlignment = Alignment.Center) {
         if (model == null) Icon(Icons.Rounded.MusicNote, null, tint = Accent)
         else AsyncImage(if (model.startsWith("/")) File(model) else model, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
     }
@@ -413,10 +426,12 @@ private fun Art(model: String?, size: Int, round: Boolean = false) {
 private fun time(ms: Long): String = (ms / 1000).let { "%d:%02d".format(it / 60, it % 60) }
 
 @Composable
-private fun Header(title: String, subtitle: String, art: String? = null, round: Boolean = false, back: (() -> Unit)? = null, actions: @Composable () -> Unit = {}) {
+private fun Header(title: String, subtitle: String, art: String? = null, round: Boolean = false, back: (() -> Unit)? = null,
+                   mosaic: List<String?>? = null, actions: @Composable () -> Unit = {}) {
     Row(Modifier.padding(16.dp, 20.dp, 24.dp, 12.dp), verticalAlignment = Alignment.CenterVertically) {
         if (back != null) IconButton(onClick = back) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = TextMain) } else Spacer(Modifier.width(8.dp))
-        if (art != null || round) { Art(art, 120, round); Spacer(Modifier.width(20.dp)) }
+        if (mosaic != null) { Mosaic(mosaic, 120); Spacer(Modifier.width(20.dp)) }
+        else if (art != null || round) { Art(art, 120, round); Spacer(Modifier.width(20.dp)) }
         Column(Modifier.weight(1f)) {
             Text(title, color = TextMain, fontSize = 30.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(subtitle, color = TextDim)
@@ -498,7 +513,7 @@ private fun TrackRow(
                 Grouping.albums(s.library).firstOrNull { it.key == t.albumKey }?.let { a -> ctx.push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }
             })
             add(ContextMenuItem("Go to artist") {
-                Grouping.artists(s.library).firstOrNull { Match.norm(it.name) == Match.norm(t.artist) }?.let { a -> ctx.push(View.LocalList(a.name, "Artist", a.artUri, a.tracks)) }
+                Grouping.artists(s.library).firstOrNull { Match.norm(it.name) == Match.norm(t.artist) }?.let { a -> ctx.push(View.LibraryArtist(a.name)) }
             })
             Downloads.forTrack(t, s.settings.server)?.let { d -> add(ContextMenuItem("Download") { ctx.download(listOf(d)) }) }
             val r = s.remoteFor(t)?.takeIf { it.source == io.github.realkhfan.onda.core.Source.DEEZER || it.source == io.github.realkhfan.onda.core.Source.ITUNES }
@@ -593,6 +608,7 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, newPlaylist:
         Entry(View.Home, "Home", Icons.Rounded.Home, big = true)
         Entry(View.Search, "Search", Icons.Rounded.Search, big = true)
         Entry(View.Stats, "Your stats", Icons.Rounded.BarChart)
+        Entry(View.History, "History", Icons.Rounded.History)
         Row(Modifier.padding(top = 18.dp, start = 10.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Your library", color = TextDim, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             IconButton(onClick = newPlaylist, Modifier.size(32.dp)) { Icon(Icons.Rounded.Add, "New playlist", tint = TextDim) }
@@ -601,10 +617,17 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, newPlaylist:
             Entry(View.Songs, "Songs", Icons.Rounded.MusicNote)
             Entry(View.Albums, "Albums", Icons.Rounded.Album)
             Entry(View.Artists, "Artists", Icons.Rounded.Person)
+            if (state.settings.folders.isNotEmpty()) Entry(View.Folder(null), "Folders", Icons.Rounded.Folder)
             Spacer(Modifier.height(8.dp))
             Entry(View.Liked, "Liked Songs", Icons.Rounded.Favorite)
             Entry(View.Want, "Want to listen", Icons.Rounded.Bookmark)
-            state.collection.playlists.forEach { Entry(View.Playlist(it.id), it.name, Icons.AutoMirrored.Rounded.QueueMusic) }
+            // Pinned playlists first (newest pin on top), then the rest; right-click to pin or unpin.
+            val pins = state.settings.pinned
+            state.collection.playlists.sortedBy { pins.indexOf(it.id).let { i -> if (i < 0) Int.MAX_VALUE else i } }.forEach { pl ->
+                ContextMenuArea(items = { listOf(ContextMenuItem(if (pl.id in pins) "Unpin" else "Pin to the top") { state.togglePin(pl.id) }) }) {
+                    Entry(View.Playlist(pl.id), pl.name, if (pl.id in pins) Icons.Rounded.PushPin else Icons.AutoMirrored.Rounded.QueueMusic)
+                }
+            }
             state.serverPlaylists.forEach { Entry(View.ServerPlaylist(it), it.name, Icons.Rounded.Dns) }
         }
         if (state.scanning || state.syncing) {
@@ -692,6 +715,16 @@ private fun HomePage(ctx: Ctx, open: (View) -> Unit) {
 
 /* ---------- Pages ---------- */
 
+/** A playlist's cover: its first four different album covers in a square, like Spotify (or one cover, or a note). */
+@Composable
+private fun Mosaic(arts: List<String?>, size: Int) {
+    val distinct = arts.filterNotNull().distinct()
+    if (distinct.size < 4) return Art(distinct.firstOrNull(), size)
+    Column(Modifier.size(size.dp).clip(RoundedCornerShape(6.dp))) {
+        for (row in 0..1) Row { for (col in 0..1) Art(distinct[row * 2 + col], size / 2, corner = 0) }
+    }
+}
+
 /** How a song list is ordered; [CUSTOM] is the list's own order (a playlist's, an album's). */
 enum class Sort(val label: String) { CUSTOM("Custom order"), TITLE("Title"), ARTIST("Artist"), ALBUM("Album"), PLAYS("Most played"), LENGTH("Length") }
 
@@ -714,7 +747,8 @@ internal fun select(selected: Set<String>, list: List<Track>, anchor: Int, i: In
 @Composable
 private fun SongList(
     ctx: Ctx, title: String, subtitle: String, tracks: List<Track>, art: String? = null, back: (() -> Unit)? = null,
-    inPlaylist: String? = null, onMove: ((Int, Int) -> Unit)? = null, actions: @Composable () -> Unit = {},
+    inPlaylist: String? = null, onMove: ((Int, Int) -> Unit)? = null, mosaic: Boolean = false,
+    above: (androidx.compose.foundation.lazy.LazyListScope.() -> Unit)? = null, actions: @Composable () -> Unit = {},
 ) {
     val reorder = remember { ReorderState() }
     var sort by remember(title) { mutableStateOf(Sort.CUSTOM) }
@@ -727,7 +761,8 @@ private fun SongList(
     }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            Header(title, "$subtitle · ${tracks.size} songs" + if (selected.size > 1) " · ${selected.size} selected" else "", art, back = back) {
+            Header(title, "$subtitle · ${tracks.size} songs" + if (selected.size > 1) " · ${selected.size} selected" else "", art, back = back,
+                mosaic = if (mosaic) tracks.map { it.artUri } else null) {
                 actions()
                 Spacer(Modifier.width(8.dp))
                 var open by remember { mutableStateOf(false) }
@@ -741,7 +776,8 @@ private fun SongList(
                 if (tracks.isNotEmpty()) Button(onClick = { ctx.play(shown, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
             }
         }
-        if (tracks.isEmpty()) item { Note("Nothing here yet. Right-click a song to add it.") }
+        above?.invoke(this)
+        if (tracks.isEmpty() && above == null) item { Note("Nothing here yet. Right-click a song to add it.") }
         items(shown.size, key = { shown[it].id }) { i ->
             // Dragging moves songs only in the list's own order.
             if (onMove == null || sort != Sort.CUSTOM) TrackRow(ctx, shown, i, numbered = true, inPlaylist = inPlaylist, selected = selected, onSelect = onSelect)
@@ -1066,7 +1102,10 @@ private fun SettingsPage(ctx: Ctx) {
                     OutlinedButton(onClick = { Matcher.start(state.library, onlyNew = false, apple = state.settings.apple); ctx.push(View.Match) }) { Text("Match all songs") }
                     if (m.proposals.isNotEmpty()) OutlinedButton(onClick = { ctx.push(View.Match) }) { Text("Review ${m.proposals.size}") }
                 }
-                OutlinedButton(onClick = { ctx.push(View.Rename) }) { Text("Rename files from tags") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { ctx.push(View.Rename) }) { Text("Rename files from tags") }
+                    OutlinedButton(onClick = { ctx.push(View.Duplicates) }) { Text("Find duplicates") }
+                }
                 Text("Names your files “Artist - Title”. You see every change first, and can undo it.", color = TextDim, fontSize = 12.sp)
             }
         }
@@ -1138,6 +1177,8 @@ private fun SettingsPage(ctx: Ctx) {
             }
         }
         item { Section("Playback and discovery") }
+        item { Toggle("Gapless playback", "No pause between songs, so live albums and DJ mixes flow on. For your files and server songs.", state.settings.gapless) { state.setGapless(it); ctx.player?.gapless = it } }
+        item { Toggle("Start Onda when you log in", "Starts in the background, ready for media keys; open it from the app menu.", state.autostart) { state.setAutostart(it) } }
         item { Toggle("Song notifications", "A desktop notification with the cover when a new song starts and Onda isn't in front.", state.settings.songNotify, state::setSongNotify) }
         item { Toggle("Similar songs when the queue ends", "Keeps the music going with songs like the last ones.", state.settings.autoplay, state::setAutoplay) }
         item { Toggle("Keep playing when the window is closed", "Reopen Onda from the app menu or your desktop's media controls.", state.settings.background, state::setBackground) }
@@ -1224,10 +1265,11 @@ private fun PanelFrame(title: String, onClose: () -> Unit, content: @Composable 
 }
 
 @Composable
-private fun QueuePanel(player: Player, onClose: () -> Unit) = PanelFrame("Queue", onClose) {
+private fun QueuePanel(player: Player, onSave: () -> Unit, onClose: () -> Unit) = PanelFrame("Queue", onClose) {
     val upcoming = player.upcoming()
     val reorder = remember { ReorderState() }
     LazyColumn {
+        if (player.queue.size > 1) item { TextButton(onClick = onSave, modifier = Modifier.padding(start = 8.dp)) { Text("Save queue as playlist", color = Accent) } }
         player.current?.let { c -> item { Section("Now playing") }; item { QueueRow(c, true, onClick = {}) } }
         if (upcoming.isNotEmpty()) item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1259,29 +1301,88 @@ private fun QueueRow(it: Player.Item, now: Boolean, modifier: Modifier = Modifie
     }
 }
 
-private class LyricsState(val full: Boolean, val lyrics: Lrclib.Lyrics?, val failed: Boolean)
+/** [shift]: ms the lines are moved (+ = shown earlier), when the found timing is off. */
+private class LyricsState(val full: Boolean, val lyrics: Lrclib.Lyrics?, val failed: Boolean, val shift: Long = 0)
 
 /** Synced lyrics from LRCLIB for the song playing (full songs only). */
 @Composable
-private fun rememberLyrics(player: Player): LyricsState {
+private fun rememberLyrics(state: AppState, player: Player): LyricsState {
     val cur = player.current
     val full = cur != null && (!cur.preview || player.fullFrom != null)
-    var lyrics by remember(cur?.id, full) { mutableStateOf<Lrclib.Lyrics?>(null) }
-    var failed by remember(cur?.id, full) { mutableStateOf(false) }
-    LaunchedEffect(cur?.id, full) {
+    val (picked, shift) = cur?.let { state.lyricsPick(it.id) } ?: (0L to 0L)
+    var lyrics by remember(cur?.id, full, picked) { mutableStateOf<Lrclib.Lyrics?>(null) }
+    var failed by remember(cur?.id, full, picked) { mutableStateOf(false) }
+    LaunchedEffect(cur?.id, full, picked) {
         if (cur == null || !full) return@LaunchedEffect
         val dur = ((cur.durationMs.takeIf { it > 0 } ?: player.durationMs) / 1000).toInt()
-        lyrics = runCatching { Lrclib.get(cur.title, cur.artist, cur.album, dur) }.getOrNull()
+        lyrics = runCatching { if (picked > 0) Lrclib.byId(picked) else Lrclib.get(cur.title, cur.artist, cur.album, dur) }.getOrNull()
         failed = lyrics == null
     }
-    return LyricsState(full, lyrics, failed)
+    return LyricsState(full, lyrics, failed, shift)
+}
+
+/** Timing shift and "Other lyrics": fix lyrics that are early, late, or for another song. */
+@Composable
+private fun LyricsTools(state: AppState, player: Player, ls: LyricsState, big: Boolean) {
+    val cur = player.current ?: return
+    if (!ls.full) return
+    val (picked, shift) = state.lyricsPick(cur.id)
+    var choosing by remember { mutableStateOf(false) }
+    val tint = if (big) TextMain.copy(alpha = 0.8f) else TextDim
+    Row(Modifier.padding(if (big) 44.dp else 12.dp, 0.dp, 12.dp, 0.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (ls.lyrics?.synced?.isNotEmpty() == true) {
+            TextButton(onClick = { state.setLyricsPick(cur.id, picked, shift + 500) }) { Text("Earlier", color = tint, fontSize = 12.sp) }
+            Text(if (shift == 0L) "in time" else "%+.1f s".format(shift / 1000.0), color = tint, fontSize = 12.sp)
+            TextButton(onClick = { state.setLyricsPick(cur.id, picked, shift - 500) }) { Text("Later", color = tint, fontSize = 12.sp) }
+        }
+        TextButton(onClick = { choosing = true }) { Text("Other lyrics…", color = tint, fontSize = 12.sp) }
+    }
+    if (choosing) LyricsChoiceDialog(state, cur, picked, shift) { choosing = false }
+}
+
+@Composable
+private fun LyricsChoiceDialog(state: AppState, cur: Player.Item, picked: Long, shift: Long, close: () -> Unit) {
+    var title by remember { mutableStateOf(cur.title) }
+    var artist by remember { mutableStateOf(cur.artist) }
+    var found by remember { mutableStateOf<List<Lrclib.Choice>?>(null) }
+    val scope = rememberCoroutineScope()
+    fun search() { found = null; scope.launch { found = runCatching { Lrclib.choices(title, artist) }.getOrDefault(emptyList()) } }
+    LaunchedEffect(Unit) { search() }
+    AlertDialog(onDismissRequest = close, title = { Text("Other lyrics") }, modifier = Modifier.width(640.dp),
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextBox(title, { title = it }, label = { Text("Title") }, onEnter = ::search, modifier = Modifier.weight(1f))
+                    TextBox(artist, { artist = it }, label = { Text("Artist") }, onEnter = ::search, modifier = Modifier.weight(1f))
+                }
+                Text("Pick the version that fits your song; the length helps.${if (cur.durationMs > 0) " Your song: ${time(cur.durationMs)}." else ""}", color = TextDim, fontSize = 12.sp)
+                LazyColumn(Modifier.height(320.dp)) {
+                    val list = found
+                    if (list == null) item { LinearProgressIndicator(Modifier.fillMaxWidth(), color = Accent, trackColor = Raised) }
+                    else if (list.isEmpty()) item { Text("Nothing found. Try other words.", color = TextDim, modifier = Modifier.padding(8.dp)) }
+                    else items(list) { c ->
+                        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(if (c.id == picked) Raised else Color.Transparent)
+                            .clickable { state.setLyricsPick(cur.id, c.id, shift); close() }.padding(8.dp)) {
+                            Text("${c.track} — ${c.artist}", color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(listOf(c.album, time(c.durationSec * 1000L), if (c.lyrics.synced.isNotEmpty()) "synced" else "not synced").filter { it.isNotBlank() }.joinToString(" · "),
+                                color = TextDim, fontSize = 12.sp)
+                            Text((c.lyrics.synced.firstOrNull { it.text.isNotBlank() }?.text ?: c.lyrics.plain?.lineSequence()?.firstOrNull { it.isNotBlank() }).orEmpty(),
+                                color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = close) { Text("Close", color = TextDim) } },
+        dismissButton = if (picked > 0) ({ TextButton(onClick = { state.setLyricsPick(cur.id, 0, shift); close() }) { Text("Use the one found", color = Accent) } }) else null)
 }
 
 /** The lines; the current one is bigger and follows the song. Click a line to jump there. */
 @Composable
-private fun LyricsLines(player: Player, ls: LyricsState, big: Boolean) {
+private fun LyricsLines(state: AppState, player: Player, ls: LyricsState, big: Boolean) {
     val lines = ls.lyrics?.synced.orEmpty()
-    val active = if (lines.isEmpty()) -1 else Lrc.indexAt(lines, player.positionMs)
+    val active = if (lines.isEmpty()) -1 else Lrc.indexAt(lines, player.positionMs + ls.shift)
     val list = rememberLazyListState()
     LaunchedEffect(active) { if (active >= 0) list.animateScrollToItem((active - if (big) 4 else 3).coerceAtLeast(0)) }
     val (on, off) = if (big) 40.sp to 32.sp else 26.sp to 20.sp
@@ -1294,6 +1395,7 @@ private fun LyricsLines(player: Player, ls: LyricsState, big: Boolean) {
     }
     Column {
     hint?.let { Text(it, color = TextMain.copy(alpha = 0.7f), fontSize = 13.sp, modifier = Modifier.padding(if (big) 52.dp else 20.dp, 0.dp, 16.dp, 4.dp)) }
+    LyricsTools(state, player, ls, big)
     when {
         player.current == null -> Note("Nothing is playing.")
         !ls.full -> Note("Lyrics are shown for full songs.")
@@ -1305,7 +1407,7 @@ private fun LyricsLines(player: Player, ls: LyricsState, big: Boolean) {
                 Text(l.text.ifBlank { "♪" }, color = if (i == active) TextMain else if (big) TextMain.copy(alpha = 0.45f) else TextDim,
                     fontSize = if (i == active) on else off, fontWeight = if (i == active) FontWeight.Bold else FontWeight.SemiBold,
                     lineHeight = (if (i == active) on else off) * 1.2f,
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { player.seek(l.timeMs) }.padding(vertical = if (big) 10.dp else 6.dp, horizontal = 4.dp))
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { player.seek(l.timeMs - ls.shift) }.padding(vertical = if (big) 10.dp else 6.dp, horizontal = 4.dp))
             }
         }
         ls.lyrics.plain != null -> Text(ls.lyrics.plain, color = TextMain, fontSize = if (big) 28.sp else 18.sp,
@@ -1316,22 +1418,22 @@ private fun LyricsLines(player: Player, ls: LyricsState, big: Boolean) {
 }
 
 @Composable
-private fun LyricsPanel(player: Player, onExpand: () -> Unit, onClose: () -> Unit) {
-    val ls = rememberLyrics(player)
+private fun LyricsPanel(state: AppState, player: Player, onExpand: () -> Unit, onClose: () -> Unit) {
+    val ls = rememberLyrics(state, player)
     Column(Modifier.width(360.dp).fillMaxHeight().background(Side)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Lyrics", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
             IconButton(onClick = onExpand) { Icon(Icons.Rounded.OpenInFull, "Show lyrics full screen", tint = TextDim) }
             IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Close lyrics", tint = TextDim) }
         }
-        LyricsLines(player, ls, big = false)
+        LyricsLines(state, player, ls, big = false)
     }
 }
 
 /** Lyrics over the whole content area, on the cover's colour (like Spotify). */
 @Composable
-private fun LyricsFull(player: Player, onCollapse: () -> Unit, onClose: () -> Unit) {
-    val ls = rememberLyrics(player)
+private fun LyricsFull(state: AppState, player: Player, onCollapse: () -> Unit, onClose: () -> Unit) {
+    val ls = rememberLyrics(state, player)
     val cur = player.current
     val tint = rememberArtTint(cur?.art)
     Column(Modifier.fillMaxSize().background(tint)) {
@@ -1343,7 +1445,7 @@ private fun LyricsFull(player: Player, onCollapse: () -> Unit, onClose: () -> Un
             IconButton(onClick = onCollapse) { Icon(Icons.Rounded.CloseFullscreen, "Back to the side panel", tint = TextMain) }
             IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Close lyrics", tint = TextMain) }
         }
-        LyricsLines(player, ls, big = true)
+        LyricsLines(state, player, ls, big = true)
     }
 }
 
@@ -1751,6 +1853,120 @@ private fun StatsPage(ctx: Ctx) {
                 SongRow(i + 1, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id, note = "$n plays") { ctx.play(playable, i) }
             }
         }
+    }
+}
+
+/** What you played, newest first, by day (this PC only). */
+@Composable
+private fun HistoryPage(ctx: Ctx) {
+    val state = ctx.state
+    val rows = remember(state.plays, state.byId) { state.plays.asReversed().take(300).mapNotNull { p -> state.trackFor(p.key)?.let { p to it } } }
+    val tracks = rows.map { it.second }
+    val zone = java.time.ZoneId.systemDefault()
+    val today = java.time.LocalDate.now()
+    fun day(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate()
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { Header("History", "The last ${rows.size} songs you played · kept on this PC only") }
+        if (rows.isEmpty()) item { Note("Songs you play show up here.") }
+        rows.indices.groupBy { day(rows[it].first.atMs) }.forEach { (d, idx) ->
+            item { Section(when (d) { today -> "Today"; today.minusDays(1) -> "Yesterday"; else -> d.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, d MMMM")) }) }
+            items(idx) { i ->
+                val (p, t) = rows[i]
+                SongRow(null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
+                    note = java.time.Instant.ofEpochMilli(p.atMs).atZone(zone).toLocalTime().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))) { ctx.play(tracks, i) }
+            }
+        }
+    }
+}
+
+/** The same song more than once (another file, the server's copy): hide the extra ones; the files stay. */
+@Composable
+private fun DuplicatesPage(ctx: Ctx, back: (() -> Unit)?) {
+    val state = ctx.state
+    val groups = remember(state.library) {
+        state.library.groupBy { Match.norm(it.artist) + "|" + Match.norm(it.title) }.values.filter { it.size > 1 }.sortedBy { it[0].title.lowercase() }
+    }
+    val hidden = state.collection.hidden.count { it.startsWith("file:") || it.startsWith(Navidrome.PREFIX) }
+    LazyColumn(Modifier.fillMaxSize()) {
+        item { Header("Duplicates", "${groups.size} songs are in your library more than once · hiding keeps the file", back = back) }
+        if (hidden > 0) item { TextButton(onClick = { state.showHiddenSongs() }, modifier = Modifier.padding(start = 16.dp)) { Text("Show $hidden hidden songs again", color = Accent) } }
+        if (groups.isEmpty()) item { Note("No duplicates in your library.") }
+        groups.forEach { g ->
+            item { Section("${g[0].title} — ${g[0].artist}") }
+            items(g) { t ->
+                val where = if (t.id.startsWith("file:")) runCatching { java.io.File(java.net.URI(t.id)).path }.getOrDefault(t.fileName) else "On your music server"
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) {
+                        SongRow(null, t.album, where, "${ctx.state.playCounts[t.id] ?: 0} plays", t.durationMs, t.artUri, ctx.player?.current?.id == t.id) { ctx.play(listOf(t), 0) }
+                    }
+                    TextButton(onClick = { state.toggleHidden(t.id) }, modifier = Modifier.padding(end = 16.dp)) { Text("Hide", color = TextDim) }
+                }
+            }
+        }
+    }
+}
+
+/** Your music by folder, as it is on disk. */
+@Composable
+private fun FolderPage(ctx: Ctx, path: String?, back: (() -> Unit)?) {
+    val state = ctx.state
+    val files = remember(state.library) {
+        state.library.mapNotNull { t -> t.id.takeIf { it.startsWith("file:") }?.let { runCatching { java.io.File(java.net.URI(it)).parent }.getOrNull() }?.let { it to t } }
+    }
+    fun count(dir: String) = files.count { it.first == dir || it.first.startsWith("$dir/") }
+    if (path == null) return LazyColumn(Modifier.fillMaxSize()) {
+        item { Header("Folders", "Your music folders") }
+        items(state.settings.folders) { f -> FolderRow(f, count(f)) { ctx.push(View.Folder(f)) } }
+    }
+    val here = remember(files, path) { files.filter { it.first == path }.map { it.second }.sortedWith(compareBy({ it.trackNo }, { it.fileName.lowercase() })) }
+    val subs = remember(files, path) { files.map { it.first }.filter { it.startsWith("$path/") }.map { "$path/" + it.removePrefix("$path/").substringBefore('/') }.distinct().sortedBy { it.lowercase() } }
+    SongList(ctx, java.io.File(path).name, path, here, back = back, above = {
+        items(subs) { d -> FolderRow(d, count(d)) { ctx.push(View.Folder(d)) } }
+    })
+}
+
+@Composable
+private fun FolderRow(path: String, songs: Int, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(24.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Rounded.Folder, null, tint = TextDim, modifier = Modifier.size(32.dp))
+        Spacer(Modifier.width(14.dp))
+        Column {
+            Text(java.io.File(path).name, color = TextMain)
+            Text("$songs songs", color = TextDim, fontSize = 12.sp)
+        }
+    }
+}
+
+/** One of your artists: photo, your most played songs, albums, all songs. */
+@Composable
+private fun LibraryArtistPage(ctx: Ctx, name: String, back: (() -> Unit)?) {
+    val state = ctx.state
+    val a = remember(state.library, name) { Grouping.artists(state.library).firstOrNull { Match.norm(it.name) == Match.norm(name) } }
+        ?: return Note("No songs by $name in your library.")
+    val albums = remember(a) { Grouping.albums(a.tracks) }
+    val top = remember(a, state.playCounts) { a.tracks.filter { (state.playCounts[it.id] ?: 0) > 0 }.sortedByDescending { state.playCounts[it.id] ?: 0 }.take(5) }
+    LazyColumn(Modifier.fillMaxSize()) {
+        item {
+            Header(a.name, "Artist · ${a.tracks.size} songs in your library", state.artistPics[a.name.lowercase()]?.ifBlank { null } ?: a.artUri, round = true, back = back) {
+                OutlinedButton(onClick = { ctx.openArtistByName(a.name) }) { Text("More from ${a.name}") }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { ctx.play(a.tracks, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
+            }
+        }
+        if (top.isNotEmpty()) {
+            item { Section("Your most played") }
+            items(top.size) { i -> TrackRow(ctx, top, i, numbered = true) }
+        }
+        if (albums.isNotEmpty()) {
+            item { Section("Albums") }
+            item {
+                androidx.compose.foundation.lazy.LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
+                    items(albums) { al -> Card(al.artUri, al.title, "${al.tracks.size} songs") { ctx.push(View.LocalList(al.title, "Album · ${al.artist}", al.artUri, al.tracks)) } }
+                }
+            }
+        }
+        item { Section("All songs") }
+        items(a.tracks.size) { i -> TrackRow(ctx, a.tracks, i, numbered = true) }
     }
 }
 

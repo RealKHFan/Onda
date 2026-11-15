@@ -59,6 +59,11 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     private var order by mutableStateOf<List<Int>>(emptyList())
 
+    /** Gapless: the next file starts with no pause between songs (not for previews, whose link is fetched first). */
+    var gapless = true
+    /** Set on GStreamer's thread when the next song was queued up gaplessly; the switch shows once it plays. */
+    @Volatile private var gaplessNext = -1
+
     /** Sleep timer: pause at this time (ms since epoch), or 0. */
     var sleepAt by mutableLongStateOf(0L)
     /** Sleep timer: stop when the current song ends. */
@@ -81,7 +86,11 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         // Tests: a silent sink that still keeps real time, like speakers do.
         if (audioSink != null) bin.setAudioSink(ElementFactory.make(audioSink, "audio").also { it.set("sync", true) })
         eq = runCatching { ElementFactory.make("equalizer-10bands", "eq") }.getOrNull()?.also { bin.set("audio-filter", it) }
-        bin.bus.connect(Bus.EOS { _ -> scope.launch { next(auto = true) } })
+        bin.bus.connect(Bus.EOS { _ -> scope.launch { gaplessNext = -1; next(auto = true) } })
+        // Called on GStreamer's thread shortly before the end: the next file is handed over now, so there's no gap.
+        bin.connect(PlayBin.ABOUT_TO_FINISH { _ ->
+            gaplessTarget()?.let { i -> gaplessNext = i; bin.set("uri", queue[i].uri) }
+        })
         bin.bus.connect(Bus.ERROR { _, _, message ->
             scope.launch {
                 error = "Couldn't play “${current?.title.orEmpty()}”: $message"
@@ -90,7 +99,8 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         })
         scope.launch {
             while (true) {
-                delay(400)
+                delay(if (gaplessNext >= 0) 50 else 400)
+                if (gaplessNext >= 0 && bin.get("current-uri") == queue.getOrNull(gaplessNext)?.uri) switchGapless()
                 if (sleepAt in 1..System.currentTimeMillis()) { sleepAt = 0; pause() }
                 if (index < 0) continue
                 val d = bin.queryDuration(TimeUnit.MILLISECONDS)
@@ -225,6 +235,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     private fun load(seekTo: Long = -1) {
         val item = current ?: return
         val token = ++loadToken
+        gaplessNext = -1
         error = null; fullFrom = null
         bin.stop()
         positionMs = seekTo.coerceAtLeast(0)
@@ -262,6 +273,26 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     /** What GStreamer gets (tests). */
     internal val outputVolume: Double get() = bin.volume
+
+    /** The song to hand over gaplessly, or null when the usual way (end, then load) is needed. */
+    private fun gaplessTarget(): Int? {
+        if (!gapless || sleepAfterSong || repeat == 2 || index < 0) return null
+        val pos = order.indexOf(index)
+        val next = order.getOrNull(pos + 1) ?: return null // a new round (repeat all) reshuffles first
+        return next.takeIf { queue.getOrNull(it)?.let { i -> !i.preview && i.deezerId <= 0 && i.uri.isNotEmpty() } == true }
+    }
+
+    /** The handed-over song is playing now: show it, and do what starting a song does. */
+    private fun switchGapless() {
+        index = gaplessNext
+        gaplessNext = -1
+        val item = current ?: return
+        error = null; fullFrom = null
+        durationMs = item.durationMs; positionMs = 0
+        applyVolume()
+        if (repeat == 0 && order.lastOrNull() == index) onLastSong?.invoke()
+        upcoming().firstOrNull()?.second?.let { prefetch?.invoke(it) }
+    }
 
     /** 10 bands (31 Hz to 16 kHz), each -12..+12 dB. */
     fun equalize(gains: List<Double>) {
