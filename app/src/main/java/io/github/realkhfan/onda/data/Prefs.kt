@@ -100,6 +100,10 @@ object Prefs {
     fun autoplay(ctx: Context): Boolean = p(ctx).getBoolean("autoplay", true)
     fun setAutoplay(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("autoplay", on).apply()
 
+    /** The folder "Copy new songs to a folder" copies into (a tree URI; see [SongCopy]). */
+    fun copyTree(ctx: Context): String? = p(ctx).getString("copy_tree", null)
+    fun setCopyTree(ctx: Context, uri: String?) = p(ctx).edit().putString("copy_tree", uri).apply()
+
     /** Your profile picture's file in Onda's storage (see [Profile]). */
     fun profilePicture(ctx: Context): String? = p(ctx).getString("profile_picture", null)
     fun setProfilePicture(ctx: Context, path: String?) = p(ctx).edit().putString("profile_picture", path).apply()

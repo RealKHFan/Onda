@@ -25,6 +25,7 @@ class SmartTest {
         assertEquals(1, hours[0]); assertEquals(1, days[3])
         val list = listOf(t("1", "b", 300_000), t("2", "a", 3_600_000))
         assertEquals(listOf("2", "1"), Smart.sorted(list, Smart.Sort.TITLE, emptyMap()).map { it.id })
+        assertEquals(listOf("2", "1"), Smart.sorted(list, Smart.Sort.ADDED, emptyMap(), mapOf("1" to 100L, "2" to 200L)).map { it.id })
         assertEquals("1 h 5 min", Smart.length(list))
     }
 }

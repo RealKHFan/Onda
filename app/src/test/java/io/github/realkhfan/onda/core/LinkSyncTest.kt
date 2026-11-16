@@ -130,3 +130,21 @@ class LinkSyncQueueTest {
         assertEquals(Triple(0, false, 0), Triple(old.start, old.shuffle, old.repeat))
     }
 }
+
+class LinkSyncPictureTest {
+    @Test fun theProfilePictureFollowsTheSideThatChangedIt() {
+        val base = LinkSync.Snapshot(picture = "aaa")
+        // Changed on the phone: the phone's; changed on the PC: the PC's; removed on one side: removed.
+        assertEquals("bbb", LinkSync.merge(base, LinkSync.Snapshot(picture = "bbb"), LinkSync.Snapshot(picture = "aaa")).picture)
+        assertEquals("ccc", LinkSync.merge(base, LinkSync.Snapshot(picture = "aaa"), LinkSync.Snapshot(picture = "ccc")).picture)
+        assertEquals("", LinkSync.merge(base, LinkSync.Snapshot(picture = "aaa"), LinkSync.Snapshot(picture = "")).picture)
+        // An older Onda (no picture field) doesn't remove it.
+        assertEquals("aaa", LinkSync.merge(base, LinkSync.Snapshot(picture = "aaa"), LinkSync.Snapshot(picture = null)).picture)
+        assertEquals("aaa", LinkSync.fromJson(LinkSync.toJson(LinkSync.Snapshot(picture = "aaa"))).picture)
+        assertNull(LinkSync.fromJson(LinkSync.toJson(LinkSync.Snapshot())).picture)
+        assertEquals("gif", LinkSync.pictureType("GIF89a....".toByteArray()))
+        assertEquals("png", LinkSync.pictureType(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D)))
+        assertEquals("jpg", LinkSync.pictureType(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte())))
+        assertNull(LinkSync.pictureType("not a picture".toByteArray()))
+    }
+}

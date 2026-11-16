@@ -25,7 +25,8 @@ object LocalScanner {
 
     private val AUDIO_EXT = setOf("mp3", "m4a", "aac", "flac", "ogg", "oga", "opus", "wav")
 
-    suspend fun scan(context: Context, trees: List<Uri>): List<Track> =
+    /** [modified]: each file's last change (ms), for "Recently added". */
+    suspend fun scan(context: Context, trees: List<Uri>, modified: MutableMap<String, Long> = HashMap()): List<Track> =
         withContext(Dispatchers.IO) {
             val artDir = File(context.cacheDir, "art").apply { mkdirs() }
             val out = ArrayList<Track>()
@@ -36,7 +37,7 @@ object LocalScanner {
                     continue
                 }
                 val rootName = documentName(context, tree, rootId) ?: "Folder"
-                traverse(context, tree, rootId, rootName, artDir, out)
+                traverse(context, tree, rootId, rootName, artDir, out, modified)
             }
             out
         }
@@ -48,6 +49,7 @@ object LocalScanner {
         folderName: String,
         artDir: File,
         out: MutableList<Track>,
+        modified: MutableMap<String, Long>,
     ) {
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentDocId)
         val cursor = try {
@@ -57,6 +59,7 @@ object LocalScanner {
                     DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                     DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                     DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_LAST_MODIFIED,
                 ),
                 null, null, null,
             )
@@ -70,10 +73,11 @@ object LocalScanner {
                 val name = c.getString(1) ?: continue
                 val mime = c.getString(2) ?: ""
                 if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                    traverse(context, tree, docId, name, artDir, out)
+                    traverse(context, tree, docId, name, artDir, out, modified)
                 } else if (isAudio(name, mime)) {
                     val fileUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
                     out += readTrack(context, fileUri, name, folderName, artDir)
+                    if (!c.isNull(3)) modified[fileUri.toString()] = c.getLong(3)
                 }
             }
         }

@@ -62,4 +62,24 @@ class PictureTest {
             if (before == null) state.setPicture(null)
         }
     }
+
+    @Test fun aPictureFromThePhoneIsTakenOverAndRemovedWithTheSync() = runBlocking(Dispatchers.Swing) {
+        val state = AppState(CoroutineScope(Dispatchers.Swing))
+        val before = state.settings.picture
+        try {
+            val bytes = gif().readBytes()
+            val hash = io.github.realkhfan.onda.core.LinkSync.hashOf(bytes)
+            assertTrue(state.saveCover(hash, bytes)) // as the phone sends it, just before the sync
+            val snap = state.linkSnapshot(emptyMap(), HashMap())
+            state.applyLink(snap.copy(picture = hash), HashMap())
+            assertEquals(hash, state.settings.picture?.let(state::coverHash))
+            assertEquals(hash, state.linkSnapshot(emptyMap(), HashMap()).picture) // and it goes back out the same
+            assertEquals(hash, state.coverFiles()[hash]?.let { io.github.realkhfan.onda.core.LinkSync.hashOf(File(it).readBytes()) }) // the phone can fetch it
+            state.applyLink(snap.copy(picture = ""), HashMap()) // removed on the phone
+            assertEquals(null, state.settings.picture)
+            assertEquals("", state.linkSnapshot(emptyMap(), HashMap()).picture)
+        } finally {
+            if (before == null) state.setPicture(null as File?)
+        }
+    }
 }

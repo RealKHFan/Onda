@@ -510,7 +510,8 @@ class AppState(private val scope: CoroutineScope) {
     /* Playlist covers over the link: known by their hash, kept in playlist_covers. */
     private val coverHashes = HashMap<String, String>()
     fun coverHash(path: String): String? = coverHashes[path] ?: runCatching { LinkSync.hashOf(java.io.File(path).readBytes()) }.getOrNull()?.also { coverHashes[path] = it }
-    fun coverFiles(): Map<String, String> = (java.io.File(Store.data, "playlist_covers").listFiles().orEmpty().map { it.path } + collection.playlists.mapNotNull { it.cover })
+    fun coverFiles(): Map<String, String> = (java.io.File(Store.data, "playlist_covers").listFiles().orEmpty().map { it.path } + collection.playlists.mapNotNull { it.cover } +
+        listOfNotNull(settings.picture)) // your profile picture travels the same way
         .distinct().mapNotNull { p -> coverHash(p)?.let { it to p } }.toMap()
     /** A cover the phone sent (checked against its hash). */
     fun saveCover(hash: String, bytes: ByteArray): Boolean {
@@ -554,7 +555,7 @@ class AppState(private val scope: CoroutineScope) {
     fun setCrossfade(s: Int) = update(settings.copy(crossfade = s.coerceIn(0, 12)))
 
     /** What a sync carries, as one number (history aside): the phone is told to sync when it changes. */
-    fun linkFingerprint(): Int = listOf(collection, meta).hashCode()
+    fun linkFingerprint(): Int = listOf(collection, meta, settings.picture).hashCode()
 
     /** Your files and server songs with their own tags (no edits). */
     val rawTracks: List<Track> get() = serverTracks + local
@@ -571,6 +572,7 @@ class AppState(private val scope: CoroutineScope) {
             notInterested = c.hidden.filter { Source.of(it) != null }, blocked = c.blocked, ai = c.ai,
             plays = plays.map { it.copy(key = it.key.takeIf { k -> Source.of(k) != null }.orEmpty()) },
             edits = Overrides.forSync(rawTracks, foreign),
+            picture = settings.picture?.let(::coverHash).orEmpty(),
         ).also { known += lib.learned }
     }
 
@@ -593,6 +595,12 @@ class AppState(private val scope: CoroutineScope) {
         plays = s.plays.map { p -> p.copy(key = p.key.ifEmpty { lib.id(LinkSync.Song(null, p.title, p.artist)) }) }.takeLast(LinkSync.MAX_PLAYS)
         Store.savePlays(plays)
         known += lib.learned
+        // Your profile picture as agreed: the phone's (it sent it just before), or none.
+        val mine = settings.picture?.let(::coverHash).orEmpty()
+        when {
+            s.picture == "" && settings.picture != null -> setPicture(null as java.io.File?)
+            !s.picture.isNullOrEmpty() && s.picture != mine -> covers[s.picture]?.let { f -> runCatching { java.io.File(f).readBytes() }.getOrNull() }?.let(::setPicture)
+        }
         return foreign
     }
 
@@ -732,14 +740,19 @@ class AppState(private val scope: CoroutineScope) {
      * the file isn't a picture Onda can show.
      */
     fun setPicture(from: java.io.File?): Boolean {
-        val old = settings.picture?.let { java.io.File(it) }
-        if (from == null) { old?.delete(); update(settings.copy(picture = null)); return true }
-        if (from.extension.lowercase() !in setOf("jpg", "jpeg", "png", "webp", "gif") || from.length() !in 1..20L * 1024 * 1024) return false
-        val bytes = runCatching { from.readBytes() }.getOrNull() ?: return false
+        if (from == null) { settings.picture?.let { java.io.File(it).delete() }; update(settings.copy(picture = null)); return true }
+        if (from.length() !in 1..20L * 1024 * 1024) return false
+        return setPicture(runCatching { from.readBytes() }.getOrNull() ?: return false)
+    }
+
+    /** A picture's bytes (picked here, or from your phone); false when it isn't a JPG, PNG, WebP or GIF Onda can show. */
+    fun setPicture(bytes: ByteArray): Boolean {
+        val ext = LinkSync.pictureType(bytes) ?: return false
         if (runCatching { org.jetbrains.skia.Codec.makeFromData(org.jetbrains.skia.Data.makeFromBytes(bytes)).frameCount }.getOrDefault(0) < 1) return false
-        val copy = java.io.File(Store.data, "profile-${System.currentTimeMillis()}.${from.extension.lowercase()}").apply { writeBytes(bytes) }
-        old?.delete()
+        val old = settings.picture?.let { java.io.File(it) }
+        val copy = java.io.File(Store.data, "profile-${System.currentTimeMillis()}.$ext").apply { writeBytes(bytes) }
         update(settings.copy(picture = copy.path))
+        old?.delete()
         return true
     }
 

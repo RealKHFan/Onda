@@ -7,6 +7,7 @@ import io.github.realkhfan.onda.core.Track
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 
 /** Holds the scanned local tracks and the set of folders the user picked (persisted). */
 object MusicLibrary {
@@ -23,8 +24,15 @@ object MusicLibrary {
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
+    /** When each song came (its file's date the first time Onda saw it, so a backup rewriting files doesn't change it). */
+    private val _addedAt = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val addedAt: StateFlow<Map<String, Long>> = _addedAt.asStateFlow()
+
     fun load(context: Context) {
         _folders.value = stored(context).toList()
+        _addedAt.value = runCatching {
+            org.json.JSONObject(java.io.File(context.filesDir, "added.json").readText()).let { o -> o.keys().asSequence().associateWith { o.getLong(it) } }
+        }.getOrDefault(emptyMap())
     }
 
     fun addFolder(context: Context, uri: Uri) {
@@ -69,7 +77,17 @@ object MusicLibrary {
         _scanning.value = true
         try {
             val trees = stored(context).map { Uri.parse(it) }
-            _tracks.value = LocalScanner.scan(context, trees)
+            val modified = HashMap<String, Long>()
+            _tracks.value = LocalScanner.scan(context, trees, modified)
+            val now = System.currentTimeMillis()
+            val kept = _addedAt.value
+            _addedAt.value = _tracks.value.associate { t -> t.id to (kept[t.id] ?: modified[t.id]?.takeIf { it > 0 } ?: now) }
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    java.io.File(context.filesDir, "added.json.tmp").apply { writeText(org.json.JSONObject(_addedAt.value).toString()) }
+                        .renameTo(java.io.File(context.filesDir, "added.json"))
+                }
+            }
             // Edits on songs whose file moved (another folder picked, files renamed) follow them by file name.
             io.github.realkhfan.onda.data.Overrides.relink(_tracks.value)
         } finally {

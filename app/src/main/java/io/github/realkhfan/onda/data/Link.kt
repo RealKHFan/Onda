@@ -42,6 +42,7 @@ object Link {
     private var token: String? = null
     private var phoneId = ""
     private lateinit var dir: File
+    private lateinit var app: Context
     private lateinit var prefs: android.content.SharedPreferences
     private val mutex = Mutex()
     /** Syncs outlive the screen that started them. */
@@ -50,6 +51,7 @@ object Link {
     fun syncLater(onDone: (String) -> Unit = {}) { scope.launch { onDone(sync()) } }
 
     fun load(context: Context) {
+        app = context.applicationContext
         dir = context.filesDir
         prefs = context.getSharedPreferences("link", Context.MODE_PRIVATE)
         phoneId = prefs.getString("phone", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("phone", it).apply() }
@@ -157,6 +159,7 @@ object Link {
                 val theirs = LinkSync.fromJson(got.getJSONObject("snapshot"))
                 val merged = withContext(Dispatchers.Default) { LinkSync.merge(base, mine, theirs) }
                 if (!swapCovers(merged, theirs)) return done("Couldn't send a playlist cover to ${_pc.value?.name ?: "your PC"}.")
+                val picture = swapPicture(merged, theirs) ?: return done("Couldn't send your profile picture to ${_pc.value?.name ?: "your PC"}.")
                 val put = call("/v1/sync/put", JSONObject().put("version", got.getString("version")).put("snapshot", LinkSync.toJson(merged)), 30_000)
                     ?: return done("Couldn't reach ${_pc.value?.name ?: "your PC"}.")
                 if (put.status == 409) return@repeat // changed on the PC meanwhile: merge again
@@ -164,6 +167,12 @@ object Link {
                 if (put.status != 200) return done("The PC refused the sync (${put.status}).")
                 apply(merged, known)
                 Overrides.synced()
+                // Your profile picture as agreed: the PC's, or none.
+                when {
+                    merged.picture == "" && Profile.picture != null -> withContext(Dispatchers.Main) { Profile.clear(app) }
+                    picture.isNotEmpty() -> withContext(Dispatchers.Main) { Profile.set(app, picture) }
+                }
+                synced = fingerprint() // what came from the PC isn't news for it
                 withContext(Dispatchers.IO) {
                     val f = File(dir, "link-base.json")
                     File(f.path + ".tmp").apply { writeText(JSONObject().put("base", LinkSync.toJson(merged)).put("known", LinkSync.songsToJson(known)).toString()) }.renameTo(f)
@@ -201,6 +210,7 @@ object Link {
             plays = PlayLog.plays.value.map { it.copy(key = it.key.takeIf { k -> Source.of(k) != null }.orEmpty()) },
             // Agreed last time plus yours; only a restore here removes one (a song missing its edit for a moment keeps it).
             edits = Overrides.forSync(raw, base?.edits.orEmpty()),
+            picture = Profile.hash(),
         ).also { known += lib.learned }
     }
 
@@ -230,6 +240,23 @@ object Link {
     /** Every cover photo here by its hash. */
     private fun coverFiles(): Map<String, String> =
         File(dir, "covers").listFiles().orEmpty().mapNotNull { f -> coverHash(f.path)?.let { it to f.path } }.toMap()
+
+    /**
+     * Your profile picture as merged: sent to the PC if it doesn't have it; fetched (checked against its hash) if this phone
+     * doesn't. Returns the fetched bytes (empty when nothing came), or null if sending failed.
+     */
+    private suspend fun swapPicture(merged: LinkSync.Snapshot, theirs: LinkSync.Snapshot): ByteArray? = withContext(Dispatchers.IO) {
+        val h = merged.picture?.takeIf { it.isNotEmpty() } ?: return@withContext ByteArray(0)
+        val mine = Profile.hash()
+        if (theirs.picture != h && mine == h) {
+            val bytes = Profile.picture?.let { runCatching { it.readBytes() }.getOrNull() } ?: return@withContext ByteArray(0)
+            val r = callNow("/v1/cover/put", JSONObject().put("hash", h).put("data", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)), 60_000)
+            if (r?.status != 200) return@withContext null
+        }
+        if (mine != h) callNow("/v1/cover/get", JSONObject().put("hash", h), 60_000)?.takeIf { it.status == 200 }?.bytes
+            ?.takeIf { LinkSync.hashOf(it) == h }?.let { return@withContext it }
+        ByteArray(0)
+    }
 
     /** Before the merged collection is kept: covers the PC doesn't have go to it, those this phone doesn't have come here. */
     private suspend fun swapCovers(merged: LinkSync.Snapshot, theirs: LinkSync.Snapshot): Boolean = withContext(Dispatchers.IO) {
@@ -262,7 +289,7 @@ object Link {
     private fun fingerprint(): Int = listOf<Any?>(
         PlaylistStore.playlists.value, PlaylistStore.folders.value, PlaylistStore.liked.value, PlaylistStore.want.value,
         UserCollection.followed.value, UserCollection.albums.value, UserCollection.hidden.value, UserCollection.blocked.value,
-        UserCollection.aiMarked.value, Overrides.meta.value,
+        UserCollection.aiMarked.value, Overrides.meta.value, Profile.picture?.path,
     ).hashCode()
 
     /** Changes here reach the PC a few seconds later (while Onda runs). */
@@ -271,6 +298,7 @@ object Link {
         val flows = listOf<kotlinx.coroutines.flow.Flow<Any?>>(
             PlaylistStore.playlists, PlaylistStore.folders, PlaylistStore.liked, PlaylistStore.want, UserCollection.followed, UserCollection.albums,
             UserCollection.hidden, UserCollection.blocked, UserCollection.aiMarked, Overrides.meta,
+            androidx.compose.runtime.snapshotFlow { Profile.picture },
         )
         scope.launch {
             kotlinx.coroutines.flow.combine(flows) { fingerprint() }.collectLatest { f ->

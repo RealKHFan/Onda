@@ -39,6 +39,8 @@ object LinkSync {
         /** Play history; [Discovery.Play.key] is a catalog key or "" for your own songs. */
         val plays: List<Discovery.Play> = emptyList(),
         val edits: Map<String, Edit> = emptyMap(),
+        /** Your profile picture's [hashOf]; "" for none; null from an Onda that doesn't sync it (then it stays as it is). */
+        val picture: String? = null,
     )
 
     fun idOf(artist: String, title: String) = "~" + Match.norm(artist) + "|" + Match.norm(title)
@@ -107,6 +109,13 @@ object LinkSync {
             plays = (a.plays + b.plays).distinctBy { Triple(Match.norm(it.artist), Match.norm(it.title), it.atMs / 60_000) }
                 .sortedBy { it.atMs }.takeLast(MAX_PLAYS),
             edits = editKeys.associateWith { k -> a.edits[k]?.takeIf { it != base?.edits?.get(k) || b.edits[k] == null } ?: b.edits[k] ?: a.edits.getValue(k) },
+            // The side that changed it since last time ([a] when both did).
+            picture = when {
+                b.picture == null -> a.picture
+                a.picture == null -> b.picture
+                a.picture != base?.picture -> a.picture
+                else -> b.picture
+            },
         )
     }
 
@@ -170,6 +179,7 @@ object LinkSync {
         .put("edits", JSONObject().apply {
             s.edits.forEach { (k, e) -> put(k, JSONObject().put("t", e.title).put("a", e.artist).put("al", e.album).put("c", e.cover).put("dz", e.deezerId)) }
         })
+        .apply { s.picture?.let { put("picture", it) } }
 
     fun fromJson(o: JSONObject): Snapshot = Snapshot(
         playlists = objects(o.optJSONArray("playlists")).map { p ->
@@ -189,7 +199,20 @@ object LinkSync {
                 e.getJSONObject(k).let { Edit(it.optString("t"), it.optString("a"), it.optString("al"), it.optString("c").ifBlank { null }, it.optLong("dz")) }
             }
         }.orEmpty(),
+        picture = if (o.has("picture")) o.optString("picture") else null,
     )
+
+    /** "gif", "png", "webp" or "jpg" for a picture's bytes; null when it's none of them. */
+    fun pictureType(bytes: ByteArray): String? {
+        fun at(i: Int, vararg b: Int) = bytes.size >= i + b.size && b.indices.all { bytes[i + it] == b[it].toByte() }
+        return when {
+            at(0, 0x47, 0x49, 0x46, 0x38) -> "gif"
+            at(0, 0x89, 0x50, 0x4E, 0x47) -> "png"
+            at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50) -> "webp"
+            at(0, 0xFF, 0xD8, 0xFF) -> "jpg"
+            else -> null
+        }
+    }
 
     fun songToJson(s: Song) = song(s)
     fun songFromJson(o: JSONObject) = song(o)

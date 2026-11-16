@@ -297,6 +297,7 @@ fun OndaApp(player: PlayerState?) {
     val byId = remember(everyTrack) { everyTrack.associateBy { it.id } }
     val songs = remember(tracks) { Grouping.songsSorted(tracks) }
     val albums = remember(tracks) { Grouping.albums(tracks) }
+    val addedAt by MusicLibrary.addedAt.collectAsState()
     // Artist photos come from Deezer (fetched by a match run), never from a song's cover.
     val artists = remember(tracks, artistPics) {
         Grouping.artists(tracks).map { a -> a.copy(artUri = artistPics[a.tracks.first().artistKey]?.takeIf { it.isNotBlank() }) }
@@ -813,6 +814,11 @@ fun OndaApp(player: PlayerState?) {
                                 },
                                 onOpenTopMix = { push(ArtistMixRoute(it)) },
                                 onOpenRadar = { push(RadarRoute) },
+                                // Albums from your folders, newest files first (like the desktop).
+                                recentlyAdded = remember(albums, addedAt) {
+                                    albums.filter { a -> a.tracks.any { it.id in addedAt } }.sortedByDescending { a -> a.tracks.maxOf { addedAt[it.id] ?: 0L } }.take(14)
+                                },
+                                onOpenAlbum = { push(albumRoute(it)) },
                             )
                             1 -> SearchScreen(
                                 query, { query = it }, searchState, results, rowCtx,
@@ -1129,6 +1135,8 @@ internal fun HomeScreen(
     topMixes: List<Pair<String, String?>> = emptyList(),
     onOpenTopMix: (String) -> Unit = {},
     onOpenRadar: () -> Unit = {},
+    recentlyAdded: List<Album> = emptyList(),
+    onOpenAlbum: (Album) -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize()) {
         // Greets you like the desktop does.
@@ -1203,6 +1211,22 @@ internal fun HomeScreen(
                                 Art(t.artUri, 132.dp)
                                 Text(t.title, color = TextMain, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
                                 Text(t.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+            }
+            if (recentlyAdded.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text("Recently added", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+                }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(recentlyAdded, key = { it.key }) { a ->
+                            Column(Modifier.width(132.dp).clickable { onOpenAlbum(a) }) {
+                                Art(a.artUri, 132.dp)
+                                Text(a.title, color = TextMain, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+                                Text(a.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
@@ -1437,7 +1461,7 @@ internal fun TrackListScreen(
     val counts = remember(plays) { plays.groupingBy { it.key }.eachCount() }
     val shown = remember(tracks, sort, counts, filter) {
         val f = filter?.let(Match::norm).orEmpty()
-        Smart.sorted(tracks, sort, counts).filter { f.isEmpty() || Match.norm("${it.title} ${it.artist} ${it.album}").contains(f) }
+        Smart.sorted(tracks, sort, counts, MusicLibrary.addedAt.value).filter { f.isEmpty() || Match.norm("${it.title} ${it.artist} ${it.album}").contains(f) }
     }
     val picked = shown.filter { it.id in selected }
     // Songs only on your PC (after a sync) are listed greyed out but never played or queued.
@@ -1854,6 +1878,7 @@ internal fun SettingsScreen(
                 if (backupTree != null) TextButton(onClick = { Prefs.setBackupTree(ctx, null); backupTree = null }) { Text("Off", color = TextDim) }
             }
             backupNote?.let { Text(it, color = TextMain, fontSize = 13.sp) }
+            CopySongsSetting()
             SectionLabel("Privacy", Modifier.padding(0.dp))
             Text(
                 "Search, previews and cover art come from Deezer's public API without an account. " +
@@ -2179,7 +2204,7 @@ private fun CreatePlaylistDialog(
 
 internal fun songCount(n: Int): String = "$n song${if (n == 1) "" else "s"}"
 
-private fun prettyFolder(treeUri: String): String =
+internal fun prettyFolder(treeUri: String): String =
     treeUri.substringAfterLast("%3A").substringAfterLast("%2F").ifBlank { treeUri }
         .let { java.net.URLDecoder.decode(it, "UTF-8") }
 

@@ -29,14 +29,16 @@ object Smart {
     }
 
     /** How a list is ordered (the desktop's sort menu). */
-    enum class Sort(val label: String) { CUSTOM("Custom order"), TITLE("Title"), ARTIST("Artist"), ALBUM("Album"), PLAYS("Most played"), LENGTH("Length") }
+    enum class Sort(val label: String) { CUSTOM("Custom order"), TITLE("Title"), ARTIST("Artist"), ALBUM("Album"), PLAYS("Most played"), ADDED("Recently added"), LENGTH("Length") }
 
-    fun sorted(tracks: List<Track>, sort: Sort, plays: Map<String, Int>): List<Track> = when (sort) {
+    /** [added]: when each song came (newest first for [Sort.ADDED]). */
+    fun sorted(tracks: List<Track>, sort: Sort, plays: Map<String, Int>, added: Map<String, Long> = emptyMap()): List<Track> = when (sort) {
         Sort.CUSTOM -> tracks
         Sort.TITLE -> tracks.sortedBy { it.title.lowercase() }
         Sort.ARTIST -> tracks.sortedWith(compareBy({ it.artist.lowercase() }, { it.album.lowercase() }, { it.trackNo }))
         Sort.ALBUM -> tracks.sortedWith(compareBy({ it.album.lowercase() }, { it.trackNo }))
         Sort.PLAYS -> tracks.sortedByDescending { plays[it.id] ?: 0 }
+        Sort.ADDED -> tracks.sortedByDescending { added[it.id] ?: 0 }
         Sort.LENGTH -> tracks.sortedBy { it.durationMs }
     }
 
