@@ -1,5 +1,7 @@
 package io.github.realkhfan.onda.desktop
 
+import androidx.compose.material.icons.rounded.PhoneAndroid
+
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -1533,6 +1535,33 @@ private fun SettingsPage(ctx: Ctx) {
                 state.settings.albumGain) { state.setAlbumGain(it); ctx.player?.refreshVolume() }
         }
         item { Toggle("ListenBrainz suggestions", "Adds similar artists from ListenBrainz's open listening data to your mixes and similar songs. Only artist names are sent.", state.settings.listenBrainz, state::setListenBrainz) }
+        item { Section("Your phone") }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Toggle("Link with Onda on your phone", "Your phone syncs playlists, likes, Want to listen, follows, history and edited details with this PC, " +
+                    "and can play here or take over what plays here. Over your Wi-Fi only, encrypted; only phones you pair get in.", Link.on) { Link.turn(it) }
+                Link.problem?.let { Text(it, color = TextDim, fontSize = 12.sp) }
+                if (Link.on) {
+                    Text("This PC: ${Link.name}" + Link.addresses().takeIf { it.isNotEmpty() }?.joinToString(", ", " · ") .orEmpty() +
+                        " (port ${io.github.realkhfan.onda.core.LinkCrypto.PORT})", color = TextDim, fontSize = 12.sp)
+                    val code = Link.code
+                    if (code == null) OutlinedButton(onClick = { Link.newCode() }) { Text("Pair a phone") }
+                    else Column {
+                        Text(code.chunked(3).joinToString(" "), color = Accent, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                        Text("On the phone: Settings → Your PC → Link, then type this code. It works once, for 2 minutes.", color = TextDim, fontSize = 12.sp)
+                    }
+                    Link.phones.forEach { ph ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.PhoneAndroid, null, tint = if (Link.connected(ph)) Accent else TextDim)
+                            Text(ph.name + if (Link.connected(ph)) " · connected" else "", color = TextMain, modifier = Modifier.padding(start = 10.dp).width(300.dp))
+                            TextButton(onClick = { Link.forget(ph) }) { Text("Unpair", color = TextDim) }
+                        }
+                    }
+                    if (Link.lastSync > 0) Text("Last synced ${java.time.Instant.ofEpochMilli(Link.lastSync).atZone(java.time.ZoneId.systemDefault()).toLocalTime().withNano(0)}",
+                        color = TextDim, fontSize = 12.sp)
+                }
+            }
+        }
         item { Section("Backup") }
         item {
             var note by remember { mutableStateOf<String?>(null) }
@@ -2004,6 +2033,11 @@ private fun OutputButton(state: AppState, player: Player?) {
                     { state.setOutput(d.name); player.setOutput(d.name); open = false })
             }
             if (devices.isEmpty()) Text("No other outputs found (needs pactl).", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 4.dp))
+            // Your phone, when Onda is open on it: what plays here moves there.
+            Link.phones.filter { Link.on && Link.connected(it) }.forEach { ph ->
+                DropdownMenuItem({ Text(ph.name, color = TextMain) }, { Link.playOnPhone(ph); open = false },
+                    leadingIcon = { Icon(Icons.Rounded.PhoneAndroid, null, tint = TextDim) })
+            }
         }
     }
 }

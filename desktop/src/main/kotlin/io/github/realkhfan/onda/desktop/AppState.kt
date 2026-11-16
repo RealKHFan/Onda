@@ -1,5 +1,7 @@
 package io.github.realkhfan.onda.desktop
 
+import io.github.realkhfan.onda.core.LinkSync
+
 import io.github.realkhfan.onda.core.SpotifyImport
 import io.github.realkhfan.onda.core.RemoteArtist
 import io.github.realkhfan.onda.core.RemoteAlbum
@@ -86,7 +88,7 @@ class AppState(private val scope: CoroutineScope) {
         if (recent.firstOrNull()?.id == i.id) return
         recent = (listOf(i) + recent.filterNot { it.id == i.id }).take(20)
         Store.saveRecent(recent)
-        plays = (plays + Discovery.Play(i.id, i.artist, i.title, System.currentTimeMillis())).takeLast(3000)
+        plays = (plays + Discovery.Play(i.id, i.artist, i.title, System.currentTimeMillis())).takeLast(LinkSync.MAX_PLAYS)
         Store.savePlays(plays)
     }
 
@@ -484,6 +486,45 @@ class AppState(private val scope: CoroutineScope) {
 
     private fun update(s: Store.Settings) { settings = s; Store.save(s) }
     private fun change(c: Store.Collection) { collection = c; Store.saveCollection(c) }
+
+    /* ---------- Phone link (library sync) ---------- */
+
+    /** Your files and server songs with their own tags (no edits). */
+    val rawTracks: List<Track> get() = serverTracks + local
+
+    /** Your collection as the phone can read it ([foreign]: edits for songs this PC doesn't have, kept from last time). */
+    fun linkSnapshot(foreign: Map<String, LinkSync.Edit>, known: MutableMap<String, LinkSync.Song>): LinkSync.Snapshot {
+        val c = collection
+        val lib = LinkSync.Library(byId.values.toList(), rawTracks, c.remote.associateBy { it.key }, known)
+        return LinkSync.Snapshot(
+            playlists = c.playlists.map { p -> LinkSync.Playlist(p.id, p.name, p.description, p.trackIds.mapNotNull(lib::song)) },
+            liked = c.liked.mapNotNull(lib::song),
+            want = c.want, catalog = c.remote, followed = c.followed, albums = c.albums,
+            notInterested = c.hidden.filter { Source.of(it) != null }, blocked = c.blocked, ai = c.ai,
+            plays = plays.map { it.copy(key = it.key.takeIf { k -> Source.of(k) != null }.orEmpty()) },
+            edits = foreign + Overrides.forSync(rawTracks),
+        ).also { known += lib.learned }
+    }
+
+    /** The merged collection from the phone; returns the edits for songs that aren't on this PC. */
+    fun applyLink(s: LinkSync.Snapshot, known: MutableMap<String, LinkSync.Song>): Map<String, LinkSync.Edit> {
+        val raw = rawTracks
+        val foreign = Overrides.fromSync(raw, s.edits)
+        // Songs are found by the details shown after the edits above.
+        val shown = Overrides.apply(raw, Overrides.meta.value)
+        val lib = LinkSync.Library(shown, raw, emptyMap())
+        val c = collection
+        change(c.copy(
+            playlists = s.playlists.map { p -> Store.Playlist(p.id, p.name, p.songs.map(lib::id).distinct(), p.description, c.playlists.firstOrNull { it.id == p.id }?.cover) },
+            liked = s.liked.map(lib::id).distinct(),
+            want = s.want, remote = (s.catalog + c.remote).distinctBy { it.key }, followed = s.followed, albums = s.albums,
+            hidden = c.hidden.filter { Source.of(it) == null } + s.notInterested, blocked = s.blocked, ai = s.ai,
+        ))
+        plays = s.plays.map { p -> p.copy(key = p.key.ifEmpty { lib.id(LinkSync.Song(null, p.title, p.artist)) }) }.takeLast(LinkSync.MAX_PLAYS)
+        Store.savePlays(plays)
+        known += lib.learned
+        return foreign
+    }
 
     /* ---------- Folders ---------- */
 

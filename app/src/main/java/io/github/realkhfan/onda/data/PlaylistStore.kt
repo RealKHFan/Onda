@@ -100,6 +100,16 @@ object PlaylistStore {
         write()
     }
 
+    /** After syncing with your PC (each playlist keeps its own cover here). */
+    fun fromSync(playlists: List<Playlist>, liked: List<String>, want: List<RemoteTrack>, catalog: List<RemoteTrack>) {
+        val covers = _playlists.value.associate { it.id to it.cover }
+        _playlists.value = playlists.map { it.copy(cover = covers[it.id]) }
+        _liked.value = liked
+        _want.value = want
+        _remote.value = _remote.value + catalog.associateBy { it.key }
+        write()
+    }
+
     /** Undo: Liked Songs as they were. */
     fun setLiked(ids: List<String>) {
         _liked.value = ids

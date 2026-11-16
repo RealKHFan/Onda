@@ -187,6 +187,8 @@ import io.github.realkhfan.onda.data.Suggest
 import io.github.realkhfan.onda.data.Loudness
 import io.github.realkhfan.onda.data.ArtistIds
 import io.github.realkhfan.onda.player.OpenWith
+import io.github.realkhfan.onda.data.Link
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.mutableLongStateOf
 import io.github.realkhfan.onda.player.Autoplay
 import androidx.compose.foundation.combinedClickable
@@ -513,6 +515,29 @@ fun OndaApp(player: PlayerState?) {
         p.playItems(listOf(own?.toMediaItem() ?: OpenWith.item(ctx, uri)), 0, "Files", "Opened file", shuffled = false)
     }
 
+    // Onda on your PC: sync when Onda opens (once your music is scanned) and every 15 minutes while it's open,
+    // and play here what the PC sends ("Play on… your phone"). Only while Onda is on screen, to spare the battery.
+    val linkedPc by Link.pc.collectAsState()
+    val latestTracks by rememberUpdatedState(tracks)
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(linkedPc != null, scanning) {
+        if (linkedPc == null || scanning) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) { Link.syncLater(); delay(15 * 60_000L) }
+        }
+    }
+    LaunchedEffect(linkedPc?.id, player) {
+        val p = player ?: return@LaunchedEffect
+        if (linkedPc == null) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (true) {
+                val q = Link.inbox()
+                if (q == null) delay(20_000) // the PC isn't reachable right now
+                else if (q.songs.isNotEmpty()) toast(playFromPc(p, q, latestTracks, linkedPc?.name ?: "Your PC"))
+            }
+        }
+    }
+
     // A song that can't play (server offline, preview gone) says why once.
     LaunchedEffect(player?.error) {
         player?.error?.let { toast(it); player.clearError() }
@@ -561,6 +586,7 @@ fun OndaApp(player: PlayerState?) {
                             onRename = { push(RenameRoute) },
                             onImport = { uris -> SpotifyImporter.start(ctx, uris, tracks) },
                             library = tracks,
+                            onMessage = ::toast,
                         ) { pop() }
                         MatchRoute -> MatchScreen(onBack = { pop() }, onRename = { push(RenameRoute) })
                         RenameRoute -> RenameScreen(
@@ -1008,18 +1034,13 @@ fun OndaApp(player: PlayerState?) {
         )
     }
 
-    if (showDevices) DevicesSheet { showDevices = false }
+    if (showDevices) PlayOnSheet(player, tracks, byId, ::toast) { showDevices = false }
 }
 
 private fun currentRemote(p: PlayerState): RemoteTrack? = p.currentId?.let { remoteOf(it, p.title, p.artist, p.album, p.artUri) }
 
-/** A catalog song back from a player item's key and tags (null for your own songs). */
-private fun remoteOf(key: String, title: String, artist: String, album: String, art: String?): RemoteTrack? {
-    val source = Source.of(key) ?: return null
-    val rest = key.removePrefix(source.prefix)
-    return if (source.full) RemoteTrack(0, title, artist, album, art, null, 0, source, ref = rest)
-    else RemoteTrack(rest.toLongOrNull() ?: return null, title, artist, "", art, null, 0, source)
-}
+private fun remoteOf(key: String, title: String, artist: String, album: String, art: String?): RemoteTrack? =
+    io.github.realkhfan.onda.core.LinkSync.remoteOf(key, title, artist, album, art)
 
 /* ---------------- Home ---------------- */
 
@@ -1557,6 +1578,7 @@ internal fun SettingsScreen(
     onRename: () -> Unit,
     onImport: (List<Uri>) -> Unit,
     library: List<Track> = emptyList(),
+    onMessage: (String) -> Unit = {},
     onBack: () -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -1678,6 +1700,8 @@ internal fun SettingsScreen(
             }
             SectionLabel("Equalizer", Modifier.padding(0.dp))
             EqualizerSettings(ctx)
+            SectionLabel("Your PC", Modifier.padding(0.dp))
+            PcSettings(onMessage)
             SectionLabel("Loudness", Modifier.padding(0.dp))
             LoudnessSettings(ctx, library)
             SectionLabel("Display", Modifier.padding(0.dp))

@@ -19,12 +19,13 @@ Onda is offline-first: it plays music you own or can legally stream, and works f
 - **Spotify import:** playlists, liked songs and recent listening history from Spotify's data export or Exportify CSVs.
 - **Downloads:** saved as real music files in your music folder, only from sources that allow it (your server, free catalogs).
 - **Android Auto:** playlists, albums, artists, search and voice.
+- **Phone and PC:** pair the phone with Onda on your Linux PC once (a 6-digit code); playlists, likes, Want to listen, follows, history and edited details stay in sync, and "Play on…" moves music between them or works as a remote. Over your home Wi-Fi only, end-to-end encrypted (AES-256-GCM), no cloud.
 
-## Linux (early)
-A desktop version for Linux lives in `desktop/` (Compose for Desktop, GStreamer for playback). It plays your music folders and your Navidrome server, searches the catalogs with previews and free full songs, and has Daily 10 / Weekly 30 mixes, new releases, synced lyrics, metadata matching, downloads, Spotify import, backups and your desktop's media controls (MPRIS). Build it with `./gradlew :desktop:createDistributable`; `desktop/packaging/install.sh` adds it to your app menu without root.
+## Linux
+A desktop version for Linux lives in `desktop/` (Compose for Desktop, GStreamer for playback) with the same features and design as the phone: your music folders and Navidrome server, catalog search with previews and free full songs, mixes, new releases, lyrics, metadata editing, loudness normalisation, an equalizer, downloads, Spotify import, backups, the phone link and your desktop's media controls (MPRIS). Build it with `./gradlew :desktop:createDistributable`; `desktop/packaging/install.sh` adds it to your app menu without root.
 
 ## Privacy
-- No account, no analytics, no crash reporting, no device ID. Your history never leaves the phone.
+- No account, no analytics, no crash reporting, no device ID. Your history never leaves your devices (the phone and, if you link them, your own PC).
 - Online services (Deezer, Apple, Audius, Jamendo, Openverse, Internet Archive, ListenBrainz/MusicBrainz, LRCLIB) only see search words, song names and your IP address, and each can be turned off. Deny Onda's Network permission and it keeps working offline.
 - Your server password is never stored, only a salted token.
 - No Google Play Services, Firebase or ML Kit. Every build is checked for them.

@@ -11,7 +11,7 @@ import java.io.File
 
 /** What you've listened to (30 s or most of a song), kept on the phone only. Feeds the Daily and Weekly mixes. */
 object PlayLog {
-    private const val MAX = 3000
+    private const val MAX = io.github.realkhfan.onda.core.LinkSync.MAX_PLAYS
 
     private val _plays = MutableStateFlow<List<Discovery.Play>>(emptyList())
     val plays: StateFlow<List<Discovery.Play>> = _plays.asStateFlow()
@@ -39,6 +39,12 @@ object PlayLog {
     /** Spotify listening history: merged in time order, duplicates (same song, same moment) dropped. */
     fun import(list: List<Discovery.Play>) {
         _plays.value = (_plays.value + list).distinctBy { Triple(it.artist, it.title, it.atMs / 60_000) }.sortedBy { it.atMs }.takeLast(MAX)
+        write()
+    }
+
+    /** History after syncing with your PC. */
+    fun replace(list: List<Discovery.Play>) {
+        _plays.value = list.sortedBy { it.atMs }.takeLast(MAX)
         write()
     }
 

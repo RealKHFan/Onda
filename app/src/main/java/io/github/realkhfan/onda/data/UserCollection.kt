@@ -85,6 +85,16 @@ object UserCollection {
         write()
     }
 
+    /** After syncing with your PC; songs hidden from your library here stay as they are. */
+    fun fromSync(followed: List<RemoteArtist>, albums: List<RemoteAlbum>, notInterested: List<String>, blocked: List<String>, ai: List<String>) {
+        _followed.value = followed
+        _albums.value = albums
+        _hidden.value = _hidden.value.filter(::isLibraryKey).toSet() + notInterested
+        _blocked.value = blocked.toSet()
+        _aiMarked.value = ai.toSet()
+        write()
+    }
+
     private fun read() {
         val f = file ?: return
         if (!f.exists()) return

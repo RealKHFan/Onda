@@ -60,6 +60,7 @@ fun main(args: Array<String>) {
                     p.resumeAt = { state.resumeAt(it.id) }; p.onLeave = { item, pos, dur -> state.leftAt(item.id, pos, dur) }
                     state.settings.output?.let { o -> if (Outputs.list().any { it.name == o }) p.setOutput(o) } }
         }
+        remember { Link.player = player; Link.load(state); 0 } // the phone link, if you turned it on
         val mpris = remember { arrayOfNulls<Mpris>(1) }
         val appIcon = remember {
             androidx.compose.ui.graphics.painter.BitmapPainter(org.jetbrains.skia.Image.makeFromEncoded(

@@ -51,24 +51,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.AddCircleOutline
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -501,35 +497,6 @@ private fun SeekBar(frac: Float, onSeeking: (Float) -> Unit, onSeekDone: (Float)
         drawLine(Color.White.copy(alpha = 0.3f), Offset(0f, y), Offset(size.width, y), stroke, StrokeCap.Round)
         drawLine(Color.White, Offset(0f, y), Offset(size.width * f, y), stroke, StrokeCap.Round)
         drawCircle(Color.White, radius = (if (dragging) 8.dp else 6.dp).toPx(), center = Offset(size.width * f, y))
-    }
-}
-
-@Composable
-internal fun DevicesSheet(onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg) {
-        Column(
-            Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text("Connect to a device", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.PhoneAndroid, null, tint = Accent)
-                Spacer(Modifier.width(16.dp))
-                Column {
-                    Text("This phone", color = Accent, fontWeight = FontWeight.SemiBold)
-                    Text("Playing here", color = TextDim, fontSize = 12.sp)
-                }
-            }
-            HorizontalDivider(color = Raised)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.Computer, null, tint = TextDim)
-                Spacer(Modifier.width(16.dp))
-                Column {
-                    Text("Onda on your PC", color = TextDim)
-                    Text("Comes with the desktop app and Wi-Fi sync", color = TextDim, fontSize = 12.sp)
-                }
-            }
-        }
     }
 }
 

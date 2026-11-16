@@ -84,6 +84,24 @@ object Overrides {
         write()
     }
 
+    /** For library sync: your edits by each song's own tags (artist and title), so the other device finds the same song. */
+    fun forSync(raw: List<Track>): Map<String, io.github.realkhfan.onda.core.LinkSync.Edit> {
+        val byId = raw.associateBy { it.id }
+        return _meta.value.mapNotNull { (id, m) ->
+            byId[id]?.let { t -> io.github.realkhfan.onda.core.LinkSync.idOf(t.artist, t.title) to io.github.realkhfan.onda.core.LinkSync.Edit(m.title, m.artist, m.album, m.cover, m.deezerId) }
+        }.toMap()
+    }
+
+    /** The synced edits on the songs found here (an edit undone on the other side is undone here); returns those for songs not here. */
+    fun fromSync(raw: List<Track>, edits: Map<String, io.github.realkhfan.onda.core.LinkSync.Edit>): Map<String, io.github.realkhfan.onda.core.LinkSync.Edit> {
+        val byName = raw.groupBy { io.github.realkhfan.onda.core.LinkSync.idOf(it.artist, it.title) }
+        val known = raw.map { it.id }.toSet()
+        val next = _meta.value.filterKeys { it !in known }.toMutableMap() // songs this device can't see right now keep theirs
+        for (t in raw) edits[io.github.realkhfan.onda.core.LinkSync.idOf(t.artist, t.title)]?.let { e -> next[t.id] = Meta(e.title, e.artist, e.album, e.cover, e.deezerId) }
+        if (next != _meta.value) { _meta.value = next; _reviewed.value = _reviewed.value + next.keys; write() }
+        return edits.filterKeys { it !in byName }
+    }
+
     fun setArtistPics(pics: Map<String, String>) {
         if (pics.isEmpty()) return
         _artistPics.value = _artistPics.value + pics
