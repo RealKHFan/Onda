@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -58,13 +59,14 @@ fun Modifier.reorderRow(s: ReorderState, index: Int, count: Int): Modifier = thi
 /** The handle; TalkBack gets "Move up" / "Move down" since it can't drag. */
 @Composable
 fun DragHandle(s: ReorderState, index: Int, count: Int, label: String, onMove: (from: Int, to: Int) -> Unit) {
+    val move by rememberUpdatedState(onMove) // the gesture outlives recompositions; a move must see the list as it is now
     Icon(
         Icons.Rounded.DragHandle, "Move $label", tint = TextDim,
         modifier = Modifier.size(48.dp).padding(12.dp)
             .semantics {
                 customActions = listOfNotNull(
-                    if (index > 0) CustomAccessibilityAction("Move up") { onMove(index, index - 1); true } else null,
-                    if (index < count - 1) CustomAccessibilityAction("Move down") { onMove(index, index + 1); true } else null,
+                    if (index > 0) CustomAccessibilityAction("Move up") { move(index, index - 1); true } else null,
+                    if (index < count - 1) CustomAccessibilityAction("Move down") { move(index, index + 1); true } else null,
                 )
             }
             .pointerInput(index, count) {
@@ -75,7 +77,7 @@ fun DragHandle(s: ReorderState, index: Int, count: Int, label: String, onMove: (
                         val from = s.dragging
                         val to = s.target(count)
                         s.dragging = -1; s.offset = 0f
-                        if (from >= 0 && to != from) onMove(from, to)
+                        if (from >= 0 && to != from) move(from, to)
                     },
                     onDragCancel = { s.dragging = -1; s.offset = 0f },
                 )

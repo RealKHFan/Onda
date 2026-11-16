@@ -1,5 +1,6 @@
 package io.github.realkhfan.onda.desktop
 
+import io.github.realkhfan.onda.core.Grouping
 import io.github.realkhfan.onda.core.LinkSync
 
 import io.github.realkhfan.onda.core.SpotifyImport
@@ -86,7 +87,7 @@ class AppState(private val scope: CoroutineScope) {
     /** Albums from your folders, newest files first. */
     val recentlyAdded by derivedStateOf {
         val added = localCache.values.associate { it.second.id to it.first }
-        io.github.realkhfan.onda.core.Grouping.albums(Overrides.apply(local, meta)).sortedByDescending { a -> a.tracks.maxOf { added[it.id] ?: 0L } }.take(14)
+        Grouping.albums(Overrides.apply(local, meta)).sortedByDescending { a -> a.tracks.maxOf { added[it.id] ?: 0L } }.take(14)
     }
 
     fun played(i: Player.Item) {
@@ -841,13 +842,16 @@ class AppState(private val scope: CoroutineScope) {
 
     /** [from] / [to] are positions as shown (songs that can't be shown right now are skipped there). */
     fun movePlaylistTrack(id: String, from: Int, to: Int) = change(collection.copy(playlists = collection.playlists.map { pl ->
-        val shown = pl.trackIds.filter { listed(it) != null }
-        if (pl.id != id || from !in shown.indices || to !in shown.indices) return@map pl
-        val ids = pl.trackIds.toMutableList()
-        val target = ids.indexOf(shown[to])
-        ids.add(target, ids.removeAt(ids.indexOf(shown[from]))) // lands where the target was; the target moves aside
-        pl.copy(trackIds = ids)
+        if (pl.id != id) pl else pl.copy(trackIds = Grouping.moved(pl.trackIds, pl.trackIds.filter { listed(it) != null }, from, to))
     }))
+
+    /** A drag in your own order of the playlists ([shown]: the ids as the sidebar lists them); pinned ones move among themselves. It syncs. */
+    fun dragPlaylist(shown: List<String>, from: Int, to: Int) {
+        val (order, pins) = Grouping.dragPlaylist(collection.playlists.map { it.id }, settings.pinned, shown, from, to)
+        if (pins != settings.pinned) update(settings.copy(pinned = pins))
+        val pos = order.withIndex().associate { it.value to it.index }
+        if (order != collection.playlists.map { it.id }) change(collection.copy(playlists = collection.playlists.sortedBy { pos[it.id] ?: Int.MAX_VALUE }))
+    }
 
     /** Keyboard shortcuts that change the page ("search", "back"); the window picks them up. */
     var navRequest by mutableStateOf<String?>(null)

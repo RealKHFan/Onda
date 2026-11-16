@@ -321,6 +321,11 @@ fun OndaApp(player: PlayerState?) {
             else -> playlists
         }.sortedBy { pinned.indexOf(it.id).let { i -> if (i < 0) Int.MAX_VALUE else i } }
     }
+    val movePlaylist: (List<String>, Int, Int) -> Unit = { shown, from, to ->
+        val (newOrder, pins) = Grouping.dragPlaylist(PlaylistStore.playlists.value.map { it.id }, pinned, shown, from, to)
+        if (pins != pinned) { pinned = pins; Prefs.setPinned(ctx, pins) }
+        PlaylistStore.setOrder(newOrder)
+    }
 
     var tab by rememberSaveable { mutableIntStateOf(0) }
     // Screens opened on top of the current tab; Back pops one (album -> artist -> search results).
@@ -644,6 +649,7 @@ fun OndaApp(player: PlayerState?) {
                             val f = playlistFolders.firstOrNull { it.id == d.id }
                             if (f == null) LaunchedEffect(Unit) { pop() }
                             else FolderScreen(f, orderedPlaylists.filter { it.folder == f.id }, playlistArt, pinned.toSet(),
+                                onMove = if (order == "Custom") movePlaylist else null,
                                 onBack = { pop() }, onOpen = { push(PlaylistRoute(it)) }, onRename = { folderEdit = f },
                                 onDelete = {
                                     val inside = playlists.filter { it.folder == f.id }.map { it.id }
@@ -834,6 +840,7 @@ fun OndaApp(player: PlayerState?) {
                                 pinned = pinned.toSet(), order = order, onOrder = { order = it; Prefs.setPlaylistOrder(ctx, it) },
                                 onImport = { importFile.launch(arrayOf("*/*")) },
                                 playlistFolders = playlistFolders, onOpenPlaylistFolder = { push(FolderRoute(it)) }, onNewPlaylistFolder = { newFolder = true },
+                                onMovePlaylist = movePlaylist,
                                 likedCount = likedShown.size, wantCount = want.size,
                                 albums = albums, artists = artists, folders = folderGroups, songs = songs,
                                 savedAlbums = savedAlbums, followed = followed,
@@ -1287,8 +1294,11 @@ internal fun LibraryScreen(
     playlistFolders: List<PlaylistStore.Folder> = emptyList(),
     onOpenPlaylistFolder: (String) -> Unit = {},
     onNewPlaylistFolder: () -> Unit = {},
+    /** A drag in the custom order ([shown]: the playlist ids as listed). */
+    onMovePlaylist: (shown: List<String>, from: Int, to: Int) -> Unit = { _, _, _ -> },
 ) {
     var chip by rememberSaveable { mutableIntStateOf(0) }
+    val reorder = rememberReorder()
     var ordering by remember { mutableStateOf(false) }
     var searching by rememberSaveable { mutableStateOf(false) }
     var q by rememberSaveable { mutableStateOf("") }
@@ -1382,8 +1392,13 @@ internal fun LibraryScreen(
                             GroupRow(f.name, "Folder · $n playlist${if (n == 1) "" else "s"}", { onOpenPlaylistFolder(f.id) }) { IconTile(Icons.Rounded.Folder, 52.dp, CardBg, TextDim) }
                         }
                         val folderIds = playlistFolders.map { it.id }.toSet()
-                        items(playlists.filter { it.folder == null || it.folder !in folderIds }, key = { it.id }) { pl ->
-                            GroupRow(pl.name, (if (pl.id in pinned) "Pinned · " else "") + "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) }) {
+                        val loose = playlists.filter { it.folder == null || it.folder !in folderIds }
+                        val movable = order == "Custom" && loose.size > 1 // in your own order, drag the handle to move one
+                        itemsIndexed(loose, key = { _, pl -> pl.id }) { i, pl ->
+                            GroupRow(pl.name, (if (pl.id in pinned) "Pinned · " else "") + "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) },
+                                modifier = if (movable) Modifier.reorderRow(reorder, i, loose.size) else Modifier,
+                                trailing = if (!movable) null else { { DragHandle(reorder, i, loose.size, pl.name) { from, to -> onMovePlaylist(loose.map { it.id }, from, to) } } },
+                            ) {
                                 Art(playlistArt(pl), 52.dp)
                             }
                         }
@@ -2109,14 +2124,19 @@ private fun SwipeTrackRow(
 }
 
 @Composable
-private fun GroupRow(title: String, subtitle: String, onClick: () -> Unit, leading: @Composable () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun GroupRow(
+    title: String, subtitle: String, onClick: () -> Unit,
+    modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null, leading: @Composable () -> Unit,
+) {
+    Row(modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp, 8.dp, if (trailing != null) 4.dp else 16.dp, 8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
         leading()
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(subtitle, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+        trailing?.invoke()
     }
 }
 

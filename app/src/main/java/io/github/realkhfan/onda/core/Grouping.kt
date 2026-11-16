@@ -37,4 +37,26 @@ object Grouping {
         tracks.groupBy { it.folderName }
             .map { (name, group) -> FolderGroup(name, songsSorted(group)) }
             .sortedBy { it.name.lowercase() }
+
+    /** A drag in a list that shows some of [all] ([shown]): [shown]`[from]` lands where [shown]`[to]` was, and that one moves aside. */
+    fun <T> moved(all: List<T>, shown: List<T>, from: Int, to: Int): List<T> {
+        if (from !in shown.indices || to !in shown.indices || from == to) return all
+        val at = all.indexOf(shown[from])
+        val target = all.indexOf(shown[to])
+        if (at < 0 || target < 0) return all
+        return all.toMutableList().apply { add(target, removeAt(at)) }
+    }
+
+    /**
+     * Your playlists' own order after a drag in [shown] (playlist ids as listed: pinned ones first). Pinned ones move among
+     * themselves (in [pins]), the rest in [order]; a drag across that line stops at it. Returns the new order and pins.
+     */
+    fun dragPlaylist(order: List<String>, pins: List<String>, shown: List<String>, from: Int, to: Int): Pair<List<String>, List<String>> {
+        val pinned = shown.count { it in pins }
+        return when {
+            from !in shown.indices -> order to pins
+            from < pinned -> order to moved(pins, shown, from, to.coerceAtMost(pinned - 1))
+            else -> moved(order, shown, from, to.coerceAtLeast(pinned)) to pins
+        }
+    }
 }

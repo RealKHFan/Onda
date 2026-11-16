@@ -443,8 +443,12 @@ private fun readQuality(ctx: Context, t: Track): String? {
 internal fun FolderScreen(
     f: PlaylistStore.Folder, playlists: List<PlaylistStore.Playlist>, playlistArt: (PlaylistStore.Playlist) -> String?, pinned: Set<String>,
     onBack: () -> Unit, onOpen: (String) -> Unit, onRename: () -> Unit, onDelete: () -> Unit,
+    /** A drag in your own order ([shown]: the ids as listed); null when another order is picked. */
+    onMove: ((shown: List<String>, from: Int, to: Int) -> Unit)? = null,
 ) {
     var open by remember { mutableStateOf(false) }
+    val reorder = rememberReorder()
+    val movable = onMove != null && playlists.size > 1
     Column(Modifier.fillMaxSize()) {
         BackTopBar(f.name, onBack) {
             Box {
@@ -459,13 +463,15 @@ internal fun FolderScreen(
             if (playlists.isEmpty()) item {
                 Text("No playlists here yet. In a playlist's ⋮ menu, choose Move to a folder.", color = TextDim, modifier = Modifier.padding(24.dp))
             }
-            items(playlists, key = { it.id }) { pl ->
-                Row(Modifier.fillMaxWidth().clickable { onOpen(pl.id) }.padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            itemsIndexed(playlists, key = { _, pl -> pl.id }) { i, pl ->
+                Row((if (movable) Modifier.reorderRow(reorder, i, playlists.size) else Modifier).fillMaxWidth().clickable { onOpen(pl.id) }
+                    .padding(16.dp, 8.dp, if (movable) 4.dp else 16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Art(playlistArt(pl), 52.dp)
-                    Column(Modifier.padding(start = 12.dp)) {
+                    Column(Modifier.padding(start = 12.dp).weight(1f)) {
                         Text(pl.name, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text((if (pl.id in pinned) "Pinned · " else "") + "Playlist · ${songCount(pl.trackIds.size)}", color = TextDim, fontSize = 12.sp)
                     }
+                    if (movable && onMove != null) DragHandle(reorder, i, playlists.size, pl.name) { from, to -> onMove(playlists.map { it.id }, from, to) }
                 }
             }
         }

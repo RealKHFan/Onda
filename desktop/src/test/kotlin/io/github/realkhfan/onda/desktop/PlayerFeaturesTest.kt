@@ -205,4 +205,17 @@ class CollectionRulesTest {
         s.deletePlaylist(pl)
     }
 
+    @Test fun draggingAPlaylistInTheSidebarMovesIt() = runBlocking {
+        val s = AppState(CoroutineScope(Dispatchers.Default))
+        val order = s.settings.playlistOrder
+        s.setPlaylistOrder("Custom")
+        val a = s.createPlaylist("Drag A"); val b = s.createPlaylist("Drag B")
+        val shown = { s.sidebarPlaylists.filter { it.folder == null }.map { it.id } }
+        val before = shown()
+        s.dragPlaylist(before, before.indexOf(b), before.indexOf(a)) // B up onto A: B takes A's place, A moves aside
+        assertEquals(listOf(b, a), shown().filter { it == a || it == b })
+        assertEquals(before.indexOf(a), shown().indexOf(b))
+        s.deletePlaylist(a); s.deletePlaylist(b); s.setPlaylistOrder(order)
+    }
+
 }

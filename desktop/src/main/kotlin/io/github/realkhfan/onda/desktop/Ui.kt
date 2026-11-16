@@ -99,6 +99,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -822,7 +823,7 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
                     Tip("Order of your playlists") { IconButton(onClick = { open = true }, Modifier.size(32.dp)) { Icon(Icons.AutoMirrored.Rounded.Sort, "Order of your playlists", tint = TextDim) } }
                     DropdownMenu(open, { open = false }, modifier = Modifier.background(Color(0xFF2E2E38))) {
                         listOf("Custom", "A–Z", "Most songs").forEach { o ->
-                            DropdownMenuItem({ Text(if (o == "Custom") "Order created" else o, color = if (state.settings.playlistOrder == o) Accent else TextMain) }, { state.setPlaylistOrder(o); open = false })
+                            DropdownMenuItem({ Text(if (o == "Custom") "Custom (drag to move)" else o, color = if (state.settings.playlistOrder == o) Accent else TextMain) }, { state.setPlaylistOrder(o); open = false })
                         }
                     }
                 }
@@ -842,8 +843,13 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
             // Pinned playlists first (newest pin on top), then the rest; right-click to pin or unpin.
             val pins = state.settings.pinned
             val folders = state.collection.folders
-            @Composable fun PlaylistEntry(pl: Store.Playlist) {
-                ContextMenuArea(items = {
+            // In your own order, drag a playlist to move it (within its folder, or among those outside one).
+            val movable = state.settings.playlistOrder == "Custom"
+            @Composable fun PlaylistEntry(pl: Store.Playlist, group: List<Store.Playlist>, reorder: ReorderState) {
+                val i = group.indexOf(pl)
+                val drag = if (!movable || group.size < 2) Modifier
+                    else Modifier.reorderRow(reorder, i, group.size).dragToMove(reorder, i, group.size) { from, to -> state.dragPlaylist(group.map { it.id }, from, to) }
+                Box(drag) { ContextMenuArea(items = {
                     buildList {
                         add(ContextMenuItem(if (pl.id in pins) "Unpin" else "Pin to the top") { state.togglePin(pl.id) })
                         folders.filter { it.id != pl.folder }.forEach { f -> add(ContextMenuItem("Move to “${f.name}”") { state.moveToFolder(pl.id, f.id) }) }
@@ -852,7 +858,7 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
                     }
                 }) {
                     Entry(View.Playlist(pl.id), pl.name, if (pl.id in pins) Icons.Rounded.PushPin else Icons.AutoMirrored.Rounded.QueueMusic)
-                }
+                } }
             }
             // Folders first, like Spotify: click to open or close; right-click to rename or delete.
             folders.forEach { f ->
@@ -873,11 +879,15 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
                     }
                 }
                 if (open) Column(Modifier.padding(start = if (compact) 0.dp else 14.dp)) {
-                    state.sidebarPlaylists.filter { it.folder == f.id }.forEach { PlaylistEntry(it) }
+                    val inside = state.sidebarPlaylists.filter { it.folder == f.id }
+                    val reorder = remember(f.id) { ReorderState() }
+                    inside.forEach { PlaylistEntry(it, inside, reorder) }
                 }
             }
             val folderIds = folders.map { it.id }.toSet()
-            state.sidebarPlaylists.filter { it.folder == null || it.folder !in folderIds }.forEach { PlaylistEntry(it) }
+            val loose = state.sidebarPlaylists.filter { it.folder == null || it.folder !in folderIds }
+            val reorder = remember { ReorderState() }
+            loose.forEach { PlaylistEntry(it, loose, reorder) }
             state.serverPlaylists.forEach { Entry(View.ServerPlaylist(it), it.name, Icons.Rounded.Dns) }
         }
         if (state.scanning || state.syncing) {
@@ -2485,22 +2495,26 @@ private fun Modifier.reorderRow(s: ReorderState, index: Int, count: Int): Modifi
 
 @Composable
 private fun DragHandle(s: ReorderState, index: Int, count: Int, label: String, onMove: (Int, Int) -> Unit) {
-    Icon(Icons.Rounded.DragHandle, "Move $label", tint = TextDim,
-        modifier = Modifier.size(40.dp).padding(8.dp)
-            .semantics {
-                customActions = listOfNotNull(
-                    if (index > 0) CustomAccessibilityAction("Move up") { onMove(index, index - 1); true } else null,
-                    if (index < count - 1) CustomAccessibilityAction("Move down") { onMove(index, index + 1); true } else null,
-                )
-            }
-            .pointerInput(index, count) {
-                detectDragGestures(
-                    onDragStart = { s.dragging = index; s.offset = 0f },
-                    onDrag = { c, d -> c.consume(); s.offset += d.y },
-                    onDragEnd = { val f = s.dragging; val t = s.target(count); s.dragging = -1; s.offset = 0f; if (f >= 0 && t != f) onMove(f, t) },
-                    onDragCancel = { s.dragging = -1; s.offset = 0f },
-                )
-            })
+    Icon(Icons.Rounded.DragHandle, "Move $label", tint = TextDim, modifier = Modifier.size(40.dp).padding(8.dp).dragToMove(s, index, count, onMove))
+}
+
+/** Drag this (a handle, or a whole row in the sidebar) to move its row; screen readers get "Move up" / "Move down". */
+@Composable
+private fun Modifier.dragToMove(s: ReorderState, index: Int, count: Int, onMove: (Int, Int) -> Unit): Modifier {
+    val move by rememberUpdatedState(onMove) // the gesture outlives recompositions; a move must see the list as it is now
+    return semantics {
+        customActions = listOfNotNull(
+            if (index > 0) CustomAccessibilityAction("Move up") { move(index, index - 1); true } else null,
+            if (index < count - 1) CustomAccessibilityAction("Move down") { move(index, index + 1); true } else null,
+        )
+    }.pointerInput(index, count) {
+        detectDragGestures(
+            onDragStart = { s.dragging = index; s.offset = 0f },
+            onDrag = { c, d -> c.consume(); s.offset += d.y },
+            onDragEnd = { val f = s.dragging; val t = s.target(count); s.dragging = -1; s.offset = 0f; if (f >= 0 && t != f) move(f, t) },
+            onDragCancel = { s.dragging = -1; s.offset = 0f },
+        )
+    }
 }
 
 /** The same for catalog songs (a free album): only those whose artist allows downloads. */

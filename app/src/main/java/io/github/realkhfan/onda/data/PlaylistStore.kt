@@ -188,6 +188,13 @@ object PlaylistStore {
         write()
     }
 
+    /** Your own order of the playlists ([ids]: all of them, as a drag left them); it syncs. */
+    fun setOrder(ids: List<String>) {
+        val pos = ids.withIndex().associate { it.value to it.index }
+        _playlists.value = _playlists.value.sortedBy { pos[it.id] ?: Int.MAX_VALUE }
+        write()
+    }
+
     fun moveInPlaylist(id: String, from: Int, to: Int) {
         _playlists.value = _playlists.value.map { pl ->
             if (pl.id != id) return@map pl
