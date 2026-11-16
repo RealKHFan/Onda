@@ -13,8 +13,8 @@ android {
         applicationId = "io.github.realkhfan.onda"
         minSdk = 26
         targetSdk = 36
-        versionCode = 27
-        versionName = "0.22.0"
+        versionCode = 28
+        versionName = "0.22.1"
     }
 
     buildFeatures {
@@ -72,6 +72,8 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-compose:3.1.0")
     // Lets Coil load (and disk-cache) web cover art; also needed for Deezer artist pictures in step 3.
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.1.0")
+    // Animated profile pictures (GIF, animated WebP).
+    implementation("io.coil-kt.coil3:coil-gif:3.1.0")
 
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
 

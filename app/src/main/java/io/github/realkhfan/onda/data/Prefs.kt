@@ -100,6 +100,10 @@ object Prefs {
     fun autoplay(ctx: Context): Boolean = p(ctx).getBoolean("autoplay", true)
     fun setAutoplay(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("autoplay", on).apply()
 
+    /** Your profile picture's file in Onda's storage (see [Profile]). */
+    fun profilePicture(ctx: Context): String? = p(ctx).getString("profile_picture", null)
+    fun setProfilePicture(ctx: Context, path: String?) = p(ctx).edit().putString("profile_picture", path).apply()
+
     /** The file Want to listen is exported to as text (a document URI you picked); asked again when it's gone. */
     fun wantFile(ctx: Context): String? = p(ctx).getString("want_file", null)
     fun setWantFile(ctx: Context, uri: String?) = p(ctx).edit().putString("want_file", uri).apply()

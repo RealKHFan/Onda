@@ -27,6 +27,7 @@ object AppData {
         Loudness.load(c)
         Resume.load(c)
         Link.load(c)
+        Profile.load(c)
     }
 
     /** Your library as shown: files and server songs (a local copy wins), with accepted matches applied. */

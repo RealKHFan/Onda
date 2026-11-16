@@ -34,6 +34,8 @@ object Store {
         val apple: Boolean = false, val listenBrainz: Boolean = true, val backupDir: String? = null,
         /** [copyDir]: new songs are copied there every 30 minutes (for your own backup); [wantFile]: where Want to listen is exported as text. */
         val copyDir: String? = null, val wantFile: String? = null,
+        /** Your profile picture: a copy (photo or GIF) in Onda's data folder. */
+        val picture: String? = null,
         /** Every song at about the same loudness (measured once per song). */
         val normalize: Boolean = true,
         /** Equalizer gains (10 bands, dB) and the preset they came from. */
@@ -67,7 +69,7 @@ object Store {
             releaseAlerts = o.optBoolean("releaseAlerts", true),
             apple = o.optBoolean("apple", false), listenBrainz = o.optBoolean("listenBrainz", true),
             backupDir = o.optString("backupDir").ifBlank { null }, copyDir = o.optString("copyDir").ifBlank { null },
-            wantFile = o.optString("wantFile").ifBlank { null }, normalize = o.optBoolean("normalize", true),
+            wantFile = o.optString("wantFile").ifBlank { null }, picture = o.optString("picture").ifBlank { null }, normalize = o.optBoolean("normalize", true),
             eq = o.optJSONArray("eq")?.let { a -> List(10) { a.optDouble(it, 0.0) } } ?: List(10) { 0.0 }, eqPreset = o.optString("eqPreset", "Flat"),
             software = o.optBoolean("software"), songNotify = o.optBoolean("songNotify"),
             zoom = o.optDouble("zoom", 1.0).toFloat().coerceIn(0.7f, 1.6f),
@@ -86,7 +88,7 @@ object Store {
     fun save(s: Settings) = write("settings.json", JSONObject()
         .put("folders", JSONArray(s.folders)).put("kbps", s.kbps).put("volume", s.volume)
         .put("autoplay", s.autoplay).put("background", s.background).put("releaseAlerts", s.releaseAlerts)
-        .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir).put("copyDir", s.copyDir).put("wantFile", s.wantFile).put("normalize", s.normalize)
+        .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir).put("copyDir", s.copyDir).put("wantFile", s.wantFile).put("picture", s.picture).put("normalize", s.normalize)
         .put("eq", org.json.JSONArray(s.eq)).put("eqPreset", s.eqPreset).put("software", s.software).put("songNotify", s.songNotify).put("zoom", s.zoom.toDouble())
         .put("gapless", s.gapless).put("crossfade", s.crossfade).put("pinned", org.json.JSONArray(s.pinned)).put("searches", org.json.JSONArray(s.searches))
         .put("albumGain", s.albumGain).put("output", s.output).put("window", org.json.JSONArray(s.window)).put("maximized", s.maximized)

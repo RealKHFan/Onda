@@ -1697,6 +1697,9 @@ internal fun SettingsScreen(
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         BackTopBar("Settings", onBack)
         Column(Modifier.padding(20.dp, 0.dp, 20.dp, 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            SectionLabel("Profile picture", Modifier.padding(0.dp))
+            ProfileSettings()
+            Spacer(Modifier.height(4.dp))
             SectionLabel("Music folders", Modifier.padding(0.dp))
             folders.forEach { uri ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1934,7 +1937,11 @@ internal fun SettingsScreen(
 private fun DrawerSheet(onSettings: () -> Unit, onStats: () -> Unit, onHistory: () -> Unit, onDuplicates: () -> Unit) {
     ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.55f), drawerContainerColor = CardBg) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Onda", color = Accent, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.padding(bottom = 12.dp))
+            Row(Modifier.padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                ProfilePic(40.dp)
+                Spacer(Modifier.width(12.dp))
+                Text("Onda", color = Accent, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+            }
             listOf(Triple("Settings", Icons.Rounded.Settings, onSettings), Triple("Your stats", Icons.Rounded.BarChart, onStats),
                 Triple("History", Icons.Rounded.History, onHistory), Triple("Duplicates", Icons.Rounded.ContentCopy, onDuplicates)).forEach { (label, icon, go) ->
                 Row(Modifier.fillMaxWidth().clickable(onClick = go).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1970,10 +1977,7 @@ internal fun BackTopBar(title: String, onBack: () -> Unit, actions: @Composable 
 
 @Composable
 private fun Avatar(onClick: () -> Unit) {
-    Box(
-        Modifier.size(34.dp).clip(CircleShape).background(Accent).clickable(onClickLabel = "Open menu", onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) { Text("R", color = Color(0xFF141018), fontWeight = FontWeight.Bold) }
+    ProfilePic(34.dp, Modifier.clip(CircleShape).clickable(onClickLabel = "Open menu", onClick = onClick))
 }
 
 @Composable

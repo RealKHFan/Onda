@@ -147,7 +147,9 @@ object Link {
         syncing.value = true
         try {
             repeat(3) {
-                val got = call("/v1/sync/get", timeoutMs = 30_000)?.takeIf { it.status == 200 }?.json ?: return done("Couldn't reach ${_pc.value?.name ?: "your PC"}.")
+                val reply = call("/v1/sync/get", timeoutMs = 30_000) ?: return done("Couldn't reach ${_pc.value?.name ?: "your PC"}.")
+                if (reply.status == 423) return done("${_pc.value?.name ?: "Your PC"} is still scanning its music. Try again in a moment.")
+                val got = reply.takeIf { it.status == 200 }?.json ?: return done("Couldn't reach ${_pc.value?.name ?: "your PC"}.")
                 val stored = withContext(Dispatchers.IO) { runCatching { JSONObject(File(dir, "link-base.json").readText()) }.getOrNull() }
                 val base = stored?.optJSONObject("base")?.let(LinkSync::fromJson)
                 val known = HashMap(LinkSync.songsFromJson(stored?.optJSONObject("known")))
@@ -158,8 +160,10 @@ object Link {
                 val put = call("/v1/sync/put", JSONObject().put("version", got.getString("version")).put("snapshot", LinkSync.toJson(merged)), 30_000)
                     ?: return done("Couldn't reach ${_pc.value?.name ?: "your PC"}.")
                 if (put.status == 409) return@repeat // changed on the PC meanwhile: merge again
+                if (put.status == 423) return done("${_pc.value?.name ?: "Your PC"} is still scanning its music. Try again in a moment.")
                 if (put.status != 200) return done("The PC refused the sync (${put.status}).")
                 apply(merged, known)
+                Overrides.synced()
                 withContext(Dispatchers.IO) {
                     val f = File(dir, "link-base.json")
                     File(f.path + ".tmp").apply { writeText(JSONObject().put("base", LinkSync.toJson(merged)).put("known", LinkSync.songsToJson(known)).toString()) }.renameTo(f)
@@ -184,7 +188,6 @@ object Link {
         val raw = raw()
         val shown = AppData.everyTrack(MusicLibrary.tracks.value, AppData.serverTracks(), Overrides.meta.value)
         val lib = LinkSync.Library(shown, raw, PlaylistStore.remote.value, known)
-        val here = raw.map { LinkSync.idOf(it.artist, it.title) }.toSet()
         return LinkSync.Snapshot(
             playlists = PlaylistStore.playlists.value.map { p ->
                 LinkSync.Playlist(p.id, p.name, p.description, p.trackIds.mapNotNull(lib::song), p.cover?.let(::coverHash), p.folder)
@@ -196,8 +199,8 @@ object Link {
             notInterested = UserCollection.hidden.value.filter { Source.of(it) != null },
             blocked = UserCollection.blocked.value.toList(), ai = UserCollection.aiMarked.value.toList(),
             plays = PlayLog.plays.value.map { it.copy(key = it.key.takeIf { k -> Source.of(k) != null }.orEmpty()) },
-            // Edits for songs this phone doesn't have stay as they were agreed last time.
-            edits = base?.edits.orEmpty().filterKeys { it !in here } + Overrides.forSync(raw),
+            // Agreed last time plus yours; only a restore here removes one (a song missing its edit for a moment keeps it).
+            edits = Overrides.forSync(raw, base?.edits.orEmpty()),
         ).also { known += lib.learned }
     }
 

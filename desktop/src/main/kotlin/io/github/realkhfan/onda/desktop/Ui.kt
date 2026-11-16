@@ -799,15 +799,15 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
     Column(Modifier.width(if (compact) 68.dp else 240.dp).fillMaxHeight().background(Side).padding(12.dp)) {
         if (!compact) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)) {
             // Settings live behind your avatar, like on the phone.
-            IconButton(onClick = { go(View.Settings) }, Modifier.size(36.dp).clip(CircleShape).background(if (top == View.Settings) Accent else Raised)) {
-                Icon(Icons.Rounded.Person, "Settings", tint = if (top == View.Settings) Color.Black else TextMain)
-            }
+            Tip("Settings") { IconButton(onClick = { go(View.Settings) }, Modifier.size(36.dp).clip(CircleShape)) {
+                ProfilePic(state.settings.picture, 36.dp, highlighted = top == View.Settings)
+            } }
             Spacer(Modifier.width(10.dp))
             Text("Onda", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f))
             Tip("Smaller sidebar (Ctrl+B)") { IconButton(onClick = { state.setCompact(true) }, Modifier.size(32.dp)) { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowLeft, "Smaller sidebar", tint = TextDim) } }
         } else Column(Modifier.padding(bottom = 12.dp)) {
-            Tip("Settings") { IconButton(onClick = { go(View.Settings) }, Modifier.size(36.dp).clip(CircleShape).background(if (top == View.Settings) Accent else Raised)) {
-                Icon(Icons.Rounded.Person, "Settings", tint = if (top == View.Settings) Color.Black else TextMain) } }
+            Tip("Settings") { IconButton(onClick = { go(View.Settings) }, Modifier.size(36.dp).clip(CircleShape)) {
+                ProfilePic(state.settings.picture, 36.dp, highlighted = top == View.Settings) } }
             Tip("Wider sidebar (Ctrl+B)") { IconButton(onClick = { state.setCompact(false) }, Modifier.size(36.dp)) { Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, "Wider sidebar", tint = TextDim) } }
         }
         Entry(View.Home, "Home", Icons.Rounded.Home, big = true)
@@ -1455,6 +1455,30 @@ private fun SettingsPage(ctx: Ctx) {
     var folderNote by remember { mutableStateOf<String?>(null) }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Header("Settings", "Onda for Linux · no account, no tracking") }
+        item { Section("Profile picture") }
+        item {
+            var note by remember { mutableStateOf<String?>(null) }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                ProfilePic(state.settings.picture, 64.dp)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("A photo or a GIF; a GIF keeps playing while Onda's window is the active one.", color = TextDim, fontSize = 13.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            scope.launch {
+                                when (val r = FolderPicker.file(false, System.getProperty("user.home") + "/Pictures", "Profile picture")) {
+                                    is FolderPicker.Result.Picked -> note = if (state.setPicture(File(r.path))) null else "Pick a JPG, PNG, WebP or GIF up to 20 MB."
+                                    FolderPicker.Result.NoPicker -> note = "No file picker found on this system."
+                                    FolderPicker.Result.Cancelled -> {}
+                                    is FolderPicker.Result.Remote -> note = r.message
+                                }
+                            }
+                        }) { Text(if (state.settings.picture == null) "Choose" else "Change", color = TextMain) }
+                        if (state.settings.picture != null) TextButton(onClick = { note = null; state.setPicture(null) }) { Text("Remove", color = TextDim) }
+                    }
+                    note?.let { Text(it, color = ErrorRed, fontSize = 13.sp) }
+                }
+            }
+        }
         item { Section("Music folders") }
         items(state.settings.folders) { f ->
             Row(verticalAlignment = Alignment.CenterVertically) {

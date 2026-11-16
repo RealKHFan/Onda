@@ -549,7 +549,7 @@ class AppState(private val scope: CoroutineScope) {
     /** Your files and server songs with their own tags (no edits). */
     val rawTracks: List<Track> get() = serverTracks + local
 
-    /** Your collection as the phone can read it ([foreign]: edits for songs this PC doesn't have, kept from last time). */
+    /** Your collection as the phone can read it ([foreign]: the edits agreed last time; only a restore here removes one). */
     fun linkSnapshot(foreign: Map<String, LinkSync.Edit>, known: MutableMap<String, LinkSync.Song>): LinkSync.Snapshot {
         val c = collection
         val lib = LinkSync.Library(byId.values.toList(), rawTracks, c.remote.associateBy { it.key }, known)
@@ -560,7 +560,7 @@ class AppState(private val scope: CoroutineScope) {
             want = c.want, catalog = c.remote, followed = c.followed, albums = c.albums,
             notInterested = c.hidden.filter { Source.of(it) != null }, blocked = c.blocked, ai = c.ai,
             plays = plays.map { it.copy(key = it.key.takeIf { k -> Source.of(k) != null }.orEmpty()) },
-            edits = foreign + Overrides.forSync(rawTracks),
+            edits = Overrides.forSync(rawTracks, foreign),
         ).also { known += lib.learned }
     }
 
@@ -608,6 +608,8 @@ class AppState(private val scope: CoroutineScope) {
             val found = withContext(Dispatchers.IO) { Scanner.scan(settings.folders, localCache).also(Store::saveLocal) }
             localCache = found
             local = found.values.map { it.second }
+            // Edits on songs whose file moved (a folder renamed or moved) follow them by file name.
+            Overrides.relink(local)
         } finally {
             scanning = false
         }
@@ -712,6 +714,22 @@ class AppState(private val scope: CoroutineScope) {
         java.nio.file.Files.copy(f.toPath(), part.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         part.setLastModified(f.lastModified())
         java.nio.file.Files.move(part.toPath(), out.toPath())
+        return true
+    }
+
+    /**
+     * Your profile picture: a copy of [from] (JPG, PNG, WebP or GIF, up to 20 MB) in Onda's data folder, or none. False when
+     * the file isn't a picture Onda can show.
+     */
+    fun setPicture(from: java.io.File?): Boolean {
+        val old = settings.picture?.let { java.io.File(it) }
+        if (from == null) { old?.delete(); update(settings.copy(picture = null)); return true }
+        if (from.extension.lowercase() !in setOf("jpg", "jpeg", "png", "webp", "gif") || from.length() !in 1..20L * 1024 * 1024) return false
+        val bytes = runCatching { from.readBytes() }.getOrNull() ?: return false
+        if (runCatching { org.jetbrains.skia.Codec.makeFromData(org.jetbrains.skia.Data.makeFromBytes(bytes)).frameCount }.getOrDefault(0) < 1) return false
+        val copy = java.io.File(Store.data, "profile-${System.currentTimeMillis()}.${from.extension.lowercase()}").apply { writeBytes(bytes) }
+        old?.delete()
+        update(settings.copy(picture = copy.path))
         return true
     }
 

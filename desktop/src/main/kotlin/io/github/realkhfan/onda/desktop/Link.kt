@@ -8,6 +8,7 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import io.github.realkhfan.onda.core.LinkCrypto
 import io.github.realkhfan.onda.core.LinkSync
+import io.github.realkhfan.onda.data.Overrides
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -41,6 +42,7 @@ object Link {
     var seen by mutableStateOf<Map<String, Long>>(emptyMap()); private set
     var lastSync by mutableLongStateOf(0L); private set
     private var pcId = UUID.randomUUID().toString()
+    /** The edits agreed at the last sync (by each song's own tags); kept in link.json as "foreign". */
     private var foreignEdits: Map<String, LinkSync.Edit> = emptyMap()
     private val known = HashMap<String, LinkSync.Song>()
     private var codeUntil = 0L
@@ -220,19 +222,30 @@ object Link {
         runBlocking(Dispatchers.Swing) { seen = seen + (phone.id to System.currentTimeMillis()) }
         val res: Any = when (path) {
             "/v1/hello" -> JSONObject().put("name", name).put("pc", pcId)
+            // Not while the music is being scanned: songs could look gone for a moment.
             "/v1/sync/get" -> runBlocking(Dispatchers.Swing) {
+                if (state.scanning) return@runBlocking null
                 val snap = LinkSync.toJson(state.linkSnapshot(foreignEdits, known))
                 JSONObject().put("version", version(snap)).put("snapshot", snap)
-            }
-            "/v1/sync/put" -> runBlocking(Dispatchers.Swing) {
-                // Changed here since the phone looked: it merges again.
-                if (req.optString("version") != version(LinkSync.toJson(state.linkSnapshot(foreignEdits, known)))) return@runBlocking null
-                foreignEdits = state.applyLink(LinkSync.fromJson(req.getJSONObject("snapshot")), known)
-                told = state.linkFingerprint() // what came from the phone isn't news for it
-                lastSync = System.currentTimeMillis()
-                save()
+            } ?: return ex.sendResponseHeaders(423, -1)
+            "/v1/sync/put" -> {
+                val status = runBlocking(Dispatchers.Swing) {
+                    if (state.scanning) return@runBlocking 423
+                    // Changed here since the phone looked: it merges again.
+                    if (req.optString("version") != version(LinkSync.toJson(state.linkSnapshot(foreignEdits, known)))) return@runBlocking 409
+                    val merged = LinkSync.fromJson(req.getJSONObject("snapshot"))
+                    state.applyLink(merged, known)
+                    // All edits agreed now (not only those for songs this PC doesn't have): one missing here later keeps it.
+                    foreignEdits = merged.edits
+                    Overrides.synced()
+                    told = state.linkFingerprint() // what came from the phone isn't news for it
+                    lastSync = System.currentTimeMillis()
+                    save()
+                    200
+                }
+                if (status != 200) return ex.sendResponseHeaders(status, -1)
                 JSONObject().put("ok", true)
-            } ?: return ex.sendResponseHeaders(409, -1)
+            }
             "/v1/player/state" -> runBlocking(Dispatchers.Swing) { playerState() }
             "/v1/player/cmd" -> runBlocking(Dispatchers.Swing) { notPlaying(phone); command(req); playerState() }
             "/v1/player/play" -> runBlocking(Dispatchers.Swing) {

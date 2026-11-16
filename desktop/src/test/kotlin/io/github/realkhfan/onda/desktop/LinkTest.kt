@@ -165,4 +165,32 @@ class LinkTest {
             state.local = before
         }
     }
+
+    /** An edit only goes away by "Restore original tags": a song missing it for a moment (not loaded yet, renamed) keeps it. */
+    @Test fun anEditIsOnlyRemovedByARestore() = runBlocking(Dispatchers.Swing) {
+        val state = AppState(CoroutineScope(Dispatchers.Swing))
+        val before = state.local
+        val id = "file:/tmp/onda-edit-keep-test.mp3"
+        val mine = io.github.realkhfan.onda.core.Track(id, id, "tides demo", "lumen trio", "", "lumen trio", 0, 200_000, "audio/mpeg", null, "onda-edit-keep-test.mp3")
+        val key = LinkSync.idOf(mine.artist, mine.title)
+        val ov = io.github.realkhfan.onda.data.Overrides
+        try {
+            state.local = before + mine
+            ov.edit(mine, "Tides", "Lumen Trio", "Sea")
+            val agreed = state.linkSnapshot(emptyMap(), HashMap()).edits
+            // The edit is missing here for a moment (as if it hadn't loaded): it's still sent as agreed, so nothing is lost.
+            ov.migrateIds(mapOf(id to "file:/tmp/somewhere-else.mp3"))
+            assertEquals("Tides", state.linkSnapshot(agreed, HashMap()).edits[key]?.title)
+            ov.migrateIds(mapOf("file:/tmp/somewhere-else.mp3" to id))
+            // Restored on purpose: then it's left out, so the phone restores it too.
+            ov.restore(id)
+            assertEquals(null, state.linkSnapshot(agreed, HashMap()).edits[key])
+            // Once a sync took that in, the agreed edits no longer have it either.
+            ov.synced()
+            assertEquals(null, state.linkSnapshot(agreed - key, HashMap()).edits[key])
+        } finally {
+            ov.restore(id); ov.synced()
+            state.local = before
+        }
+    }
 }

@@ -29,6 +29,9 @@ object Overrides {
     private val _artistPics = MutableStateFlow<Map<String, String>>(emptyMap())
     val artistPics: StateFlow<Map<String, String>> = _artistPics.asStateFlow()
 
+    /** Songs whose original tags you restored since the last sync: only these lose their edit on the other device too. */
+    private val _restored = MutableStateFlow<Set<String>>(emptySet())
+
     private var file: File? = null
 
     /** [dir]: the app's own storage (the phone's files folder, the desktop's data folder). */
@@ -49,6 +52,7 @@ object Overrides {
         // Only a Deezer id is kept: it makes the song's link; an Apple id there would point to another song.
         _meta.value = _meta.value + (local.id to Meta(r.title, r.artist, r.album.ifBlank { local.album }, r.cover, if (r.source == Source.DEEZER) r.id else 0))
         _reviewed.value = _reviewed.value + local.id
+        _restored.value = _restored.value - local.id
         val key = r.artist.lowercase()
         if (r.artistPicture != null && _artistPics.value[key].isNullOrBlank()) {
             _artistPics.value = _artistPics.value + (key to r.artistPicture)
@@ -62,6 +66,7 @@ object Overrides {
         _meta.value = _meta.value + (t.id to Meta(title.trim().ifEmpty { t.title }, artist.trim().ifEmpty { t.artist },
             album.trim().ifEmpty { t.album }, cover ?: old?.cover, old?.deezerId ?: 0))
         _reviewed.value = _reviewed.value + t.id
+        _restored.value = _restored.value - t.id
         write()
     }
 
@@ -76,11 +81,49 @@ object Overrides {
         if (map.isEmpty()) return
         _meta.value = _meta.value.mapKeys { (k, _) -> map[k] ?: k }
         _reviewed.value = _reviewed.value.map { map[it] ?: it }.toSet()
+        _restored.value = _restored.value.map { map[it] ?: it }.toSet()
         write()
     }
 
+    /**
+     * Edits whose song file moved (a new path is a new id) follow it by file name: only when exactly one song here has
+     * that name and no edit of its own. Call after a full scan. Returns how many moved.
+     */
+    fun relink(raw: List<Track>): Int {
+        val ids = raw.mapTo(HashSet()) { it.id }
+        val lost = _meta.value.keys.filter { it !in ids }.mapNotNull { id -> fileNameOf(id)?.let { id to it.lowercase() } }
+        if (lost.isEmpty()) return 0
+        val free = raw.filter { it.id !in _meta.value && it.fileName.isNotBlank() }.groupBy { it.fileName.lowercase() }
+        val moves = lost.mapNotNull { (id, name) -> free[name]?.singleOrNull()?.let { id to it.id } }
+            .groupBy({ it.second }, { it.first }).filter { it.value.size == 1 }.map { (to, from) -> from.single() to to }.toMap()
+        migrateIds(moves)
+        return moves.size
+    }
+
+    /** The file name in a file or document id ("file:/…/Tides.mp3", "content://…/document/primary%3AMusic%2FTides.mp3"). */
+    private fun fileNameOf(id: String): String? =
+        if (!id.startsWith("file:") && !id.startsWith("content:")) null
+        else runCatching { java.net.URI(id).path?.substringAfterLast('/')?.takeIf { '.' in it } }.getOrNull()
+
     fun restore(trackId: String) {
         _meta.value = _meta.value - trackId
+        _restored.value = _restored.value + trackId
+        write()
+    }
+
+    /**
+     * The edits to sync: those agreed last time ([agreed]) and yours here, minus the songs you restored. A song merely
+     * missing an edit here (not loaded yet, renamed, scanned again) keeps it; only "Restore original tags" removes it.
+     */
+    fun forSync(raw: List<Track>, agreed: Map<String, io.github.realkhfan.onda.core.LinkSync.Edit>): Map<String, io.github.realkhfan.onda.core.LinkSync.Edit> {
+        val restored = raw.filter { it.id in _restored.value }.map { io.github.realkhfan.onda.core.LinkSync.idOf(it.artist, it.title) }.toSet()
+        return agreed.filterKeys { it !in restored } + forSync(raw)
+    }
+
+    /** After a sync took in your restores, they're news no more. */
+    fun synced() {
+        if (_restored.value.isEmpty()) return
+        _restored.value = emptySet()
         write()
     }
 
@@ -121,6 +164,8 @@ object Overrides {
             }
             val rv = root.optJSONArray("reviewed") ?: JSONArray()
             _reviewed.value = (0 until rv.length()).map { rv.getString(it) }.toSet()
+            val rs = root.optJSONArray("restored") ?: JSONArray()
+            _restored.value = (0 until rs.length()).map { rs.getString(it) }.toSet()
             val ap = root.optJSONObject("artistPics") ?: JSONObject()
             _artistPics.value = ap.keys().asSequence().associateWith { ap.getString(it) }
         } catch (_: Throwable) {
@@ -142,6 +187,7 @@ object Overrides {
             val root = JSONObject()
                 .put("meta", m)
                 .put("reviewed", JSONArray(_reviewed.value.toList()))
+                .put("restored", JSONArray(_restored.value.toList()))
                 .put("artistPics", ap)
             // Temp file + rename, so a crash mid-write never leaves a half-written file.
             val tmp = File(f.path + ".tmp")

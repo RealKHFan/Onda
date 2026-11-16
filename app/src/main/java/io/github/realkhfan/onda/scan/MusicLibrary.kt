@@ -70,6 +70,8 @@ object MusicLibrary {
         try {
             val trees = stored(context).map { Uri.parse(it) }
             _tracks.value = LocalScanner.scan(context, trees)
+            // Edits on songs whose file moved (another folder picked, files renamed) follow them by file name.
+            io.github.realkhfan.onda.data.Overrides.relink(_tracks.value)
         } finally {
             _scanning.value = false
         }
