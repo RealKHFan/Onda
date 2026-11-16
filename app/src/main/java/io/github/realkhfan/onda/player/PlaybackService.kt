@@ -18,6 +18,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import io.github.realkhfan.onda.data.AppData
+import io.github.realkhfan.onda.data.Loudness
+import io.github.realkhfan.onda.data.Resume
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -56,12 +58,46 @@ class PlaybackService : MediaLibraryService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
         player.addListener(object : Player.Listener {
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = extendIfEnding(player)
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                // Leaving a long song: remember where (a song that ended by itself starts over next time).
+                lastId?.let { id -> if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) Resume.left(id, 0, lastDur) else Resume.left(id, lastPos, lastDur) }
+                lastId = mediaItem?.mediaId; lastPos = 0; lastDur = 0
+                mediaItem?.mediaId?.let { id -> Resume.at(id).takeIf { it > 0 }?.let { player.seekTo(it) } }
+                levelFor(mediaItem?.mediaId)
+                extendIfEnding(player)
+            }
             override fun onAudioSessionIdChanged(audioSessionId: Int) = Effects.attach(audioSessionId)
+            override fun onIsPlayingChanged(isPlaying: Boolean) { if (!isPlaying) remember(player) }
         })
+        Effects.setVolume = { v -> player.volume = v }
+        Effects.normalize = Prefs.normalize(this)
         Effects.apply(io.github.realkhfan.onda.data.Prefs.eq(this))
         Effects.attach(player.audioSessionId)
         session = MediaLibrarySession.Builder(this, player, AutoLibrary(this, scope)).build()
+        Effects.refresh = { levelFor(player.currentMediaItem?.mediaId) }
+        // Where a long song is, every 10 s, so it's known even if Onda is closed while playing.
+        scope.launch { while (true) { kotlinx.coroutines.delay(10_000); if (player.isPlaying) remember(player) } }
+    }
+
+    private var lastId: String? = null
+    private var lastPos = 0L
+    private var lastDur = 0L
+
+    private fun remember(p: Player) {
+        if (p.duration < 20 * 60_000) return
+        lastPos = p.currentPosition; lastDur = p.duration
+        p.currentMediaItem?.mediaId?.let { Resume.left(it, lastPos, lastDur) }
+    }
+
+    /** The song's loudness level (or its album's, if that setting is on). */
+    private fun levelFor(id: String?) {
+        Effects.normalize = Prefs.normalize(this)
+        if (!Effects.normalize) return
+        val album = if (id == null || !Prefs.albumGain(this)) emptyList() else {
+            val lib = AppData.library(MusicLibrary.tracks.value, AppData.serverTracks(), Overrides.meta.value)
+            lib.firstOrNull { it.id == id }?.let { t -> lib.filter { it.albumKey == t.albumKey }.map { it.id } }.orEmpty()
+        }
+        Effects.songGainDb = Loudness.gainDb(id, album)
     }
 
     private var extending = false

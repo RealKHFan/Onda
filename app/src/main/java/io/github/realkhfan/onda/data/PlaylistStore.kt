@@ -40,6 +40,13 @@ object PlaylistStore {
         write()
     }
 
+    /** Songs that are in your library now leave Want to listen. */
+    fun removeWant(list: List<RemoteTrack>) {
+        val gone = list.map { it.key }.toSet()
+        _want.value = _want.value.filterNot { it.key in gone }
+        write()
+    }
+
     /* Spotify import: add without toggling, never remove. */
 
     fun addWant(list: List<RemoteTrack>) {

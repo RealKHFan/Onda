@@ -30,6 +30,7 @@ import io.github.realkhfan.onda.data.PlaylistStore
 import io.github.realkhfan.onda.data.Mixes
 import io.github.realkhfan.onda.data.PlayLog
 import io.github.realkhfan.onda.data.Server
+import io.github.realkhfan.onda.player.OpenWith
 import io.github.realkhfan.onda.player.PlaybackService
 import io.github.realkhfan.onda.player.PlayerState
 import io.github.realkhfan.onda.scan.MusicLibrary
@@ -57,6 +58,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         openReleaseFrom(intent)
+        OpenWith.from(this, intent)
     }
 
     /** A tapped release notification carries the album id; the app opens that album page. */
@@ -76,6 +78,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) { Backup.autoIfDue(applicationContext) }
         if (Prefs.releaseAlerts(this)) ReleaseJob.schedule(this)
         openReleaseFrom(intent)
+        OpenWith.from(this, intent)
         if (savedInstanceState == null) Server.sync() // refresh the server's song list once per app start
         LibraryActions.removeFolder = { uriString -> MusicLibrary.removeFolder(this, uriString) }
         LibraryActions.addFolder = { folderPicker.launch(null) }

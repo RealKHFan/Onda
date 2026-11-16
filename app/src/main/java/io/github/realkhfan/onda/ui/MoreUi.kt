@@ -34,7 +34,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.async
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -244,5 +248,190 @@ internal fun java.io.InputStream.readUpTo(max: Int): ByteArray? {
         if (n < 0) return out.toByteArray()
         out.write(buf, 0, n)
         if (out.size() > max) return null
+    }
+}
+
+/* ---------------- batch 3 ---------------- */
+
+/** Title, artist and album by hand, or from the right song found online (its cover too). The file isn't changed. */
+@Composable
+internal fun EditDetailsDialog(t: Track, apple: Boolean, onDismiss: () -> Unit) {
+    var title by remember { mutableStateOf(t.title) }
+    var artist by remember { mutableStateOf(t.artist) }
+    var album by remember { mutableStateOf(t.album) }
+    var picked by remember { mutableStateOf<RemoteTrack?>(null) }
+    var q by remember { mutableStateOf(io.github.realkhfan.onda.core.MetaMatch.query(t)) }
+    var results by remember { mutableStateOf<List<RemoteTrack>?>(null) }
+    var round by remember { mutableIntStateOf(0) }
+    LaunchedEffect(round) {
+        if (q.isBlank()) return@LaunchedEffect
+        results = null
+        results = kotlinx.coroutines.coroutineScope {
+            val dz = async { runCatching { io.github.realkhfan.onda.data.Deezer.search(q, 15) }.getOrDefault(emptyList()) }
+            val ap = async { if (apple) runCatching { io.github.realkhfan.onda.data.Itunes.searchSongs(q) }.getOrDefault(emptyList()) else emptyList() }
+            io.github.realkhfan.onda.core.Match.mergeTracks(dz.await(), ap.await())
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit details") },
+        text = {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                item { OutlinedTextField(title, { title = it }, singleLine = true, label = { Text("Title") }, modifier = Modifier.fillMaxWidth()) }
+                item { OutlinedTextField(artist, { artist = it }, singleLine = true, label = { Text("Artist") }, modifier = Modifier.fillMaxWidth()) }
+                item { OutlinedTextField(album, { album = it }, singleLine = true, label = { Text("Album") }, modifier = Modifier.fillMaxWidth()) }
+                item { Text("Shown in Onda; the file isn't changed. ⋮ → Restore original tags undoes it.", color = TextDim, fontSize = 12.sp) }
+                item {
+                    OutlinedTextField(q, { q = it }, singleLine = true, label = { Text("Find the song online") }, modifier = Modifier.fillMaxWidth(),
+                        trailingIcon = { TextButton(onClick = { round++ }) { Text("Search", color = Accent) } })
+                }
+                item {
+                    Text((if (results == null) "Searching… " else "Tap the right song to fill in its details and cover.") +
+                        if (t.durationMs > 0) " Your file: ${mmss(t.durationMs)}." else "", color = TextDim, fontSize = 12.sp)
+                }
+                if (results?.isEmpty() == true) item { Text("Nothing found. Try other words.", color = TextDim) }
+                items(results.orEmpty()) { r ->
+                    Row(
+                        Modifier.fillMaxWidth().background(if (picked == r) Raised else Color.Transparent)
+                            .clickable { picked = r; title = r.title; artist = r.artist; album = r.album.ifBlank { album } }.padding(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Art(r.cover, 40.dp)
+                        Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                            Text(r.title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${r.artist} · ${r.album}", color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        // The length tells versions apart (radio edit, extended, live).
+                        Text(mmss(r.durationSec * 1000L), color = TextDim, fontSize = 12.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val p = picked
+                if (p != null && p.title == title && p.artist == artist && (p.album.isBlank() || p.album == album)) io.github.realkhfan.onda.data.Overrides.replace(t, p)
+                else io.github.realkhfan.onda.data.Overrides.edit(t, title, artist, album, cover = p?.cover)
+                onDismiss()
+            }) { Text("Save", color = Accent) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextDim) } },
+        containerColor = CardBg,
+    )
+}
+
+/** One artist and/or album for many songs at once; titles stay. */
+@Composable
+internal fun EditManyDialog(tracks: List<Track>, onDismiss: () -> Unit) {
+    var artist by remember { mutableStateOf("") }
+    var album by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit ${songCount(tracks.size)}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(artist, { artist = it }, singleLine = true, label = { Text("Artist for all") }, placeholder = { Text("Empty: keep each song's") })
+                OutlinedTextField(album, { album = it }, singleLine = true, label = { Text("Album for all") }, placeholder = { Text("Empty: keep each song's") })
+                Text("Titles stay. Shown in Onda; the files aren't changed.", color = TextDim, fontSize = 12.sp)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { tracks.forEach { io.github.realkhfan.onda.data.Overrides.edit(it, it.title, artist, album) }; onDismiss() },
+                enabled = artist.isNotBlank() || album.isNotBlank()) { Text("Save", color = Accent) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextDim) } },
+        containerColor = CardBg,
+    )
+}
+
+internal fun mmss(ms: Long): String = (ms / 1000).let { "%d:%02d".format(it / 60, it % 60) }
+
+/** "Fans also like" and "More from <artist>" under one of your artists. */
+internal fun LazyListScope.fansAlsoLike(name: String, related: List<io.github.realkhfan.onda.core.RemoteArtist>, onMore: () -> Unit, onOpen: (io.github.realkhfan.onda.core.RemoteArtist) -> Unit) {
+    item { OutlinedButton(onClick = onMore, modifier = Modifier.padding(16.dp, 16.dp, 16.dp, 0.dp)) { Text("More from $name", color = TextMain) } }
+    if (related.isEmpty()) return
+    item { SectionLabel("Fans also like") }
+    item {
+        androidx.compose.foundation.lazy.LazyRow(contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(related, key = { it.id }) { a ->
+                Column(Modifier.width(104.dp).clickable { onOpen(a) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Art(a.picture, 104.dp, round = true)
+                    Text(a.name, color = TextMain, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 6.dp))
+                }
+            }
+        }
+    }
+}
+
+/** A switch with a title and a line under it, as in the rest of Settings. */
+@Composable
+internal fun SettingSwitch(title: String, about: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }, verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, color = TextMain)
+            Text(about, color = TextDim, fontSize = 12.sp)
+        }
+        androidx.compose.material3.Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** Settings → Loudness: even out loudness, measured on the phone; keep an album's dynamics. */
+@Composable
+internal fun LoudnessSettings(ctx: Context, library: List<Track>) {
+    var on by remember { mutableStateOf(io.github.realkhfan.onda.data.Prefs.normalize(ctx)) }
+    var album by remember { mutableStateOf(io.github.realkhfan.onda.data.Prefs.albumGain(ctx)) }
+    val progress by io.github.realkhfan.onda.data.Loudness.progress.collectAsState()
+    val gains by io.github.realkhfan.onda.data.Loudness.gains.collectAsState()
+    val files = remember(library) { library.filter { it.uri.startsWith("content:") } }
+    val measured = remember(files, gains) { files.count { it.id in gains } }
+    fun changed() { io.github.realkhfan.onda.player.Effects.normalize = on; io.github.realkhfan.onda.player.Effects.refresh?.invoke() }
+    SettingSwitch("Even out loudness", "Songs play at one level. Each of your songs is measured once, on this phone; previews and server songs get the usual level.", on) {
+        on = it; io.github.realkhfan.onda.data.Prefs.setNormalize(ctx, it); changed()
+        if (it) io.github.realkhfan.onda.data.Loudness.measure(ctx, files) else io.github.realkhfan.onda.data.Loudness.stop()
+    }
+    if (on) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (progress.running) "Measuring… ${progress.done} of ${progress.total}" else "$measured of ${songCount(files.size)} measured",
+                color = TextDim, fontSize = 12.sp, modifier = Modifier.weight(1f))
+            if (progress.running) TextButton(onClick = { io.github.realkhfan.onda.data.Loudness.stop() }) { Text("Stop", color = Accent) }
+            else if (measured < files.size) TextButton(onClick = { io.github.realkhfan.onda.data.Loudness.measure(ctx, files) }) { Text("Measure the rest", color = Accent) }
+        }
+        if (progress.running) LinearProgressIndicator({ progress.done / progress.total.coerceAtLeast(1).toFloat() }, Modifier.fillMaxWidth(), color = Accent, trackColor = Raised)
+        SettingSwitch("Keep album dynamics", "Songs of one album get one level, so its quiet and loud songs stay as they were made.", album) {
+            album = it; io.github.realkhfan.onda.data.Prefs.setAlbumGain(ctx, it); changed()
+        }
+    }
+}
+
+/** "FLAC · 24-bit · 96 kHz" for a file you have, read once per song (null for previews and server songs). */
+private val qualities = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+@Composable
+internal fun rememberQuality(t: Track?): String? {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var q by remember(t?.id) { mutableStateOf(t?.id?.let { qualities[it] }) }
+    LaunchedEffect(t?.id) {
+        if (t == null || !t.uri.startsWith("content:") || q != null) return@LaunchedEffect
+        q = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { readQuality(ctx, t) }?.also { qualities[t.id] = it }
+    }
+    return q
+}
+
+private fun readQuality(ctx: Context, t: Track): String? {
+    val r = android.media.MediaMetadataRetriever()
+    return try {
+        r.setDataSource(ctx, Uri.parse(t.uri))
+        val kbps = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull()?.div(1000) ?: 0
+        val (rate, bits) = if (android.os.Build.VERSION.SDK_INT >= 31) {
+            (r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull() ?: 0) to
+                (r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE)?.toIntOrNull() ?: 0)
+        } else 0 to 0
+        io.github.realkhfan.onda.core.Quality.badge(
+            io.github.realkhfan.onda.core.Quality.formatOf(r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_MIMETYPE), t.fileName), kbps, rate, bits,
+        ).ifBlank { null }
+    } catch (_: Exception) {
+        null
+    } finally {
+        runCatching { r.release() }
     }
 }

@@ -41,6 +41,23 @@ object Prefs {
     fun playlistOrder(ctx: Context): String = p(ctx).getString("playlist_order", "Custom") ?: "Custom"
     fun setPlaylistOrder(ctx: Context, order: String) = p(ctx).edit().putString("playlist_order", order).apply()
 
+    /** Even out loudness (measured on the phone), and keep an album's own dynamics when playing it. */
+    fun normalize(ctx: Context): Boolean = p(ctx).getBoolean("normalize", false)
+    fun setNormalize(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("normalize", on).apply()
+    fun albumGain(ctx: Context): Boolean = p(ctx).getBoolean("album_gain", false)
+    fun setAlbumGain(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("album_gain", on).apply()
+
+    /** Lyrics you picked for a song (LRCLIB id, 0 = the one found) and their shift in ms (+ = shown earlier). */
+    fun lyricsPick(ctx: Context, id: String): Pair<Long, Long> =
+        runCatching { org.json.JSONObject(p(ctx).getString("lyrics_picks", "{}")!!).optJSONArray(id)?.let { it.getLong(0) to it.getLong(1) } }.getOrNull() ?: (0L to 0L)
+    fun setLyricsPick(ctx: Context, id: String, lrclibId: Long, shiftMs: Long) {
+        val o = runCatching { org.json.JSONObject(p(ctx).getString("lyrics_picks", "{}")!!) }.getOrDefault(org.json.JSONObject())
+        if (lrclibId == 0L && shiftMs == 0L) o.remove(id) else o.put(id, org.json.JSONArray().put(lrclibId).put(shiftMs))
+        p(ctx).edit().putString("lyrics_picks", o.toString()).apply()
+    }
+    fun lyricsScale(ctx: Context): Float = p(ctx).getFloat("lyrics_scale", 1f)
+    fun setLyricsScale(ctx: Context, scale: Float) = p(ctx).edit().putFloat("lyrics_scale", (Math.round(scale * 10) / 10f).coerceIn(0.6f, 1.8f)).apply()
+
     /** Your last 10 searches, newest first (on this phone only). */
     fun searches(ctx: Context): List<String> = p(ctx).getString("searches", "")!!.split('\n').filter { it.isNotBlank() }
     fun rememberSearch(ctx: Context, q: String) {

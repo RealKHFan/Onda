@@ -22,11 +22,11 @@ object SleepTimer {
             while (true) {
                 val left = endsAt - System.currentTimeMillis()
                 if (left <= 0) { player.controller.pause(); break }
-                player.controller.volume = (left / 30_000f).coerceIn(0f, 1f)
+                Effects.fade = (left / 30_000f).coerceIn(0f, 1f)
                 delay(if (left < 30_000) 250 else 5_000)
             }
             endsAt = 0
-            player.controller.volume = 1f // full again for next time
+            Effects.fade = 1f // full again for next time
         }
     }
 
@@ -38,7 +38,7 @@ object SleepTimer {
     fun cancel(player: PlayerState) {
         job?.cancel(); job = null
         endsAt = 0; afterSong = false
-        player.controller.volume = 1f
+        Effects.fade = 1f
     }
 
     val on: Boolean get() = endsAt > 0 || afterSong

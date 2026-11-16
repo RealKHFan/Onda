@@ -286,6 +286,7 @@ internal fun AccentPicker(ctx: Context) {
 /** Where a song is, how long, how often you played it. */
 @Composable
 internal fun SongInfoDialog(t: Track, plays: List<Discovery.Play>, shownFromMatch: Boolean, onDismiss: () -> Unit) {
+    val quality = rememberQuality(t)
     val mine = plays.filter { it.key == t.id }
     val dateFmt = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm")
     fun date(ms: Long) = Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(dateFmt)
@@ -293,6 +294,7 @@ internal fun SongInfoDialog(t: Track, plays: List<Discovery.Play>, shownFromMatc
         add("Title" to t.title); add("Artist" to t.artist); add("Album" to t.album)
         if (shownFromMatch) add("Shown in Onda" to "Matched or edited; ⋮ → Restore original tags shows the file's own")
         if (t.durationMs > 0) add("Length" to fmt(t.durationMs))
+        quality?.let { add("Format" to it) }
         add("Where" to when {
             t.id.startsWith("content:") -> "${t.folderName} · ${t.fileName}"
             t.id.contains(':') && !t.id.startsWith("/") -> "On your music server"

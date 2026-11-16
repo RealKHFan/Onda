@@ -2,6 +2,14 @@
 
 package io.github.realkhfan.onda.ui
 
+import io.github.realkhfan.onda.data.Prefs
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.Column
 import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
@@ -16,7 +24,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -181,6 +188,7 @@ internal fun FullPlayer(
     onMenu: () -> Unit,
     onQueue: () -> Unit,
     onDevices: () -> Unit,
+    badge: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     val close by rememberUpdatedState(onClose)
@@ -237,6 +245,7 @@ internal fun FullPlayer(
                     Text(player.title, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 22.sp,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(artistLine(player), color = Dim, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    badge?.let { Text(it, color = Dim, fontSize = 11.sp, letterSpacing = 0.5.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp)) }
                 }
                 IconButton(onClick = onSave) {
                     if (player.catalog != null) { // catalog songs go to Want to listen; Liked Songs holds your own
@@ -317,11 +326,18 @@ private sealed interface LyricsLoad {
 /** Full-screen lyrics. Fetched only when opened; synced lines follow the song, tap a line to jump there. */
 @Composable
 private fun LyricsPanel(player: PlayerState, posMs: Long, tint: Color, onClose: () -> Unit, onSeek: (Long) -> Unit) {
-    var load by remember(player.currentId) { mutableStateOf<LyricsLoad>(LyricsLoad.Loading) }
-    LaunchedEffect(player.currentId) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    // The version you picked (LRCLIB id, 0 = the one found) and how far the lines are moved (+ = earlier), like on the desktop.
+    var pick by remember(player.currentId) { mutableStateOf(player.currentId?.let { Prefs.lyricsPick(ctx, it) } ?: (0L to 0L)) }
+    var scale by remember { mutableStateOf(Prefs.lyricsScale(ctx)) }
+    var choosing by remember { mutableStateOf(false) }
+    fun setPick(id: Long, shift: Long) { pick = id to shift; player.currentId?.let { Prefs.setLyricsPick(ctx, it, id, shift) } }
+    var load by remember(player.currentId, pick.first) { mutableStateOf<LyricsLoad>(LyricsLoad.Loading) }
+    LaunchedEffect(player.currentId, pick.first) {
         if (player.isPreview) return@LaunchedEffect
         load = try {
-            LyricsLoad.Ready(Lrclib.get(player.title, player.artist, player.album, (player.durationMs / 1000).toInt()))
+            if (pick.first > 0) Lrclib.byId(pick.first)?.let { LyricsLoad.Ready(it) } ?: LyricsLoad.Failed
+            else LyricsLoad.Ready(Lrclib.get(player.title, player.artist, player.album, (player.durationMs / 1000).toInt()))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -345,15 +361,31 @@ private fun LyricsPanel(player: PlayerState, posMs: Long, tint: Color, onClose: 
                 !l.plain.isNullOrBlank() -> if (l.verified) "These lyrics aren't synced to the song." else "These lyrics aren't synced and may be from another version of this song."
                 else -> null
             }
-            hint?.let { Text(it, color = Dim, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+            hint?.let { Text(it, color = Dim, fontSize = 13.sp, modifier = Modifier.padding(bottom = 4.dp)) }
+            if (!player.isPreview) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                val shift = pick.second
+                if (l != null && l.synced.isNotEmpty()) {
+                    TextButton(onClick = { setPick(pick.first, shift + 500) }) { Text("Earlier", color = Dim, fontSize = 13.sp) }
+                    Text(if (shift == 0L) "in time" else "%+.1f s".format(shift / 1000.0), color = Dim, fontSize = 13.sp)
+                    TextButton(onClick = { setPick(pick.first, shift - 500) }) { Text("Later", color = Dim, fontSize = 13.sp) }
+                }
+                TextButton(onClick = { choosing = true }) { Text("Other lyrics…", color = Dim, fontSize = 13.sp) }
+                val text = l?.let { it.synced.takeIf { s -> s.isNotEmpty() }?.joinToString("\n") { s -> s.text } ?: it.plain }
+                if (!text.isNullOrBlank()) TextButton(onClick = {
+                    ctx.getSystemService(android.content.ClipboardManager::class.java)
+                        ?.setPrimaryClip(android.content.ClipData.newPlainText("Lyrics", "${player.title} — ${player.artist}\n\n$text"))
+                }) { Text("Copy", color = Dim, fontSize = 13.sp) }
+                TextButton(onClick = { scale = (scale - 0.1f).coerceAtLeast(0.6f); Prefs.setLyricsScale(ctx, scale) }) { Text("A−", color = Dim, fontSize = 13.sp) }
+                TextButton(onClick = { scale = (scale + 0.1f).coerceAtMost(1.8f); Prefs.setLyricsScale(ctx, scale) }) { Text("A+", color = Dim, fontSize = 15.sp) }
+            }
             Box(Modifier.weight(1f)) {
                 when {
                     player.isPreview -> Note("Lyrics are available for songs you own.")
                     load == LyricsLoad.Loading -> Note("Loading lyrics…")
                     load == LyricsLoad.Failed -> Note("Couldn't load lyrics. Check your connection.")
-                    l != null && l.synced.isNotEmpty() -> SyncedLyrics(l.synced, posMs, onSeek)
+                    l != null && l.synced.isNotEmpty() -> SyncedLyrics(l.synced, posMs + pick.second, scale) { onSeek(it - pick.second) }
                     l != null && !l.plain.isNullOrBlank() -> Text(
-                        l.plain, color = TextMain, fontSize = 20.sp, lineHeight = 30.sp,
+                        l.plain, color = TextMain, fontSize = (20 * scale).sp, lineHeight = (30 * scale).sp,
                         modifier = Modifier.verticalScroll(rememberScrollState()),
                     )
                     l != null && l.instrumental -> Note("Instrumental")
@@ -363,6 +395,47 @@ private fun LyricsPanel(player: PlayerState, posMs: Long, tint: Color, onClose: 
             Text("Lyrics from LRCLIB", color = Dim, fontSize = 11.sp, modifier = Modifier.padding(vertical = 8.dp))
         }
     }
+    if (choosing) LyricsChoiceDialog(player.title, player.artist, player.durationMs, pick.first,
+        onPick = { setPick(it, pick.second); choosing = false }, onDismiss = { choosing = false })
+}
+
+/** Every version LRCLIB has: pick the one that fits (the length helps). */
+@Composable
+private fun LyricsChoiceDialog(title0: String, artist0: String, durMs: Long, picked: Long, onPick: (Long) -> Unit, onDismiss: () -> Unit) {
+    var title by remember { mutableStateOf(title0) }
+    var artist by remember { mutableStateOf(artist0) }
+    var round by remember { mutableIntStateOf(0) }
+    var found by remember { mutableStateOf<List<Lrclib.Choice>?>(null) }
+    LaunchedEffect(round) { found = null; found = runCatching { Lrclib.choices(title, artist) }.getOrDefault(emptyList()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Other lyrics") },
+        text = {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                item { OutlinedTextField(title, { title = it }, singleLine = true, label = { Text("Title") }, modifier = Modifier.fillMaxWidth()) }
+                item {
+                    OutlinedTextField(artist, { artist = it }, singleLine = true, label = { Text("Artist") }, modifier = Modifier.fillMaxWidth(),
+                        trailingIcon = { TextButton(onClick = { round++ }) { Text("Search", color = Accent) } })
+                }
+                item { Text("Pick the version that fits your song." + if (durMs > 0) " Your song: ${fmt(durMs)}." else "", color = TextDim, fontSize = 12.sp) }
+                val list = found
+                when {
+                    list == null -> item { LinearProgressIndicator(Modifier.fillMaxWidth(), color = Accent, trackColor = Raised) }
+                    list.isEmpty() -> item { Text("Nothing found. Try other words.", color = TextDim) }
+                    else -> items(list) { c ->
+                        Column(Modifier.fillMaxWidth().background(if (c.id == picked) Raised else Color.Transparent).clickable { onPick(c.id) }.padding(6.dp)) {
+                            Text("${c.track} — ${c.artist}", color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(listOf(c.album, fmt(c.durationSec * 1000L), if (c.lyrics.synced.isNotEmpty()) "synced" else "not synced").filter { it.isNotBlank() }.joinToString(" · "),
+                                color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = TextDim) } },
+        dismissButton = if (picked > 0) ({ TextButton(onClick = { onPick(0) }) { Text("Use the one found", color = Accent) } }) else null,
+        containerColor = CardBg,
+    )
 }
 
 @Composable
@@ -371,14 +444,14 @@ private fun Note(text: String) {
 }
 
 @Composable
-private fun SyncedLyrics(lines: List<io.github.realkhfan.onda.core.LyricLine>, posMs: Long, onSeek: (Long) -> Unit) {
+private fun SyncedLyrics(lines: List<io.github.realkhfan.onda.core.LyricLine>, posMs: Long, scale: Float, onSeek: (Long) -> Unit) {
     val current = Lrc.indexAt(lines, posMs + 250) // light the line a moment early, as it starts
     val listState = rememberLazyListState()
     LaunchedEffect(current) { if (current >= 0) listState.animateScrollToItem((current - 2).coerceAtLeast(0)) }
     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
         itemsIndexed(lines) { i, line ->
             // The line being sung grows; the size eases between lines so the jump isn't jarring.
-            val size by animateFloatAsState(if (i == current) 30f else 21f, tween(250), label = "lyricSize")
+            val size by animateFloatAsState((if (i == current) 30f else 21f) * scale, tween(250), label = "lyricSize")
             Text(
                 line.text.ifBlank { "♪" },
                 color = when {

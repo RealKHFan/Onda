@@ -24,6 +24,8 @@ object AppData {
         Releases.load(c)
         UserCollection.load(c)
         ListenBrainz.load(c.filesDir)
+        Loudness.load(c)
+        Resume.load(c)
     }
 
     /** Your library as shown: files and server songs (a local copy wins), with accepted matches applied. */

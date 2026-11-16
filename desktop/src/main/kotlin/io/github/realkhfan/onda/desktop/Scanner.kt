@@ -13,11 +13,7 @@ object Scanner {
     /** What the player bar and "Song info" show about a file. */
     data class AudioInfo(val format: String, val bitrateKbps: Long, val sampleRate: Int, val bits: Int, val channels: String, val bytes: Long, val modified: Long) {
         /** "FLAC · 24-bit · 96 kHz", "MP3 · 320 kbps". */
-        val badge: String get() {
-            val khz = if (sampleRate > 0) (if (sampleRate % 1000 == 0) "${sampleRate / 1000}" else "%.1f".format(sampleRate / 1000.0)) + " kHz" else null
-            val lossless = format.uppercase() in setOf("FLAC", "ALAC", "WAV", "AIFF", "APE", "WAVPACK")
-            return listOfNotNull(format.uppercase(), if (lossless && bits > 0) "$bits-bit" else if (bitrateKbps > 0) "$bitrateKbps kbps" else null, if (lossless) khz else null).joinToString(" · ")
-        }
+        val badge: String get() = io.github.realkhfan.onda.core.Quality.badge(format, bitrateKbps, sampleRate, bits)
     }
 
     fun audioInfo(f: File): AudioInfo? = runCatching {

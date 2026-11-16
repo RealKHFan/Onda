@@ -1,8 +1,10 @@
 package io.github.realkhfan.onda.player
 
 import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import kotlin.math.abs
 import kotlin.math.ln
+import kotlin.math.pow
 
 /**
  * The equalizer: the desktop's 10 bands (30 Hz … 15 kHz) mapped onto the phone's own bands (often 5),
@@ -12,12 +14,35 @@ object Effects {
     val bandHz = listOf(30, 60, 120, 240, 480, 950, 1900, 3800, 7500, 15000)
     private var eq: Equalizer? = null
     private var gains: List<Double> = List(10) { 0.0 }
+    private var enhancer: LoudnessEnhancer? = null
+    private const val BOOST_DB = 8
 
     /** Called by the playback service whenever the player's audio session starts or changes. */
     @Synchronized fun attach(sessionId: Int) {
         eq?.release()
         eq = runCatching { Equalizer(0, sessionId) }.getOrNull()
         apply(gains)
+        enhancer?.release()
+        enhancer = runCatching { LoudnessEnhancer(sessionId) }.getOrNull()
+        push()
+    }
+
+    /* Volume: the song's loudness level × the sleep timer's fade. Quiet songs need more than full volume, so with
+       loudness on, a fixed boost (that compresses instead of clipping) comes first and the volume takes it back down. */
+
+    /** Set by the playback service: works out the playing song's level again (after a settings change). */
+    var refresh: (() -> Unit)? = null
+
+    /** Set by the playback service: puts a volume (0..1) on the player. */
+    var setVolume: ((Float) -> Unit)? = null
+    var normalize = false; set(v) { field = v; push() }
+    var songGainDb = 0.0; set(v) { field = v; push() }
+    var fade = 1f; set(v) { field = v; push() }
+
+    @Synchronized private fun push() {
+        val boost = enhancer?.let { e -> runCatching { e.setTargetGain(if (normalize) BOOST_DB * 100 else 0); e.enabled = normalize; if (normalize) BOOST_DB else 0 }.getOrDefault(0) } ?: 0
+        val level = if (normalize) 10.0.pow((songGainDb - boost) / 20).coerceAtMost(1.0) else 1.0
+        setVolume?.invoke((level * fade).toFloat().coerceIn(0f, 1f))
     }
 
     @Synchronized fun apply(newGains: List<Double>) {
@@ -47,5 +72,5 @@ object Effects {
 
     val active: Boolean get() = eq != null && gains.any { abs(it) > 0.01 }
 
-    fun release() { eq?.release(); eq = null }
+    fun release() { eq?.release(); eq = null; enhancer?.release(); enhancer = null; setVolume = null; refresh = null }
 }

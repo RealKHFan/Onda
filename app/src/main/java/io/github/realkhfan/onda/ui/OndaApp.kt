@@ -184,6 +184,10 @@ import io.github.realkhfan.onda.player.toPreviewItem
 import io.github.realkhfan.onda.scan.MusicLibrary
 import io.github.realkhfan.onda.core.M3u
 import io.github.realkhfan.onda.data.Suggest
+import io.github.realkhfan.onda.data.Loudness
+import io.github.realkhfan.onda.data.ArtistIds
+import io.github.realkhfan.onda.player.OpenWith
+import androidx.compose.runtime.mutableLongStateOf
 import io.github.realkhfan.onda.player.Autoplay
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.lazy.LazyListScope
@@ -271,6 +275,9 @@ fun OndaApp(player: PlayerState?) {
     var order by remember { mutableStateOf(Prefs.playlistOrder(ctx)) }
     var searches by remember { mutableStateOf(Prefs.searches(ctx)) }
     var savingQueue by remember { mutableStateOf(false) }
+    var editFor by remember { mutableStateOf<Track?>(null) }
+    var editMany by remember { mutableStateOf<List<Track>?>(null) }
+    val keptWant = remember { mutableSetOf<String>() }
     var exporting by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
     val remoteSongs by PlaylistStore.remote.collectAsState()
 
@@ -482,6 +489,30 @@ fun OndaApp(player: PlayerState?) {
         openRelease?.let { push(RemoteAlbumRoute(it)); Releases.open.value = null }
     }
 
+    // New songs get measured for even loudness (when that's on), like on the desktop.
+    LaunchedEffect(localTracks) { if (Prefs.normalize(ctx) && localTracks.isNotEmpty()) Loudness.measure(ctx, tracks) }
+
+    // Songs you wanted that are in your library now (a download, a scan, a match) leave Want to listen.
+    LaunchedEffect(tracks) {
+        if (tracks.isEmpty()) return@LaunchedEffect
+        val got = PlaylistStore.want.value.filter { it.key !in keptWant && localFor(it) != null }
+        if (got.isEmpty()) return@LaunchedEffect
+        PlaylistStore.removeWant(got)
+        undoable(if (got.size == 1) "“${got[0].title}” is in your library now: off Want to listen" else "${got.size} songs you wanted are in your library now") {
+            keptWant += got.map { it.key }; PlaylistStore.addWant(got)
+        }
+    }
+
+    // A song opened from another app ("Open with Onda"): plays it, as your own song if it's in your library.
+    val opened by OpenWith.uri.collectAsState()
+    LaunchedEffect(opened, player) {
+        val uri = opened ?: return@LaunchedEffect
+        val p = player ?: return@LaunchedEffect
+        OpenWith.uri.value = null
+        val own = byId[uri.toString()] ?: tracks.firstOrNull { it.uri == uri.toString() }
+        p.playItems(listOf(own?.toMediaItem() ?: OpenWith.item(ctx, uri)), 0, "Files", "Opened file", shuffled = false)
+    }
+
     // A song that can't play (server offline, preview gone) says why once.
     LaunchedEffect(player?.error) {
         player?.error?.let { toast(it); player.clearError() }
@@ -529,6 +560,7 @@ fun OndaApp(player: PlayerState?) {
                             onViewMatch = { push(MatchRoute) },
                             onRename = { push(RenameRoute) },
                             onImport = { uris -> SpotifyImporter.start(ctx, uris, tracks) },
+                            library = tracks,
                         ) { pop() }
                         MatchRoute -> MatchScreen(onBack = { pop() }, onRename = { push(RenameRoute) })
                         RenameRoute -> RenameScreen(
@@ -590,7 +622,7 @@ fun OndaApp(player: PlayerState?) {
                             emptyText = "Songs you like show up here. Tap ♥ in the player or Add to Liked Songs in a song's ⋮ menu.",
                             onBack = { pop() }, onMenu = { menuFor = MenuFor(it, LIKED_ID, false) }, onQueue = ::queue,
                             onDownload = downloadAll(likedTracks),
-                            onAddTo = { addTracks = it },
+                            onAddTo = { addTracks = it }, onEdit = { editMany = it },
                             onRemove = { list ->
                                 val before = liked
                                 PlaylistStore.setLiked(before - list.map { it.id }.toSet())
@@ -653,7 +685,7 @@ fun OndaApp(player: PlayerState?) {
                                         MenuAction("Save as playlist file", Icons.Rounded.Save) { exporting = pl; exportFile.launch("${pl.name}.m3u") },
                                         MenuAction("Delete playlist", Icons.Rounded.Delete) { confirmDelete = pl },
                                     ),
-                                    onAddTo = { addTracks = it },
+                                    onAddTo = { addTracks = it }, onEdit = { editMany = it },
                                     onRemove = { list ->
                                         val before = pl.trackIds
                                         // A song can be saved under its catalog key and play from your file: both ids go.
@@ -677,13 +709,25 @@ fun OndaApp(player: PlayerState?) {
                                 )
                             }
                         }
-                        is TracksRoute -> TrackListScreen(
-                            title = d.title, subtitle = d.subtitle, art = d.art, tracks = d.tracks, kind = d.kind,
-                            sourceId = null, player = player, round = d.round,
-                            onBack = { pop() }, onMenu = { menuFor = MenuFor(it, null, false) }, onQueue = ::queue,
-                            onDownload = downloadAll(d.tracks),
-                            onAddTo = { addTracks = it },
-                        )
+                        is TracksRoute -> {
+                            // One of your artists: "Fans also like" from Deezer, like the desktop's artist page.
+                            var related by remember(d.title) { mutableStateOf<List<RemoteArtist>>(emptyList()) }
+                            var deezerId by remember(d.title) { mutableLongStateOf(0L) }
+                            if (d.kind == "Artist") LaunchedEffect(d.title) {
+                                deezerId = runCatching { ArtistIds.resolve(d.title) }.getOrDefault(0L)
+                                related = if (deezerId > 0) runCatching { Deezer.related(deezerId, 12) }.getOrDefault(emptyList()).filterNot { UserCollection.isAi(it.name) } else emptyList()
+                            }
+                            TrackListScreen(
+                                title = d.title, subtitle = d.subtitle, art = d.art, tracks = d.tracks, kind = d.kind,
+                                sourceId = null, player = player, round = d.round,
+                                onBack = { pop() }, onMenu = { menuFor = MenuFor(it, null, false) }, onQueue = ::queue,
+                                onDownload = downloadAll(d.tracks),
+                                onAddTo = { addTracks = it }, onEdit = { editMany = it },
+                                below = if (d.kind != "Artist" || deezerId <= 0) null else ({
+                                    fansAlsoLike(d.title, related, onMore = { push(RemoteArtistRoute(RemoteArtist(deezerId, d.title, d.art))) }) { push(RemoteArtistRoute(it)) }
+                                }),
+                            )
+                        }
                         null -> when (tab) {
                             0 -> HomeScreen(
                                 orderedPlaylists, playlistArt, scanning, folders.isEmpty(),
@@ -780,11 +824,14 @@ fun OndaApp(player: PlayerState?) {
                     },
                     onQueue = { fullPlayer = false; push(QueueRoute) },
                     onDevices = { showDevices = true },
+                    badge = rememberQuality(p.currentId?.let { byId[it] }),
                 )
             }
         }
 
         infoFor?.let { t -> SongInfoDialog(t, plays, meta.containsKey(t.id)) { infoFor = null } }
+        editFor?.let { t -> EditDetailsDialog(t, appleOn) { editFor = null } }
+        editMany?.let { list -> if (list.size == 1) EditDetailsDialog(list[0], appleOn) { editMany = null } else EditManyDialog(list) { editMany = null } }
         if (sleepSheet && player != null) SleepSheet(player) { sleepSheet = false }
 
         // Outside the Scaffold so messages also show above the full player.
@@ -852,6 +899,7 @@ fun OndaApp(player: PlayerState?) {
             if (meta.containsKey(t.id)) {
                 add(MenuAction("Restore original tags", Icons.Rounded.Restore) { Overrides.restore(t.id); toast("Original tags restored") })
             }
+            add(MenuAction("Edit details", Icons.Rounded.Edit) { editFor = t })
             add(MenuAction("Song info", Icons.Rounded.Info) { infoFor = t })
             if (m.fromPlayer && player != null) add(MenuAction(if (SleepTimer.on) "Sleep timer (on)" else "Sleep timer", Icons.Rounded.Bedtime) { sleepSheet = true })
             if (t.id !in hidden) add(MenuAction("Hide from library", Icons.Rounded.VisibilityOff) {
@@ -1282,6 +1330,7 @@ internal fun TrackListScreen(
     onAddTo: ((List<Track>) -> Unit)? = null,
     onRemove: ((List<Track>) -> Unit)? = null,
     below: (LazyListScope.() -> Unit)? = null,
+    onEdit: ((List<Track>) -> Unit)? = null,
 ) {
     val reorder = rememberReorder()
     // Sort and find, like the desktop's list header.
@@ -1309,6 +1358,7 @@ internal fun TrackListScreen(
                 actions = buildList {
                     add(MenuAction("Select all", Icons.Rounded.SelectAll) { selected = shown.map { it.id }.toSet() })
                     add(MenuAction("Add to Liked Songs", Icons.Rounded.FavoriteBorder) { PlaylistStore.addLikes(picked.map { it.id }); selected = emptySet() })
+                    onEdit?.let { ed -> add(MenuAction("Edit details", Icons.Rounded.Edit) { ed(picked); selected = emptySet() }) }
                     onRemove?.let { rm -> add(MenuAction("Remove from this list", Icons.Rounded.RemoveCircleOutline) { rm(picked); selected = emptySet() }) }
                     add(MenuAction("Hide from library", Icons.Rounded.VisibilityOff) {
                         picked.filterNot { it.id in UserCollection.hidden.value }.forEach { UserCollection.toggleHidden(it.id) }; selected = emptySet()
@@ -1506,6 +1556,7 @@ internal fun SettingsScreen(
     onViewMatch: () -> Unit,
     onRename: () -> Unit,
     onImport: (List<Uri>) -> Unit,
+    library: List<Track> = emptyList(),
     onBack: () -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -1627,6 +1678,8 @@ internal fun SettingsScreen(
             }
             SectionLabel("Equalizer", Modifier.padding(0.dp))
             EqualizerSettings(ctx)
+            SectionLabel("Loudness", Modifier.padding(0.dp))
+            LoudnessSettings(ctx, library)
             SectionLabel("Display", Modifier.padding(0.dp))
             Text("Colour", color = TextMain)
             AccentPicker(ctx)
