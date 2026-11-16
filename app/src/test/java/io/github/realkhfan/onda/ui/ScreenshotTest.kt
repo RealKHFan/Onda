@@ -67,7 +67,7 @@ class ScreenshotTest {
     }
 
     @Test fun playlist() = shot("playlist") {
-        TrackListScreen("Road trip", "Playlist · 5 songs", null, tracks, "Playlist", "p1", null, onBack = {}, onMenu = {}, onQueue = {},
+        TrackListScreen("Road trip", "Playlist · 5 songs", null, tracks + io.github.realkhfan.onda.core.LinkSync.missingTrack("~song:Coastline Kids\u001FOnly on the PC")!!, "Playlist", "p1", null, onBack = {}, onMenu = {}, onQueue = {},
             description = "Songs for the long drive north", previews = listOf(r(1, "Big Hit", "Band One"), r(3, "Free Song", "Coastline Kids", Source.AUDIUS)), row = row,
             onDownload = {}, onMove = { _, _ -> }, more = listOf(MenuAction("Edit details", androidx.compose.material.icons.Icons.Rounded.Edit) {}),
             onAddTo = {}, onRemove = {},

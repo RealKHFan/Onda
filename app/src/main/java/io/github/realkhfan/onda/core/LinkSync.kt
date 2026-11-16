@@ -38,6 +38,13 @@ object LinkSync {
 
     fun idOf(artist: String, title: String) = "~" + Match.norm(artist) + "|" + Match.norm(title)
 
+    /** A song that's in a list but not on this device (it came from the other one): shown greyed out, kept, not played. */
+    fun isMissing(id: String) = id.startsWith(Library.PLACEHOLDER)
+
+    /** The greyed-out row for such a song (title and artist are all that's known here). */
+    fun missingTrack(id: String): Track? = if (!isMissing(id)) null else id.removePrefix(Library.PLACEHOLDER).split('\u001F').takeIf { it.size == 2 }
+        ?.let { (artist, title) -> Track(id, "", title, artist, "", artist, 0, 0, "", null, "") }
+
     /** History kept on both sides (the newest). */
     const val MAX_PLAYS = 5000
 

@@ -1,5 +1,7 @@
 package io.github.realkhfan.onda.desktop
 
+import io.github.realkhfan.onda.core.LinkSync
+
 import androidx.compose.material.icons.rounded.PhoneAndroid
 
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -385,6 +387,15 @@ private class Ctx(
         ids.forEach { state.removeFromPlaylist(id, it) }
         undoable(if (ids.size == 1) "Removed from the playlist" else "${ids.size} songs removed") { state.setPlaylistTracks(id, before) }
     }
+    /** Songs like an artist's (for a song that isn't on this PC). */
+    fun artistRadio(artist: String) {
+        val p = player ?: return
+        toast("Radio: finding songs like $artist…")
+        state.launch {
+            val more = state.radio(artist, "")
+            if (more.isEmpty()) toast("Couldn't find similar songs right now.") else p.play(more, 0)
+        }
+    }
     /** Plays the song now and fills the queue with similar songs as soon as they're found. */
     fun radio(first: Player.Item, artist: String) {
         val p = player ?: return
@@ -418,7 +429,11 @@ private class Ctx(
         java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(text), null)
         toast("$what copied")
     }
-    fun play(list: List<Track>, i: Int) { player?.play(list.map(state::item), i) }
+    /** Songs that aren't on this PC (only on your phone) are skipped. */
+    fun play(list: List<Track>, i: Int) {
+        val here = list.filterNot { LinkSync.isMissing(it.id) }
+        if (here.isNotEmpty()) player?.play(here.map(state::item), here.indexOf(list.getOrNull(i)).coerceAtLeast(0))
+    }
     fun playRemote(list: List<RemoteTrack>, i: Int) {
         val items = list.mapNotNull(state::item)
         if (items.isEmpty()) return
@@ -523,7 +538,7 @@ private fun Section(text: String) = Text(text, color = TextMain, fontWeight = Fo
 @Composable
 private fun SongRow(
     n: Int?, title: String, artist: String, album: String, durMs: Long, art: String?, playing: Boolean,
-    note: String? = null, trailing: (@Composable () -> Unit)? = null, selected: Boolean = false,
+    note: String? = null, trailing: (@Composable () -> Unit)? = null, selected: Boolean = false, dim: Boolean = false,
     onCtrlClick: (() -> Unit)? = null, onShiftClick: (() -> Unit)? = null, onClick: () -> Unit,
 ) {
     val hover = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
@@ -534,6 +549,7 @@ private fun SongRow(
         .onClick(keyboardModifiers = { isCtrlPressed }) { (onCtrlClick ?: onClick)() }
         .onClick(keyboardModifiers = { isShiftPressed && !isCtrlPressed }) { (onShiftClick ?: onClick)() }
         .onClick(keyboardModifiers = { !isCtrlPressed && !isShiftPressed }, onClick = onClick)
+        .alpha(if (dim) 0.4f else 1f)
         .padding(start = 24.dp, end = 12.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         if (n != null) Text("$n", color = TextDim, modifier = Modifier.width(36.dp))
         Art(art, 40)
@@ -552,12 +568,16 @@ private fun SongRow(
 private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?, selected: Set<String>): List<ContextMenuItem> {
     val s = ctx.state
     val many = list.filter { it.id in selected }.takeIf { t.id in selected && it.size > 1 }
+    if (many == null && LinkSync.isMissing(t.id)) return missingMenu(ctx, t, inPlaylist)
     return if (many != null) buildList {
         val n = many.size
+        val here = many.filterNot { LinkSync.isMissing(it.id) }
         ctx.player?.let { p ->
-            add(ContextMenuItem("Play $n songs") { ctx.play(many, 0) })
-            add(ContextMenuItem("Play next") { many.reversed().forEach { p.playNext(s.item(it)) } })
-            add(ContextMenuItem("Add to queue") { many.forEach { p.enqueue(s.item(it)) } })
+            if (here.isNotEmpty()) {
+                add(ContextMenuItem("Play ${here.size} songs") { ctx.play(here, 0) })
+                add(ContextMenuItem("Play next") { here.reversed().forEach { p.playNext(s.item(it)) } })
+                add(ContextMenuItem("Add to queue") { here.forEach { p.enqueue(s.item(it)) } })
+            }
         }
         val canLike = many.filter { s.canSave(it.id) }
         if (canLike.any { !s.isLiked(it.id) }) add(ContextMenuItem("Add $n to Liked Songs") { canLike.filterNot { s.isLiked(it.id) }.forEach { s.toggleLike(it.id) } })
@@ -566,7 +586,7 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
         add(ContextMenuItem("Add $n to new playlist…") { ctx.dialog(Naming.New(null, many.map { it.id })) })
         if (inPlaylist != null) add(ContextMenuItem("Remove $n from this playlist") { ctx.removeFromPlaylist(inPlaylist, many.map { it.id }) })
         many.mapNotNull { Downloads.forTrack(it, s.settings.server) }.takeIf { it.isNotEmpty() }?.let { d -> add(ContextMenuItem("Download ${d.size}") { ctx.download(d) }) }
-        val editable = many.filterNot(s::isPreviewRow)
+        val editable = here.filterNot(s::isPreviewRow)
         if (editable.any { s.meta.containsKey(it.id) }) add(ContextMenuItem("Restore original tags") { editable.forEach { Overrides.restore(it.id) }; ctx.toast("Original tags restored") })
         if (editable.isNotEmpty()) add(ContextMenuItem("Edit details of ${editable.size} songs…") { ctx.dialog(Naming.EditMany(editable)) })
         if (editable.isNotEmpty()) add(ContextMenuItem("Hide ${editable.size} from library") {
@@ -602,6 +622,17 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
     }
 }
 
+/** The right-click menu of a song that's only on your phone: find it here, or tidy the list. */
+private fun missingMenu(ctx: Ctx, t: Track, inPlaylist: String?): List<ContextMenuItem> = buildList {
+    val s = ctx.state
+    add(ContextMenuItem("Search for it") { s.searchFor = "${t.artist} ${t.title}"; ctx.push(View.Search) })
+    ctx.player?.let { add(ContextMenuItem("Start radio") { ctx.artistRadio(t.artist) }) }
+    if (s.isLiked(t.id)) add(ContextMenuItem("Remove from Liked Songs") { s.toggleLike(t.id); ctx.undoable("Removed from Liked Songs") { s.toggleLike(t.id) } })
+    s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.addToPlaylist(pl.id, t.id) }) }
+    if (inPlaylist != null) add(ContextMenuItem("Remove from this playlist") { ctx.removeFromPlaylist(inPlaylist, listOf(t.id)) })
+    add(ContextMenuItem("Copy song name") { ctx.copy("${t.title} — ${t.artist}", "Song name") })
+}
+
 /** A song from your library, with its right-click menu (for all selected songs when several are selected). */
 @Composable
 private fun TrackRow(
@@ -610,13 +641,15 @@ private fun TrackRow(
 ) {
     val t = list[i]
     val s = ctx.state
+    val missing = LinkSync.isMissing(t.id)
     ContextMenuArea(items = { trackMenu(ctx, list, t, inPlaylist, selected) }) {
+        // A song only on your phone: greyed out and not played, but its right-click menu works.
         SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
-            note = if (s.isPreviewRow(t)) "Preview" else null, selected = t.id in selected,
+            note = if (missing) "Not on this PC" else if (s.isPreviewRow(t)) "Preview" else null, selected = t.id in selected, dim = missing,
             onCtrlClick = onSelect?.let { f -> { f(i, true, false) } }, onShiftClick = onSelect?.let { f -> { f(i, false, true) } },
             trailing = { if (s.isLiked(t.id)) Icon(Icons.Rounded.Favorite, "Liked", tint = Accent, modifier = Modifier.padding(12.dp)) }) {
             onSelect?.invoke(i, false, false)
-            ctx.play(list, i)
+            if (!missing) ctx.play(list, i)
         }
     }
 }
@@ -1006,7 +1039,10 @@ private fun SongList(
                 mosaic = if (mosaic) tracks.map { it.artUri } else null) {
                 actions()
                 if (tracks.isNotEmpty() && ctx.player != null) Tip("Add all to the queue") {
-                    IconButton(onClick = { shown.forEach { ctx.player.enqueue(ctx.state.item(it)) }; ctx.toast("${shown.size} songs added to the queue") }) {
+                    IconButton(onClick = {
+                        val here = shown.filterNot { LinkSync.isMissing(it.id) }
+                        here.forEach { ctx.player.enqueue(ctx.state.item(it)) }; ctx.toast("${here.size} songs added to the queue")
+                    }) {
                         Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add all to the queue", tint = TextDim)
                     }
                 }
@@ -1142,7 +1178,8 @@ private fun WantPage(ctx: Ctx, back: (() -> Unit)?) {
 @Composable
 private fun Search(ctx: Ctx) {
     val state = ctx.state
-    var q by remember { mutableStateOf("") }
+    var q by remember { mutableStateOf(state.searchFor.orEmpty()) }
+    LaunchedEffect(state.searchFor) { state.searchFor?.let { q = it; state.searchFor = null } }
     var online by remember { mutableStateOf<List<RemoteTrack>>(emptyList()) }
     var artists by remember { mutableStateOf<List<RemoteArtist>>(emptyList()) }
     var albums by remember { mutableStateOf<List<RemoteAlbum>>(emptyList()) }

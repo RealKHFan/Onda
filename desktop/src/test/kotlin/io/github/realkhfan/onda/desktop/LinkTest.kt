@@ -59,10 +59,14 @@ class LinkTest {
             // Sync: read, then write back with a new playlist.
             val got = call("/v1/sync/get").second!!
             val snap = LinkSync.fromJson(got.getJSONObject("snapshot"))
-            val withNew = snap.copy(playlists = snap.playlists + LinkSync.Playlist("link-test", "From the phone", "", listOf(LinkSync.Song("dz:5", "Tides", "Lumen Trio"))),
+            val withNew = snap.copy(playlists = snap.playlists + LinkSync.Playlist("link-test", "From the phone", "", listOf(LinkSync.Song("dz:5", "Tides", "Lumen Trio"), LinkSync.Song(null, "Only On The Phone", "Nobody Here"))),
                 catalog = snap.catalog + io.github.realkhfan.onda.core.RemoteTrack(5, "Tides", "Lumen Trio", "Sea", null, null, 200))
             assertEquals(200, call("/v1/sync/put", JSONObject().put("version", got.getString("version")).put("snapshot", LinkSync.toJson(withNew))).first)
-            assertTrue(state.collection.playlists.any { it.id == "link-test" && it.trackIds == listOf("dz:5") })
+            assertTrue(state.collection.playlists.any { it.id == "link-test" && it.trackIds.first() == "dz:5" })
+            // The song this PC doesn't have is kept and listed (greyed out), and never played.
+            val missing = state.playlistTracks("link-test").last()
+            assertTrue(LinkSync.isMissing(missing.id))
+            assertEquals("Only On The Phone", missing.title)
             // The same old version again: changed meanwhile, so the phone must merge again.
             assertEquals(409, call("/v1/sync/put", JSONObject().put("version", got.getString("version")).put("snapshot", LinkSync.toJson(snap))).first)
             assertNotNull(call("/v1/player/state").second)

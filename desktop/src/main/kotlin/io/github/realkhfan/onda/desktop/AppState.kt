@@ -469,7 +469,7 @@ class AppState(private val scope: CoroutineScope) {
         ?: meta[t.id]?.deezerId?.takeIf { it > 0 }?.let { RemoteTrack(it, t.title, t.artist, t.album, null, null, 0) }
 
     fun remember(r: RemoteTrack) { seen[r.key] = r }
-    fun canSave(id: String) = byId.containsKey(id) || seen.containsKey(id) || collection.remote.any { it.key == id }
+    fun canSave(id: String) = byId.containsKey(id) || seen.containsKey(id) || collection.remote.any { it.key == id } || LinkSync.isMissing(id)
 
     private fun withRemote(id: String, c: Store.Collection): Store.Collection {
         val r = seen[id] ?: return c
@@ -634,7 +634,13 @@ class AppState(private val scope: CoroutineScope) {
 
     fun isLiked(id: String) = id in collection.liked
     fun toggleLike(id: String) = change(withRemote(id, collection.copy(liked = if (isLiked(id)) collection.liked - id else listOf(id) + collection.liked)))
-    val likedTracks: List<Track> get() = collection.liked.mapNotNull(::trackFor)
+    val likedTracks: List<Track> get() = collection.liked.mapNotNull(::listed)
+
+    /** A row for a saved id: songs only on your phone (after a sync) are listed greyed out, never played. */
+    fun listed(id: String): Track? = trackFor(id) ?: LinkSync.missingTrack(id)
+
+    /** Words for the Search page to start with ("Search for it" on a song that isn't on this PC). */
+    var searchFor by mutableStateOf<String?>(null)
 
     fun createPlaylist(name: String, first: List<String> = emptyList()): String {
         val id = UUID.randomUUID().toString()
@@ -674,7 +680,7 @@ class AppState(private val scope: CoroutineScope) {
     fun removeFromPlaylist(id: String, trackId: String) =
         change(collection.copy(playlists = collection.playlists.map { if (it.id == id) it.copy(trackIds = it.trackIds - trackId) else it }))
 
-    fun playlistTracks(id: String): List<Track> = collection.playlists.firstOrNull { it.id == id }?.trackIds?.mapNotNull(::trackFor).orEmpty()
+    fun playlistTracks(id: String): List<Track> = collection.playlists.firstOrNull { it.id == id }?.trackIds?.mapNotNull(::listed).orEmpty()
     fun serverPlaylistTracks(p: Subsonic.Playlist): List<Track> = p.songIds.mapNotNull { byId[Navidrome.PREFIX + it] }
 
     fun isWanted(r: RemoteTrack) = collection.want.any { it.key == r.key }

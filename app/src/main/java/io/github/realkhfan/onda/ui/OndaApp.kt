@@ -183,6 +183,8 @@ import io.github.realkhfan.onda.player.toMediaItem
 import io.github.realkhfan.onda.player.toPreviewItem
 import io.github.realkhfan.onda.scan.MusicLibrary
 import io.github.realkhfan.onda.core.M3u
+import io.github.realkhfan.onda.core.LinkSync
+import androidx.compose.ui.draw.alpha
 import io.github.realkhfan.onda.data.Suggest
 import io.github.realkhfan.onda.data.Loudness
 import io.github.realkhfan.onda.data.ArtistIds
@@ -292,6 +294,8 @@ fun OndaApp(player: PlayerState?) {
     }
     val folderGroups = remember(tracks) { Grouping.folders(tracks) }
     val likedTracks = remember(liked, byId) { liked.mapNotNull { byId[it] } }
+    // Liked Songs as listed: songs that are only on your PC stay in place, greyed out.
+    val likedShown = remember(liked, byId) { liked.mapNotNull { byId[it] ?: LinkSync.missingTrack(it) } }
     val wantKeys = remember(want) { want.map { it.key }.toSet() }
     val byTitle = remember(tracks) { tracks.groupBy { Match.norm(it.title) } }
     val localFor: (RemoteTrack) -> Track? = remember(byTitle) {
@@ -642,8 +646,8 @@ fun OndaApp(player: PlayerState?) {
                             }
                         }
                         LikedRoute -> TrackListScreen(
-                            title = "Liked Songs", subtitle = "Playlist · ${songCount(likedTracks.size)}", art = null,
-                            tracks = likedTracks, kind = "Playlist", sourceId = LIKED_ID, player = player,
+                            title = "Liked Songs", subtitle = "Playlist · ${songCount(likedShown.size)}", art = null,
+                            tracks = likedShown, kind = "Playlist", sourceId = LIKED_ID, player = player,
                             tile = Icons.Rounded.Favorite,
                             emptyText = "Songs you like show up here. Tap ♥ in the player or Add to Liked Songs in a song's ⋮ menu.",
                             onBack = { pop() }, onMenu = { menuFor = MenuFor(it, LIKED_ID, false) }, onQueue = ::queue,
@@ -678,7 +682,7 @@ fun OndaApp(player: PlayerState?) {
                                     val own = LinkedHashMap<String, Pair<String, Track>>() // track id -> (saved id, track)
                                     val pre = ArrayList<RemoteTrack>()
                                     pl.trackIds.forEach { id ->
-                                        val t = byId[id] ?: remoteSongs[id]?.let { r -> localFor(r) ?: run { pre.add(r); null } }
+                                        val t = byId[id] ?: remoteSongs[id]?.let { r -> localFor(r) ?: run { pre.add(r); null } } ?: LinkSync.missingTrack(id)
                                         if (t != null) own.putIfAbsent(t.id, id to t)
                                     }
                                     own.values.toList() to pre.toList()
@@ -731,7 +735,7 @@ fun OndaApp(player: PlayerState?) {
                                     onMove = { from, to ->
                                         PlaylistStore.moveInPlaylist(pl.id, pl.trackIds.indexOf(ownedIds[from]), pl.trackIds.indexOf(ownedIds[to]))
                                     },
-                                    onDownload = downloadAll(owned, previews),
+                                    onDownload = downloadAll(owned.filterNot { LinkSync.isMissing(it.id) }, previews),
                                 )
                             }
                         }
@@ -798,7 +802,7 @@ fun OndaApp(player: PlayerState?) {
                                 playlists = orderedPlaylists, playlistArt = playlistArt,
                                 pinned = pinned.toSet(), order = order, onOrder = { order = it; Prefs.setPlaylistOrder(ctx, it) },
                                 onImport = { importFile.launch(arrayOf("*/*")) },
-                                likedCount = likedTracks.size, wantCount = want.size,
+                                likedCount = likedShown.size, wantCount = want.size,
                                 albums = albums, artists = artists, folders = folderGroups, songs = songs,
                                 savedAlbums = savedAlbums, followed = followed,
                                 serverPlaylists = serverPlaylists,
@@ -884,14 +888,21 @@ fun OndaApp(player: PlayerState?) {
             LIKED_ID -> m.fromPlayer && isLiked // inside Liked Songs the ♥ row already covers it
             else -> playlists.firstOrNull { it.id == pid }?.trackIds?.contains(t.id) == true
         }
+        val missing = LinkSync.isMissing(t.id)
         val actions = buildList {
-            if (!m.fromPlayer) {
+            if (missing) {
+                // Only on your PC: find it here, or tidy the list; nothing that would need the file.
+                add(MenuAction("Search for it", Icons.Rounded.Search) { menuFor = null; stack.clear(); tab = 1; query = "${t.artist} ${t.title}" })
+                add(MenuAction("Start radio", Icons.Rounded.Radio) { startRadio(null, t.artist, t.id, "${t.title} Radio") })
+                add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
+            }
+            if (!m.fromPlayer && !missing) {
                 add(MenuAction(if (isLiked) "Remove from Liked Songs" else "Add to Liked Songs",
                     if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) { PlaylistStore.toggleLike(t.id) })
             }
-            add(MenuAction("Share", Icons.Rounded.Share) { share(ctx, "${t.title} — ${t.artist}") })
-            add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
-            Downloads.forTrack(t, serverCfg)?.let { item -> add(MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) }) }
+            if (!missing) add(MenuAction("Share", Icons.Rounded.Share) { share(ctx, "${t.title} — ${t.artist}") })
+            if (!missing) add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
+            if (!missing) Downloads.forTrack(t, serverCfg)?.let { item -> add(MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) }) }
             if (inPlaylist && pid != null) {
                 add(MenuAction("Remove from this playlist", Icons.Rounded.RemoveCircleOutline) {
                     if (pid == LIKED_ID) { PlaylistStore.toggleLike(t.id); undoable("Removed from Liked Songs") { PlaylistStore.toggleLike(t.id) } }
@@ -910,6 +921,7 @@ fun OndaApp(player: PlayerState?) {
                     }
                 }
             }
+            if (missing) return@buildList
             if (!m.fromPlayer) {
                 add(MenuAction("Play next", Icons.Rounded.QueuePlayNext) { player?.playNext(t.toMediaItem()); toast("Playing next") })
             }
@@ -932,7 +944,7 @@ fun OndaApp(player: PlayerState?) {
                 UserCollection.toggleHidden(t.id); undoable("Hidden: ${t.title}") { UserCollection.toggleHidden(t.id) }
             })
         }
-        SongMenu(t.title, t.artist, t.artUri, actions) { menuFor = null }
+        SongMenu(t.title, if (missing) "${t.artist} · not on this phone" else t.artist, t.artUri, actions) { menuFor = null }
     }
 
     remoteMenu?.let { r ->
@@ -1368,21 +1380,24 @@ internal fun TrackListScreen(
         Smart.sorted(tracks, sort, counts).filter { f.isEmpty() || Match.norm("${it.title} ${it.artist} ${it.album}").contains(f) }
     }
     val picked = shown.filter { it.id in selected }
+    // Songs only on your PC (after a sync) are listed greyed out but never played or queued.
+    val playable = remember(shown) { shown.filterNot { LinkSync.isMissing(it.id) } }
+    val pickedHere = picked.filterNot { LinkSync.isMissing(it.id) }
     Column(Modifier.fillMaxSize()) {
         if (selected.isNotEmpty()) {
             SelectionBar(
                 count = picked.size,
                 onClose = { selected = emptySet() },
-                onPlay = { player?.play(picked, 0, kind, title, sourceId, shuffled = false); selected = emptySet() },
-                onQueue = { picked.forEach(onQueue); selected = emptySet() },
+                onPlay = { if (pickedHere.isNotEmpty()) player?.play(pickedHere, 0, kind, title, sourceId, shuffled = false); selected = emptySet() },
+                onQueue = { pickedHere.forEach(onQueue); selected = emptySet() },
                 onAddTo = onAddTo?.let { add -> { add(picked); selected = emptySet() } },
                 actions = buildList {
                     add(MenuAction("Select all", Icons.Rounded.SelectAll) { selected = shown.map { it.id }.toSet() })
                     add(MenuAction("Add to Liked Songs", Icons.Rounded.FavoriteBorder) { PlaylistStore.addLikes(picked.map { it.id }); selected = emptySet() })
-                    onEdit?.let { ed -> add(MenuAction("Edit details", Icons.Rounded.Edit) { ed(picked); selected = emptySet() }) }
+                    onEdit?.let { ed -> add(MenuAction("Edit details", Icons.Rounded.Edit) { if (pickedHere.isNotEmpty()) ed(pickedHere); selected = emptySet() }) }
                     onRemove?.let { rm -> add(MenuAction("Remove from this list", Icons.Rounded.RemoveCircleOutline) { rm(picked); selected = emptySet() }) }
                     add(MenuAction("Hide from library", Icons.Rounded.VisibilityOff) {
-                        picked.filterNot { it.id in UserCollection.hidden.value }.forEach { UserCollection.toggleHidden(it.id) }; selected = emptySet()
+                        pickedHere.filterNot { it.id in UserCollection.hidden.value }.forEach { UserCollection.toggleHidden(it.id) }; selected = emptySet()
                     })
                 },
             )
@@ -1396,7 +1411,7 @@ internal fun TrackListScreen(
                     Smart.Sort.entries.forEach { o -> DropdownMenuItem({ Text(o.label, color = if (o == sort) Accent else TextMain) }, { sort = o; sorting = false }) }
                 }
             }
-            if (tracks.isNotEmpty()) IconButton(onClick = { shown.forEach(onQueue) }) { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add all to the queue", tint = TextDim) }
+            if (playable.isNotEmpty()) IconButton(onClick = { playable.forEach(onQueue) }) { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add all to the queue", tint = TextDim) }
             if (onDownload != null) IconButton(onClick = onDownload) { Icon(Icons.Rounded.Download, "Download $title", tint = TextDim) }
             if (more.isNotEmpty()) Box {
                 IconButton(onClick = { moreOpen = true }) { Icon(Icons.Rounded.MoreVert, "More for $title", tint = TextDim) }
@@ -1417,13 +1432,13 @@ internal fun TrackListScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
-                                    if (shown.isNotEmpty()) player?.play(shown, 0, kind, title, sourceId, shuffled = false) else onPlayPreview(-1)
+                                    if (playable.isNotEmpty()) player?.play(playable, 0, kind, title, sourceId, shuffled = false) else onPlayPreview(-1)
                                 },
-                                enabled = tracks.isNotEmpty() || previews.isNotEmpty(),
+                                enabled = playable.isNotEmpty() || previews.isNotEmpty(),
                             ) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
                             OutlinedButton(
-                                onClick = { player?.play(shown, Random.nextInt(shown.size), kind, title, sourceId, shuffled = true) },
-                                enabled = shown.isNotEmpty(),
+                                onClick = { player?.play(playable, Random.nextInt(playable.size), kind, title, sourceId, shuffled = true) },
+                                enabled = playable.isNotEmpty(),
                             ) { Icon(Icons.Rounded.Shuffle, null); Text("Shuffle") }
                         }
                     }
@@ -1439,10 +1454,11 @@ internal fun TrackListScreen(
                 val selecting = selected.isNotEmpty()
                 val toggle = { selected = if (t.id in selected) selected - t.id else selected + t.id }
                 val row = @Composable {
+                    val missing = LinkSync.isMissing(t.id)
                     SwipeTrackRow(
                         t, player?.currentId == t.id, onQueue = { onQueue(t) }, onMenu = { onMenu(t) },
-                        selected = t.id in selected, onLongClick = toggle,
-                    ) { if (selecting) toggle() else player?.play(shown, i, kind, title, sourceId) }
+                        selected = t.id in selected, onLongClick = toggle, missing = missing,
+                    ) { if (selecting) toggle() else if (!missing) player?.play(playable, playable.indexOf(t), kind, title, sourceId) }
                 }
                 // Dragging moves songs only in the list's own order.
                 if (onMove == null || sort != Smart.Sort.CUSTOM || filter != null || selecting) {
@@ -1935,7 +1951,7 @@ internal fun SectionLabel(text: String, modifier: Modifier = Modifier.padding(16
 @Composable
 private fun SwipeTrackRow(
     t: Track, playing: Boolean, onQueue: () -> Unit, onMenu: () -> Unit,
-    selected: Boolean = false, onLongClick: (() -> Unit)? = null, onClick: () -> Unit,
+    selected: Boolean = false, onLongClick: (() -> Unit)? = null, missing: Boolean = false, onClick: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
@@ -1955,7 +1971,8 @@ private fun SwipeTrackRow(
             Modifier.fillMaxWidth()
                 .offset { IntOffset(dx.roundToInt(), 0) }
                 .background(Bg)
-                .pointerInput(Unit) {
+                .pointerInput(missing) {
+                    if (missing) return@pointerInput // nothing here to queue
                     var wasArmed = false
                     val back: () -> Unit = { wasArmed = false; scope.launch { animate(dx, 0f) { v, _ -> dx = v } } }
                     detectHorizontalDragGestures(
@@ -1972,16 +1989,20 @@ private fun SwipeTrackRow(
                         wasArmed = nowArmed
                     }
                 }
-                .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = onLongClick?.let { "Select" })
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = onLongClick?.let { "Select" },
+                    onClickLabel = if (missing) "Not on this phone" else null)
                 .then(if (selected) Modifier.background(Accent.copy(alpha = 0.18f)) else Modifier)
                 .padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (selected) IconTile(Icons.Rounded.Check, 48.dp) else Art(t.artUri, 48.dp)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(t.title, color = if (playing) Accent else TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(t.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // A song only on your PC: greyed out; its ⋮ menu still works.
+            Row(Modifier.weight(1f).alpha(if (missing) 0.4f else 1f), verticalAlignment = Alignment.CenterVertically) {
+                if (selected) IconTile(Icons.Rounded.Check, 48.dp) else Art(t.artUri, 48.dp)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(t.title, color = if (playing) Accent else TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(if (missing) "${t.artist} · not on this phone" else t.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
             IconButton(onClick = onMenu) { Icon(Icons.Rounded.MoreVert, "More options for ${t.title}", tint = TextDim) }
         }

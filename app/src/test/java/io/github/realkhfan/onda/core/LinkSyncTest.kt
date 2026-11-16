@@ -3,6 +3,7 @@ package io.github.realkhfan.onda.core
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LinkSyncTest {
@@ -64,6 +65,9 @@ class LinkSyncTest {
         assertEquals("content://1", lib.id(LinkSync.Song(null, "TIDES", "lumen trio")))
         val missing = lib.id(LinkSync.Song(null, "Glass", "Other Band"))
         assertEquals(LinkSync.Song(null, "Glass", "Other Band"), lib.song(missing))
+        assertTrue(LinkSync.isMissing(missing))
+        assertEquals("Glass" to "Other Band", LinkSync.missingTrack(missing)!!.let { it.title to it.artist })
+        assertNull(LinkSync.missingTrack("content://1"))
         assertEquals("Tides", lib.song("content://1")?.title)
     }
 
