@@ -1836,7 +1836,15 @@ internal fun SettingsScreen(
             Text("Playlists, likes, history, matches, followed artists, saved albums and settings in one file. " +
                 "Not your server login or music folders.", color = TextDim, fontSize = 13.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { saveBackup.launch(Backup.name()) }) { Text("Back up now") }
+                // With a daily-backup folder: straight there, no picker ("Save as…" picks another place).
+                OutlinedButton(onClick = {
+                    val tree = backupTree
+                    if (tree == null) saveBackup.launch(Backup.name())
+                    else bgScope.launch {
+                        backupNote = if (withContext(Dispatchers.IO) { Backup.toFolder(ctx) }) "Saved to ${prettyFolder(tree)}." else "Couldn't save the backup there."
+                    }
+                }) { Text("Back up now") }
+                if (backupTree != null) TextButton(onClick = { saveBackup.launch(Backup.name()) }) { Text("Save as…", color = Accent) }
                 OutlinedButton(onClick = { pickBackup.launch(arrayOf("application/zip", "application/octet-stream")) }) { Text("Restore") }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

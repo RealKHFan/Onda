@@ -61,9 +61,14 @@ object Backup {
 
     /** Daily, into the folder chosen in Settings; keeps the newest [KEEP]. */
     fun autoIfDue(ctx: Context) {
-        val tree = Prefs.backupTree(ctx)?.let(Uri::parse) ?: return
         if (System.currentTimeMillis() - Prefs.lastBackup(ctx) < 20 * 3_600_000L) return
-        runCatching {
+        toFolder(ctx)
+    }
+
+    /** "Back up now" with a daily-backup folder set: today's backup there (replaced if there is one), newest [KEEP] kept. */
+    fun toFolder(ctx: Context): Boolean {
+        val tree = Prefs.backupTree(ctx)?.let(Uri::parse) ?: return false
+        return runCatching {
             val cr = ctx.contentResolver
             val root = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
             val kids = DocumentsContract.buildChildDocumentsUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
@@ -73,13 +78,14 @@ object Backup {
             }
             val today = name()
             val doc = old.firstOrNull { it.first == today }?.let { DocumentsContract.buildDocumentUriUsingTree(tree, it.second) }
-                ?: DocumentsContract.createDocument(cr, root, "application/zip", today) ?: return
-            cr.openOutputStream(doc, "wt")?.use { write(ctx, it) } ?: return
+                ?: DocumentsContract.createDocument(cr, root, "application/zip", today) ?: return false
+            cr.openOutputStream(doc, "wt")?.use { write(ctx, it) } ?: return false
             Prefs.setLastBackup(ctx, System.currentTimeMillis())
             old.filter { it.first != today }.sortedByDescending { it.first }.drop(KEEP - 1).forEach { (_, id) ->
                 runCatching { DocumentsContract.deleteDocument(cr, DocumentsContract.buildDocumentUriUsingTree(tree, id)) }
             }
-        }
+            true
+        }.getOrDefault(false)
     }
 
     private fun readText(input: InputStream): String? {

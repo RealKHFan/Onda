@@ -427,10 +427,20 @@ class AppState(private val scope: CoroutineScope) {
     /** Once a day into the chosen folder, keeping the newest 5 of Onda's own backups there. Call off the UI thread. */
     fun dailyBackup() {
         val dir = settings.backupDir?.let { java.io.File(it) }?.takeIf { it.isDirectory } ?: return
-        fun mine() = dir.listFiles { f: java.io.File -> f.isFile && f.name.startsWith("onda-backup-") && f.name.endsWith(".zip") }.orEmpty().sortedByDescending { it.lastModified() }
-        if (mine().firstOrNull()?.let { System.currentTimeMillis() - it.lastModified() < 20 * 3_600_000L } == true) return
-        runCatching { backup(java.io.File(dir, "onda-backup-${java.time.LocalDate.now()}.zip")) }
-        mine().drop(5).forEach { it.delete() }
+        if (backupsIn(dir).firstOrNull()?.let { System.currentTimeMillis() - it.lastModified() < 20 * 3_600_000L } == true) return
+        runCatching { backupToFolder() }
+    }
+
+    private fun backupsIn(dir: java.io.File) =
+        dir.listFiles { f: java.io.File -> f.isFile && f.name.startsWith("onda-backup-") && f.name.endsWith(".zip") }.orEmpty().sortedByDescending { it.lastModified() }
+
+    /** "Back up now" with a daily-backup folder set: today's backup there (replaced if there is one), newest 5 kept. Off the UI thread. */
+    fun backupToFolder(): java.io.File {
+        val dir = settings.backupDir?.let { java.io.File(it) }?.takeIf { it.isDirectory } ?: throw java.io.IOException("The backup folder isn't there")
+        val file = java.io.File(dir, "onda-backup-${java.time.LocalDate.now()}.zip")
+        backup(file)
+        backupsIn(dir).drop(5).forEach { it.delete() }
+        return file
     }
 
     /** Replaces playlists, likes, history and settings with the backup's (a copy of the current ones is kept). Returns false if it isn't one. */

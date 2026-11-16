@@ -1728,6 +1728,13 @@ private fun SettingsPage(ctx: Ctx) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Playlists, likes, history, follows, saved albums and settings in one file. Not your server login or folders.", color = TextDim, fontSize = 13.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // With a daily-backup folder: straight there, no dialog ("Save as…" picks another place).
+                    if (state.settings.backupDir != null) OutlinedButton(onClick = {
+                        scope.launch {
+                            note = runCatching { "Saved to " + kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { state.backupToFolder() }.path }
+                                .getOrElse { "Couldn't save the backup there (is the folder reachable?)." }
+                        }
+                    }) { Text("Back up now") }
                     OutlinedButton(onClick = {
                         scope.launch {
                             val name = "onda-backup-${java.time.LocalDate.now()}.zip"
@@ -1740,7 +1747,7 @@ private fun SettingsPage(ctx: Ctx) {
                             note = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { state.backup(File(path)) }; "Saved to $path" }
                                 .getOrElse { "Couldn't save the backup." }
                         }
-                    }) { Text("Back up now") }
+                    }) { Text(if (state.settings.backupDir != null) "Save as…" else "Back up now") }
                     OutlinedButton(onClick = {
                         scope.launch {
                             val r = FolderPicker.file(false, System.getProperty("user.home"), "Restore a backup")
@@ -1801,8 +1808,9 @@ private fun SettingsPage(ctx: Ctx) {
             }
             asking?.let { dir ->
                 AlertDialog(onDismissRequest = { asking = null }, title = { Text("Which songs?") },
-                    text = { Text("All songs: every song that isn't in $dir yet is copied now. Only new ones: if your backup has your music already, " +
-                        "only songs you add from now on are copied.") },
+                    text = { Text("Songs are only copied from your music folders on this PC into $dir; nothing comes back here, and nothing " +
+                        "there is deleted or replaced.\n\nAll songs: your songs that aren't there yet are copied now, then new ones every 30 minutes. " +
+                        "Only new ones: if that folder has your music already, only songs you add from now on are copied.") },
                     confirmButton = { TextButton(onClick = { state.setCopyDir(dir, everything = true); asking = null }) { Text("All songs", color = Accent) } },
                     dismissButton = { TextButton(onClick = { state.setCopyDir(dir); asking = null }) { Text("Only new ones", color = Accent) } })
             }
