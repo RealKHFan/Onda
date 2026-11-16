@@ -100,6 +100,10 @@ object Prefs {
     fun autoplay(ctx: Context): Boolean = p(ctx).getBoolean("autoplay", true)
     fun setAutoplay(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("autoplay", on).apply()
 
+    /** The file Want to listen is exported to as text (a document URI you picked); asked again when it's gone. */
+    fun wantFile(ctx: Context): String? = p(ctx).getString("want_file", null)
+    fun setWantFile(ctx: Context, uri: String?) = p(ctx).edit().putString("want_file", uri).apply()
+
     /** Folder for the daily automatic backup (a tree URI), and when it last ran. */
     fun backupTree(ctx: Context): String? = p(ctx).getString("backup_tree", null)
     fun setBackupTree(ctx: Context, uri: String?) = p(ctx).edit().putString("backup_tree", uri).apply()

@@ -43,6 +43,12 @@ class M3uTest {
         val desk = "#EXTM3U\n#EXTINF:200,Someone - Else\n/home/me/Music/Paper Moon.mp3\n"
         assertEquals(listOf(a.id), M3u.match(M3u.parse(desk, "d").second, listOf(a, b)))
     }
+
+    @Test fun wantListIsArtistDashTitlePerLine() {
+        val songs = listOf(RemoteTrack(1, "Paper Moon", "Velvet Hours", "A", null, null, 200), RemoteTrack(2, "Tides", "Lumen Trio", "B", null, null, 180))
+        assertEquals("Velvet Hours - Paper Moon\nLumen Trio - Tides", M3u.wantList(songs))
+        assertEquals("", M3u.wantList(emptyList()))
+    }
 }
 
 class SuggestTest {

@@ -289,4 +289,52 @@ class FeaturesTest {
         assertFalse(onUi { p.playing } && onUi { p.positionMs } == 0L)
         onUi { p.close() }
     }
+
+    @Test fun newSongsAreCopiedOnceIntoTheChosenFolder() {
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        val music = Files.createTempDirectory("onda-music").toFile()
+        val backup = Files.createTempDirectory("onda-copy").toFile()
+        val backup2 = Files.createTempDirectory("onda-copy2").toFile()
+        fun song(path: String) = File(music, path).apply { parentFile.mkdirs(); File(java.net.URI(wav(0.2))).copyTo(this) }
+        fun later(block: suspend () -> Unit) = runBlocking { withContext(ui) { block() } }
+        fun waitForCheck() {
+            val end = System.currentTimeMillis() + 15_000
+            while (onUi { s.copyNote?.startsWith("Checked") != true }) { check(System.currentTimeMillis() < end) { "no copy: ${onUi { s.copyNote }}" }; Thread.sleep(50) }
+        }
+        val before = onUi { s.settings.folders }
+        try {
+            val tides = song("Lumen Trio/Sea/01 Tides.wav")
+            song("Onda from phone/Phone Artist - Sent.wav")
+            onUi { before.forEach(s::removeFolder); s.addFolder(music.path) }
+            later { s.rescanNow() }
+            // All songs: copied into the same folders; the one from the phone isn't sent back.
+            onUi { s.setCopyDir(backup.path, everything = true) }
+            waitForCheck()
+            assertTrue(File(backup, "Lumen Trio/Sea/01 Tides.wav").readBytes().contentEquals(tides.readBytes()))
+            assertFalse(File(backup, "Onda from phone").exists())
+            assertTrue(backup.walk().none { it.name.endsWith(".part") })
+            // Later: only the new song is copied; one already copied isn't copied again (even if deleted there).
+            File(backup, "Lumen Trio/Sea/01 Tides.wav").delete()
+            song("Lumen Trio/Sea/02 Waves.wav")
+            later { s.rescanNow(); s.copyNewSongs() }
+            assertTrue(File(backup, "Lumen Trio/Sea/02 Waves.wav").isFile)
+            assertFalse(File(backup, "Lumen Trio/Sea/01 Tides.wav").exists())
+            assertEquals("Checked", onUi { s.copyNote }?.substringBefore(" at"))
+            // Only new ones: what's there now stays out; a song added afterwards goes in.
+            onUi { s.setCopyDir(backup2.path) }
+            waitForCheck()
+            assertEquals(emptyList(), backup2.listFiles()!!.toList())
+            song("Night Owls/Late/03 Owl.wav")
+            later { s.rescanNow(); s.copyNewSongs() }
+            assertEquals(listOf("Night Owls/Late/03 Owl.wav"), backup2.walk().filter { it.isFile }.map { it.relativeTo(backup2).path }.toList())
+            // The folder isn't there (a drive not connected): nothing happens, and it says so.
+            backup2.deleteRecursively()
+            later { s.copyNewSongs() }
+            assertTrue(onUi { s.copyNote }!!.contains("isn't there"))
+        } finally {
+            onUi { s.setCopyDir(null); s.removeFolder(music.path); before.forEach(s::addFolder) }
+            later { s.rescanNow() }
+            listOf(music, backup, backup2).forEach { it.deleteRecursively() }
+        }
+    }
 }

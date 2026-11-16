@@ -642,7 +642,79 @@ class AppState(private val scope: CoroutineScope) {
         recent = recent.map { i -> moved[i.id]?.let { i.copy(id = it, uri = it) } ?: i }.distinctBy { it.id }; Store.saveRecent(recent)
         plays = plays.map { it.copy(key = m(it.key)) }; Store.savePlays(plays)
         Overrides.migrateIds(moved)
+        readCopied().let { c -> if (c.any { it in moved }) writeCopied(c.mapTo(HashSet(), ::m)) } // a renamed song isn't new
     }
+
+    /* ---------- Copy new songs to a folder ---------- */
+
+    /** Songs already copied, or already here when you turned it on: each new song is copied once. */
+    private val copiedFile = java.io.File(Store.data, "copied.json")
+    private fun readCopied(): MutableSet<String> = runCatching {
+        org.json.JSONArray(copiedFile.readText()).let { a -> (0 until a.length()).mapTo(HashSet()) { a.getString(it) } }
+    }.getOrDefault(HashSet())
+    private fun writeCopied(ids: Set<String>) = runCatching {
+        java.io.File(Store.data, "copied.json.tmp").apply { writeText(org.json.JSONArray(ids).toString()) }.renameTo(copiedFile)
+    }
+    private fun localFiles() = local.map { it.id }.filter { it.startsWith("file:") }
+
+    /** How far the copy is, or what the last one did. */
+    var copyNote by mutableStateOf<String?>(null); private set
+    private var copying = false
+
+    /** [everything]: also the songs already here (those not in the folder yet); otherwise only songs added from now on. */
+    fun setCopyDir(dir: String?, everything: Boolean = false) {
+        if (dir != null) writeCopied(if (everything) emptySet() else localFiles().toSet())
+        copyNote = null
+        update(settings.copy(copyDir = dir))
+        if (dir != null) launch { copyNewSongs() }
+    }
+
+    /**
+     * Copies the songs added since last time into the chosen folder, at the same place as below your music folder
+     * (Artist/Album/…), so your own backup can take them to your phone. Nothing there is deleted or replaced.
+     */
+    suspend fun copyNewSongs() {
+        val dir = settings.copyDir?.let { java.io.File(it).absoluteFile } ?: return
+        if (copying) return
+        if (scanning) { copyNote = "Waiting for the music scan to finish; Onda checks again in 30 minutes."; return }
+        if (!dir.isDirectory) { copyNote = "The folder isn't there right now (a drive or share not connected?). Onda tries again in 30 minutes."; return }
+        copying = true
+        try {
+            val done = withContext(Dispatchers.IO) { readCopied() }
+            val roots = settings.folders.map { java.io.File(it).absoluteFile }
+            val fromPhone = Downloads.target(this)?.let { java.io.File(it, "Onda from phone").absoluteFile }
+            val todo = localFiles().filter { it !in done }
+            var copied = 0; var failed = 0
+            for ((i, id) in todo.withIndex()) {
+                if (todo.size > 3) copyNote = "Copying new songs: ${i + 1} of ${todo.size}…"
+                val r = withContext(Dispatchers.IO) { runCatching { copyOne(java.io.File(java.net.URI(id)).absoluteFile, roots, fromPhone, dir) } }
+                if (r.isSuccess) { done += id; if (r.getOrThrow()) copied++ } else { failed++; if (!dir.isDirectory) break }
+                if (i % 25 == 24) withContext(Dispatchers.IO) { writeCopied(done) }
+            }
+            withContext(Dispatchers.IO) { writeCopied(done) }
+            copyNote = "Checked at ${java.time.LocalTime.now().withSecond(0).withNano(0)}: " +
+                (if (copied == 0) "no new songs" else if (copied == 1) "1 new song copied" else "$copied new songs copied") +
+                (if (failed > 0) " · $failed couldn't be copied (Onda tries again in 30 minutes)" else "")
+        } finally { copying = false }
+    }
+
+    /** True when copied; false when it needn't be (sent from your phone, or already in the folder). */
+    private fun copyOne(f: java.io.File, roots: List<java.io.File>, fromPhone: java.io.File?, dir: java.io.File): Boolean {
+        if (fromPhone != null && f.startsWith(fromPhone)) return false // your phone has these already
+        if (f.startsWith(dir)) return false
+        val out = java.io.File(dir, roots.firstOrNull { f.startsWith(it) }?.let { f.relativeTo(it).path } ?: f.name)
+        if (out.exists()) return false
+        out.parentFile.mkdirs()
+        // Copied next to it under a hidden name, then renamed: a song never shows up half-copied.
+        val part = java.io.File(out.parentFile, ".${out.name}.part")
+        java.nio.file.Files.copy(f.toPath(), part.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        part.setLastModified(f.lastModified())
+        java.nio.file.Files.move(part.toPath(), out.toPath())
+        return true
+    }
+
+    /** Where Want to listen is exported as text ("Artist - Title" per line). */
+    fun setWantFile(path: String) = update(settings.copy(wantFile = path))
 
     /* ---------- Server ---------- */
 

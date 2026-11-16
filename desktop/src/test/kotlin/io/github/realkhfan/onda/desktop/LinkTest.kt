@@ -115,4 +115,29 @@ class LinkTest {
             }
         }
     }
+
+    /** Details edited on either side reach the other (found by the file's own artist and title), and so does undoing them. */
+    @Test fun editedDetailsSyncBothWays() = runBlocking(Dispatchers.Swing) {
+        val state = AppState(CoroutineScope(Dispatchers.Swing))
+        val before = state.local
+        val id = "file:/tmp/onda-edit-sync-test.mp3"
+        val mine = io.github.realkhfan.onda.core.Track(id, id, "tides demo", "lumen trio", "", "lumen trio", 0, 200_000, "audio/mpeg", null, "onda-edit-sync-test.mp3")
+        val key = LinkSync.idOf(mine.artist, mine.title)
+        try {
+            state.local = before + mine
+            // Edited on the PC: the phone gets it.
+            io.github.realkhfan.onda.data.Overrides.edit(mine, "Tides", "Lumen Trio", "Sea")
+            val snap = state.linkSnapshot(emptyMap(), HashMap())
+            assertEquals("Tides", snap.edits[key]?.title)
+            // Changed on the phone: this PC shows that.
+            state.applyLink(snap.copy(edits = snap.edits + (key to LinkSync.Edit("Tides (Live)", "Lumen Trio", "Sea", null, 0))), HashMap())
+            assertEquals("Tides (Live)", io.github.realkhfan.onda.data.Overrides.meta.value[id]?.title)
+            // Original tags restored on the phone: restored here too.
+            state.applyLink(snap.copy(edits = snap.edits - key), HashMap())
+            assertEquals(null, io.github.realkhfan.onda.data.Overrides.meta.value[id])
+        } finally {
+            io.github.realkhfan.onda.data.Overrides.restore(id)
+            state.local = before
+        }
+    }
 }

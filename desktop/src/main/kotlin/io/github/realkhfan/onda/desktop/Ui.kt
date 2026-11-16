@@ -1211,11 +1211,39 @@ private fun Artists(state: AppState, onOpen: (ArtistGroup) -> Unit, onOpenFollow
 
 @Composable
 private fun WantPage(ctx: Ctx, back: (() -> Unit)?) {
-    val list = ctx.state.collection.want
+    val state = ctx.state
+    val list = state.collection.want
+    // Saves to the file chosen last time; [choose]: pick one (again) first.
+    fun export(choose: Boolean) {
+        state.launch {
+            val home = System.getProperty("user.home")
+            val path = state.settings.wantFile.takeUnless { choose } ?: when (val r = FolderPicker.file(true, state.settings.wantFile ?: "$home/Want to listen.txt", "Export Want to listen")) {
+                is FolderPicker.Result.Picked -> r.path.let { if (File(it).extension.isEmpty()) "$it.txt" else it }
+                FolderPicker.Result.NoPicker -> "$home/Want to listen.txt"
+                FolderPicker.Result.Cancelled -> return@launch
+            }
+            val text = io.github.realkhfan.onda.core.M3u.wantList(list)
+            if (runCatching { withContext(kotlinx.coroutines.Dispatchers.IO) { File(path).writeText(text) } }.isSuccess) {
+                state.setWantFile(path); ctx.toast("Saved ${list.size} songs to $path")
+            } else if (!choose) export(true) // its folder is gone: choose another place
+            else ctx.toast("Couldn't save to $path")
+        }
+    }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             Header("Want to listen", "${list.size} songs you don't own yet", back = back) {
-                if (list.isNotEmpty()) Button(onClick = { ctx.playRemote(list, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { export(false) }) { Icon(Icons.Rounded.SaveAlt, null); Spacer(Modifier.width(6.dp)); Text("Export .txt", color = TextMain) }
+                    if (list.isNotEmpty()) Button(onClick = { ctx.playRemote(list, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
+                }
+            }
+        }
+        state.settings.wantFile?.let { f ->
+            item {
+                Row(Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Exports to $f", color = TextDim, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    TextButton(onClick = { export(true) }) { Text("Change", color = Accent) }
+                }
             }
         }
         if (list.isEmpty()) item { Note("Songs you save with + in Search show up here.") }
@@ -1703,6 +1731,44 @@ private fun SettingsPage(ctx: Ctx) {
                     }) { Text(if (state.settings.backupDir == null) "Choose folder" else "Change", color = Accent) }
                     if (state.settings.backupDir != null) TextButton(onClick = { state.setBackupDir(null) }) { Text("Off", color = TextDim) }
                 }
+            }
+        }
+        item {
+            var note by remember { mutableStateOf<String?>(null) }
+            var asking by remember { mutableStateOf<String?>(null) } // a folder was picked: which songs go there first?
+            Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Copy new songs to a folder: every 30 minutes, songs that are new in your music folders are copied there, " +
+                    "in the same folders (Artist/Album). Point your own backup at it to get them onto your phone. Nothing there is deleted or replaced, " +
+                    "and songs your phone sent aren't copied back.", color = TextDim, fontSize = 13.sp)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(state.settings.copyDir?.let { "Copy new songs to: $it" } ?: "Copy new songs: off", color = TextMain, fontSize = 13.sp)
+                    TextButton(onClick = {
+                        scope.launch {
+                            when (val r = FolderPicker.pick(state.settings.copyDir ?: System.getProperty("user.home"))) {
+                                is FolderPicker.Result.Picked -> {
+                                    note = null
+                                    if (state.settings.folders.any { File(r.path).absoluteFile.startsWith(File(it).absoluteFile) })
+                                        note = "Pick a folder outside your music folders, or every song would show up twice."
+                                    else asking = r.path
+                                }
+                                FolderPicker.Result.NoPicker -> note = "No folder picker found on this system."
+                                FolderPicker.Result.Cancelled -> {}
+                            }
+                        }
+                    }) { Text(if (state.settings.copyDir == null) "Choose folder" else "Change", color = Accent) }
+                    if (state.settings.copyDir != null) {
+                        TextButton(onClick = { note = null; state.launch { state.copyNewSongs() } }) { Text("Check now", color = Accent) }
+                        TextButton(onClick = { state.setCopyDir(null) }) { Text("Off", color = TextDim) }
+                    }
+                }
+                (note ?: state.copyNote)?.let { Text(it, color = TextMain, fontSize = 13.sp) }
+            }
+            asking?.let { dir ->
+                AlertDialog(onDismissRequest = { asking = null }, title = { Text("Which songs?") },
+                    text = { Text("All songs: every song that isn't in $dir yet is copied now. Only new ones: if your backup has your music already, " +
+                        "only songs you add from now on are copied.") },
+                    confirmButton = { TextButton(onClick = { state.setCopyDir(dir, everything = true); asking = null }) { Text("All songs", color = Accent) } },
+                    dismissButton = { TextButton(onClick = { state.setCopyDir(dir); asking = null }) { Text("Only new ones", color = Accent) } })
             }
         }
         item { Section("Keyboard") }

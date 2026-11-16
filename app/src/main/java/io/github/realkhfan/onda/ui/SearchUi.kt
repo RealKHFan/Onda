@@ -1,5 +1,21 @@
 package io.github.realkhfan.onda.ui
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.rounded.SaveAlt
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import io.github.realkhfan.onda.core.M3u
+import io.github.realkhfan.onda.data.Prefs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.collectAsState
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.rounded.History
@@ -547,12 +563,37 @@ internal fun WantScreen(
     onBack: () -> Unit,
     onPlay: (RemoteTrack) -> Unit,
 ) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var file by remember { mutableStateOf(Prefs.wantFile(ctx)?.let(Uri::parse)) }
+    val fileName by produceState<String?>(null, file) { value = file?.let { withContext(Dispatchers.IO) { displayName(ctx, it) } } }
+    fun saved(ok: Boolean) = Toast.makeText(ctx, if (ok) "Saved ${songCount(items.size)}" else "Couldn't save there. Try another place.", Toast.LENGTH_SHORT).show()
+    val choose = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) {
+            runCatching { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+            Prefs.setWantFile(ctx, uri.toString()); file = uri
+            scope.launch { saved(writeWant(ctx, uri, M3u.wantList(items))) }
+        }
+    }
+    // Into the file chosen last time; when there's none (or it's gone), you choose where.
+    fun export() = scope.launch {
+        val f = file
+        if (f != null && writeWant(ctx, f, M3u.wantList(items))) saved(true) else choose.launch("Want to listen.txt")
+    }
     Column(Modifier.fillMaxSize()) {
         BackTopBar("Want to listen", onBack)
         Row(Modifier.padding(16.dp, 0.dp, 16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconTile(Icons.Rounded.Bookmark, 72.dp)
             Spacer(Modifier.width(12.dp))
-            Text(songCount(items.size), color = TextDim, fontSize = 13.sp)
+            Text(songCount(items.size), color = TextDim, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            OutlinedButton(onClick = { export() }) {
+                Icon(Icons.Rounded.SaveAlt, null, tint = TextMain); Spacer(Modifier.width(6.dp)); Text("Export .txt", color = TextMain)
+            }
+        }
+        if (file != null) Row(Modifier.padding(start = 16.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Exports to ${fileName ?: "the file you chose"}", color = TextDim, fontSize = 13.sp, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            TextButton(onClick = { choose.launch(fileName ?: "Want to listen.txt") }) { Text("Change", color = Accent) }
         }
         if (items.isEmpty()) {
             Text("Nothing saved yet. Tap + on a search result to keep it here.", color = TextDim, modifier = Modifier.padding(24.dp))
@@ -562,6 +603,15 @@ internal fun WantScreen(
         }
     }
 }
+
+/** Writes Want to listen ("Artist - Title" per line) into the file; false when it can't (deleted, or no longer allowed). */
+private suspend fun writeWant(ctx: Context, uri: Uri, text: String): Boolean = withContext(Dispatchers.IO) {
+    runCatching { ctx.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(text.toByteArray()) } }.isSuccess
+}
+
+private fun displayName(ctx: Context, uri: Uri): String? = runCatching {
+    ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+}.getOrNull()
 
 private fun typeLabel(type: String?): String? = when (type) {
     "album" -> "Album"

@@ -114,4 +114,10 @@ class ScreenshotTest {
             io.github.realkhfan.onda.core.Discovery.Play("", "Coastline Kids", "Only on the PC", now - 600_000),
         ), { id -> tracks.firstOrNull { it.id == id } }, null) {}
     }
+
+    @Test fun want() = shot("want") {
+        // As after the first export: the file is remembered.
+        io.github.realkhfan.onda.data.Prefs.setWantFile(androidx.test.core.app.ApplicationProvider.getApplicationContext(), "content://x/document/want.txt")
+        WantScreen(listOf(r(1, "Big Hit", "Band One"), r(2, "Other Hit", "Band Two")), row, onBack = {}, onPlay = {})
+    }
 }

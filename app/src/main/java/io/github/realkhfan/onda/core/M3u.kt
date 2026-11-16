@@ -11,6 +11,9 @@ object M3u {
         }
     }
 
+    /** Want to listen as plain text: "Artist - Title", one song per line. */
+    fun wantList(songs: List<RemoteTrack>): String = songs.joinToString("\n") { "${it.artist} - ${it.title}" }
+
     /** The playlist's name and its entries: (path or null, "Artist - Title" or null). */
     fun parse(text: String, fallbackName: String): Pair<String, List<Pair<String?, String?>>> {
         var name = fallbackName

@@ -181,8 +181,8 @@ fun main(args: Array<String>) {
                 mpris[0] = m
                 var tick = 0
                 while (true) {
-                    // Mixes and new releases once the library has loaded, then every half hour (each checks if it's due).
-                    if (tick % 120 == 1) { state.refreshMixes(); state.checkReleases(); withContext(Dispatchers.IO) { state.dailyBackup() } }
+                    // Mixes, new releases and new songs to copy once the library has loaded, then every half hour (each checks if it's due).
+                    if (tick % 120 == 1) { state.refreshMixes(); state.checkReleases(); state.launch { state.copyNewSongs() }; withContext(Dispatchers.IO) { state.dailyBackup() } }
                     delay(15_000); tick++
                     saveSession()
                 }
