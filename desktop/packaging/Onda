@@ -1,0 +1,16 @@
+#!/bin/bash
+# Starts Onda with its bundled Java. jpackage's own launcher can crash before Java starts: it passes its
+# settings to itself through a pipe and doesn't always read all of them (a JDK bug, seen on Fedora 45).
+self="$(readlink -f "$0")"
+dir="$(cd "$(dirname "$self")/.." && pwd)"
+app="$dir/lib/app"
+main= cp= opts=()
+while IFS= read -r line; do
+    line="${line//\$APPDIR/"$app"}"
+    case "$line" in
+        app.mainclass=*) main="${line#*=}" ;;
+        app.classpath=*) cp="${cp:+$cp:}${line#*=}" ;;
+        java-options=*) opts+=("${line#*=}") ;;
+    esac
+done < "$app/Onda.cfg"
+exec "$dir/lib/runtime/bin/Onda" "${opts[@]}" -Donda.launcher="$self" -cp "$cp" "$main" "$@"

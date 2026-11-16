@@ -51,10 +51,25 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Rpm)
             packageName = "Onda"
-            packageVersion = "0.12.0"
+            packageVersion = "0.12.1"
             description = "Privacy-first music player"
             modules("java.instrument", "jdk.unsupported", "jdk.security.auth", "jdk.crypto.ec", "java.naming", "java.sql", "jdk.httpserver")
             linux { iconFile.set(project.file("src/main/resources/onda.png")) }
         }
+    }
+}
+
+// jpackage's Linux launcher can crash before Java starts (see packaging/Onda): a small script starts the bundled Java instead.
+tasks.matching { it.name == "createDistributable" }.configureEach {
+    val jdk = File(compose.desktop.application.javaHome ?: System.getProperty("java.home"))
+    val script = project.file("packaging/Onda")
+    val app = layout.buildDirectory.dir("compose/binaries/main/app/Onda")
+    doLast {
+        val dir = app.get().asFile
+        val version = { home: File -> home.resolve("release").readLines().first { it.startsWith("JAVA_VERSION=") } }
+        check(version(jdk) == version(dir.resolve("lib/runtime"))) { "bin/java must come from the JDK that made the runtime" }
+        jdk.resolve("bin/java").copyTo(dir.resolve("lib/runtime/bin/Onda"), overwrite = true).setExecutable(true, false)
+        script.copyTo(dir.resolve("bin/Onda"), overwrite = true).setExecutable(true, false)
+        dir.resolve("lib/libapplauncher.so").delete()
     }
 }

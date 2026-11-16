@@ -287,7 +287,8 @@ class AppState(private val scope: CoroutineScope) {
         runCatching {
             if (!on) autostartFile.delete()
             else {
-                val exe = ProcessHandle.current().info().command().orElse(System.getProperty("user.home") + "/.local/bin/onda")
+                val exe = System.getProperty("onda.launcher") // the start script; the process itself is the bundled Java
+                    ?: ProcessHandle.current().info().command().orElse(System.getProperty("user.home") + "/.local/bin/onda")
                 autostartFile.parentFile.mkdirs()
                 autostartFile.writeText("[Desktop Entry]\nType=Application\nName=Onda\nExec=\"$exe\"" + (if (background) " --background" else "") +
                     "\nIcon=io.github.realkhfan.Onda\nX-GNOME-Autostart-enabled=true\n")
