@@ -28,3 +28,42 @@ class SmartTest {
         assertEquals("1 h 5 min", Smart.length(list))
     }
 }
+
+class M3uTest {
+    private fun t(id: String, title: String, artist: String, file: String) = Track(id, id, title, artist, "B", artist, 0, 200_000, "M", null, file)
+
+    @Test fun roundTripAndMatchByFileOrName() {
+        val a = t("content://a", "Paper Moon", "Velvet Hours", "Paper Moon.mp3")
+        val b = t("srv:9", "Tides", "Lumen Trio", "tides.flac")
+        val text = M3u.write("Night mix", listOf(a, b)) { if (it.id.startsWith("content:")) "Music/${it.fileName}" else null }
+        val (name, entries) = M3u.parse(text, "x")
+        assertEquals("Night mix", name)
+        assertEquals(listOf(a.id, b.id), M3u.match(entries, listOf(a, b)))
+        // A desktop file: absolute paths, matched by file name here.
+        val desk = "#EXTM3U\n#EXTINF:200,Someone - Else\n/home/me/Music/Paper Moon.mp3\n"
+        assertEquals(listOf(a.id), M3u.match(M3u.parse(desk, "d").second, listOf(a, b)))
+    }
+}
+
+class SuggestTest {
+    private val now = 1_800_000_000_000L
+    private fun play(artist: String, daysAgo: Int) = Discovery.Play("k$artist$daysAgo", artist, "T", now - daysAgo * 86_400_000L)
+
+    @Test fun topArtistsAreRecentNamedAndOrdered() {
+        val plays = listOf(play("Lumen Trio", 1), play("lumen trio", 2), play("Velvet Hours", 3), play("Unknown artist", 1),
+            play("Unknown artist", 2), play("Old Band", 200), play("Old Band", 201))
+        assertEquals(listOf("lumen trio", "Velvet Hours"), Smart.topArtists(plays, now, 5))
+        assertEquals(listOf("Velvet Hours"), Smart.topArtists(plays, now, 5) { it.startsWith("lumen", true) })
+    }
+
+    @Test fun interleaveKeepsEverything() {
+        assertEquals(listOf(1, 10, 11, 2, 12, 3), Smart.interleave(listOf(1, 2, 3), listOf(10, 11, 12)))
+        assertEquals(listOf(10, 11), Smart.interleave(emptyList(), listOf(10, 11)))
+    }
+
+    @Test fun duplicatesGroupSameSong() {
+        fun t(id: String, title: String, artist: String) = Track(id, id, title, artist, "B", artist, 0, 1, "M", null)
+        val g = Smart.duplicates(listOf(t("1", "Tides", "Lumen"), t("2", "tides", "LUMEN"), t("3", "Other", "Lumen")))
+        assertEquals(listOf(listOf("1", "2")), g.map { l -> l.map { it.id } })
+    }
+}

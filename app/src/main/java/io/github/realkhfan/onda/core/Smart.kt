@@ -47,4 +47,24 @@ object Smart {
     }
 
     private const val DAY = 86_400_000L
+
+    /** Your most played artists of the last three months, for "Your top mixes" (files without an artist tag are left out). */
+    fun topArtists(plays: List<Discovery.Play>, now: Long, n: Int, skip: (String) -> Boolean = { false }): List<String> {
+        val since = now - 90 * 86_400_000L
+        return plays.filter { it.atMs >= since && Match.norm(it.artist) !in NO_ARTIST && !skip(it.artist) }
+            .groupBy { Match.norm(it.artist) }.entries.sortedByDescending { it.value.size }.take(n).map { it.value.last().artist }
+    }
+    private val NO_ARTIST = setOf("", "unknown artist", "unknown", "various artists", "<unknown>")
+
+    /** One of yours, then two others, like the desktop's artist mix. */
+    fun <T> interleave(own: List<T>, others: List<T>): List<T> {
+        val out = ArrayList<T>(own.size + others.size)
+        val a = own.iterator(); val b = others.iterator()
+        while (a.hasNext() || b.hasNext()) { if (a.hasNext()) out += a.next(); repeat(2) { if (b.hasNext()) out += b.next() } }
+        return out
+    }
+
+    /** Songs in your library more than once (same artist and title), sorted by title. */
+    fun duplicates(library: List<Track>): List<List<Track>> =
+        library.groupBy { Match.norm(it.artist) + "|" + Match.norm(it.title) }.values.filter { it.size > 1 }.sortedBy { it[0].title.lowercase() }
 }

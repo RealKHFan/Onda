@@ -2,6 +2,11 @@ package io.github.realkhfan.onda.ui
 
 import androidx.compose.runtime.collectAsState
 import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import io.github.realkhfan.onda.data.UserCollection
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material.icons.rounded.Download
@@ -131,16 +136,39 @@ internal fun SearchScreen(
     onPlay: (RemoteTrack) -> Unit,
     onOpenArtist: (RemoteArtist) -> Unit,
     onOpenAlbum: (RemoteAlbum) -> Unit,
+    recent: List<String> = emptyList(),
+    onForget: (String?) -> Unit = {},
 ) {
+    var tab by rememberSaveable { mutableStateOf("All") }
     Column(Modifier.fillMaxSize()) {
         Text("Search", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 24.sp,
             modifier = Modifier.padding(16.dp, 16.dp, 16.dp, 8.dp))
         SearchField(query, onQuery, "What do you want to listen to?", Modifier.padding(horizontal = 16.dp))
+        // Same tabs as the desktop's search.
+        if (query.isNotBlank()) Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(16.dp, 10.dp, 16.dp, 0.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) { listOf("All", "Songs", "Artists", "Albums", "Free songs").forEach { t -> Chip(t, t == tab) { tab = t } } }
         if (state == SearchState.Loading) {
             LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp, 8.dp), color = Accent, trackColor = Raised)
         }
         val q = query.trim()
         when {
+            q.isEmpty() && recent.isNotEmpty() -> LazyColumn(Modifier.fillMaxSize().padding(top = 8.dp)) {
+                item {
+                    Row(Modifier.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Recent searches", color = TextMain, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { onForget(null) }) { Text("Clear", color = TextDim) }
+                    }
+                }
+                items(recent) { r ->
+                    Row(Modifier.fillMaxWidth().clickable { onQuery(r) }.padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.History, null, tint = TextDim, modifier = Modifier.size(20.dp))
+                        Text(r, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(start = 14.dp))
+                        IconButton(onClick = { onForget(r) }) { Icon(Icons.Rounded.Close, "Remove $r from recent searches", tint = TextDim) }
+                    }
+                }
+            }
             q.length < 2 -> Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Find any song", color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
                 Text(
@@ -161,7 +189,7 @@ internal fun SearchScreen(
             }
             state == SearchState.Done && results.isEmpty ->
                 Text("No results for “$q”.", color = TextDim, modifier = Modifier.padding(24.dp))
-            else -> ResultsList(q, results, row, onPlay, onOpenArtist, onOpenAlbum)
+            else -> ResultsList(q, results, row, onPlay, onOpenArtist, onOpenAlbum, tab)
         }
     }
 }
@@ -174,46 +202,62 @@ private fun ResultsList(
     onPlay: (RemoteTrack) -> Unit,
     onOpenArtist: (RemoteArtist) -> Unit,
     onOpenAlbum: (RemoteAlbum) -> Unit,
+    tab: String = "All",
 ) {
     val qn = Match.norm(q)
-    val top = results.artists.firstOrNull { Match.norm(it.name) == qn }
-    val songs = results.tracks
+    val all = tab == "All"
+    val top = results.artists.firstOrNull { Match.norm(it.name) == qn }?.takeIf { all }
+    val songs = if (all || tab == "Songs") results.tracks else emptyList()
+    val artists = if (all || tab == "Artists") results.artists else emptyList()
+    val albums = if (all || tab == "Albums") results.albums else emptyList()
+    val free = if (all || tab == "Free songs") results.free else emptyList()
+    val freeAlbums = if (all || tab == "Free songs" || tab == "Albums") results.freeAlbums else emptyList()
+    // A tab shows all of its kind; All keeps the short overview.
+    val firstSongs = if (all) 5 else Int.MAX_VALUE
     LazyColumn(Modifier.fillMaxSize().padding(top = 4.dp)) {
         if (top != null) {
             item { SectionLabel("Top result") }
             item { TopArtistCard(top) { onOpenArtist(top) } }
         }
         if (songs.isNotEmpty()) item { SectionLabel("Songs") }
-        items(songs.take(5)) { t -> RemoteRow(t, row, onPlay = { onPlay(t) }) }
-        if (results.artists.isNotEmpty()) {
+        items(songs.take(firstSongs)) { t -> RemoteRow(t, row, onPlay = { onPlay(t) }) }
+        if (artists.isNotEmpty()) {
             item { SectionLabel("Artists") }
-            item {
+            if (all) item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(results.artists) { a -> ArtistBubble(a) { onOpenArtist(a) } }
+                    items(artists) { a -> ArtistBubble(a) { onOpenArtist(a) } }
+                }
+            } else items(artists) { a ->
+                Row(Modifier.fillMaxWidth().clickable { onOpenArtist(a) }.padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Art(a.picture, 52.dp, round = true)
+                    Text(a.name, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 12.dp))
                 }
             }
         }
-        if (results.albums.isNotEmpty()) {
+        if (albums.isNotEmpty()) {
             item { SectionLabel("Albums") }
-            item {
+            if (all) item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(results.albums) { a -> AlbumCard(a) { onOpenAlbum(a) } }
+                    items(albums) { a -> AlbumCard(a) { onOpenAlbum(a) } }
                 }
-            }
+            } else items(albums) { a -> AlbumListRow(a) { onOpenAlbum(a) } }
         }
-        if (results.free.isNotEmpty()) {
+        if (free.isNotEmpty()) {
             item { SectionLabel("Free full songs") }
-            items(results.free.take(5)) { t -> RemoteRow(t, row, onPlay = { onPlay(t) }) }
+            items(free.take(firstSongs)) { t -> RemoteRow(t, row, onPlay = { onPlay(t) }) }
         }
-        if (results.freeAlbums.isNotEmpty()) {
+        if (freeAlbums.isNotEmpty()) {
             item { SectionLabel("Free albums") }
-            item {
+            if (all) item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(results.freeAlbums) { a -> AlbumCard(a) { onOpenAlbum(a) } }
+                    items(freeAlbums) { a -> AlbumCard(a) { onOpenAlbum(a) } }
                 }
-            }
+            } else items(freeAlbums) { a -> AlbumListRow(a) { onOpenAlbum(a) } }
         }
-        if (songs.size > 5) {
+        if (!all && songs.isEmpty() && artists.isEmpty() && albums.isEmpty() && free.isEmpty() && freeAlbums.isEmpty()) {
+            item { Text("Nothing under $tab for “$q”.", color = TextDim, modifier = Modifier.padding(24.dp)) }
+        }
+        if (all && songs.size > 5) {
             item { SectionLabel("More songs") }
             items(songs.drop(5)) { t -> RemoteRow(t, row, onPlay = { onPlay(t) }) }
         }
@@ -279,6 +323,17 @@ internal fun RemoteRow(
 }
 
 @Composable
+private fun AlbumListRow(a: RemoteAlbum, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Art(a.cover, 52.dp)
+        Column(Modifier.padding(start = 12.dp)) {
+            Text(a.title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(a.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
 private fun TopArtistCard(a: RemoteArtist, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(8.dp)).background(Raised)
@@ -337,6 +392,7 @@ internal fun RemoteArtistScreen(
     onBack: () -> Unit,
     onPlayList: (List<RemoteTrack>, Int, String) -> Unit,
     onOpenAlbum: (RemoteAlbum) -> Unit,
+    onRadio: () -> Unit = {},
 ) {
     var picture by remember(artist.id) { mutableStateOf(artist.picture) }
     var top by remember(artist.id) { mutableStateOf<List<RemoteTrack>?>(null) }
@@ -362,11 +418,14 @@ internal fun RemoteArtistScreen(
                     Art(picture, 160.dp, round = true)
                     Spacer(Modifier.height(12.dp))
                     Text(artist.name, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 26.sp, textAlign = TextAlign.Center)
-                    if (popular.any { it.preview != null || row.localFor(it) != null }) {
-                        Spacer(Modifier.height(12.dp))
-                        Button(onClick = { onPlayList(popular, -1, artist.name) }) {
-                            Icon(Icons.Rounded.PlayArrow, null); Text("Play popular")
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (popular.any { it.preview != null || row.localFor(it) != null }) {
+                            Button(onClick = { onPlayList(popular, -1, artist.name) }) {
+                                Icon(Icons.Rounded.PlayArrow, null); Text("Play popular")
+                            }
                         }
+                        OutlinedButton(onClick = onRadio) { Icon(Icons.Rounded.Radio, null); Text(" Radio") }
                     }
                     val followed by UserCollection.followed.collectAsState()
                     val marked by UserCollection.aiMarked.collectAsState()

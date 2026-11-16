@@ -49,7 +49,7 @@ private fun subtitle(kind: Discovery.Kind) =
 
 /** Square cover: a 2×2 mosaic of the mix's covers with its name on top, like Spotify's made-for-you tiles. */
 @Composable
-internal fun MixCover(kind: Discovery.Kind, tracks: List<RemoteTrack>, modifier: Modifier = Modifier, side: Dp? = null) {
+internal fun MixCover(label: String, tracks: List<RemoteTrack>, modifier: Modifier = Modifier, side: Dp? = null) {
     val covers = tracks.mapNotNull { it.cover }.distinct().take(4)
     Box(
         (if (side != null) modifier.size(side) else modifier.fillMaxWidth().aspectRatio(1f)).clip(RoundedCornerShape(8.dp)).background(Raised),
@@ -67,7 +67,7 @@ internal fun MixCover(kind: Discovery.Kind, tracks: List<RemoteTrack>, modifier:
             Modifier.fillMaxSize().background(Brush.verticalGradient(0.45f to Color.Transparent, 1f to Accent.copy(alpha = 0.85f))),
         )
         Text(
-            kind.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = if (side != null && side < 120.dp) 14.sp else 20.sp,
+            label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = if (side != null && side < 120.dp) 14.sp else 20.sp,
             modifier = Modifier.align(Alignment.BottomStart).padding(10.dp),
         )
     }
@@ -77,7 +77,7 @@ internal fun MixCover(kind: Discovery.Kind, tracks: List<RemoteTrack>, modifier:
 @Composable
 internal fun MixCard(kind: Discovery.Kind, mix: Mixes.Mix?, building: Boolean, modifier: Modifier, onClick: () -> Unit) {
     Column(modifier.clickable(onClick = onClick)) {
-        MixCover(kind, mix?.tracks.orEmpty())
+        MixCover(kind.label, mix?.tracks.orEmpty())
         Spacer(Modifier.height(6.dp))
         Text(
             when {
@@ -112,7 +112,7 @@ internal fun MixScreen(
         LazyColumn(Modifier.fillMaxSize()) {
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    MixCover(kind, list, side = 200.dp)
+                    MixCover(kind.label, list, side = 200.dp)
                     Spacer(Modifier.height(12.dp))
                     Text(subtitle(kind), color = TextMain, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                     if (mix != null && mix.basedOn.isNotEmpty()) {

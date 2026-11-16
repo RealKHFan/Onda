@@ -1,5 +1,6 @@
 package io.github.realkhfan.onda.ui
 
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -45,7 +46,8 @@ class ScreenshotTest {
     @Test fun home() = shot("home") {
         HomeScreen(playlists, { null }, scanning = false, noFolders = false, onAvatar = {}, onAddFolder = {}, onOpenLiked = {}, onOpenWant = {},
             onOpenPlaylist = {}, onShuffleAll = {}, mixes = mapOf(Discovery.Kind.DAILY to mix), building = setOf(Discovery.Kind.WEEKLY),
-            onOpenMix = {}, releases = listOf(release), onOpenRelease = {})
+            onOpenMix = {}, releases = listOf(release), onOpenRelease = {},
+            topMixes = listOf("Velvet Hours" to null, "Coastline Kids" to null, "Lumen Trio" to null))
     }
 
     @Test fun library() = shot("library") {
@@ -54,7 +56,8 @@ class ScreenshotTest {
             onOpenWant = {}, onOpenSmart = {}, onOpenPlaylist = {}, onOpenAlbum = {}, onOpenArtist = {}, onOpenFolder = {},
             savedAlbums = listOf(release), followed = listOf(RemoteArtist(7, "Coastline Kids", null)),
             serverPlaylists = listOf(Subsonic.Playlist("s1", "Gym", listOf("a", "b"))), onOpenServerPlaylist = {},
-            onOpenRemoteAlbum = {}, onOpenRemoteArtist = {}, onPlaySongs = { _, _ -> }, onMenu = {}, onQueue = {})
+            onOpenRemoteAlbum = {}, onOpenRemoteArtist = {}, onPlaySongs = { _, _ -> }, onMenu = {}, onQueue = {},
+            pinned = setOf(playlists[0].id))
     }
 
     @Test fun stats() = shot("stats") {
@@ -65,8 +68,25 @@ class ScreenshotTest {
 
     @Test fun playlist() = shot("playlist") {
         TrackListScreen("Road trip", "Playlist · 5 songs", null, tracks, "Playlist", "p1", null, onBack = {}, onMenu = {}, onQueue = {},
-            onDelete = {}, previews = listOf(r(1, "Big Hit", "Band One"), r(3, "Free Song", "Coastline Kids", Source.AUDIUS)), row = row,
-            onDownload = {}, onRename = {}, onMove = { _, _ -> })
+            description = "Songs for the long drive north", previews = listOf(r(1, "Big Hit", "Band One"), r(3, "Free Song", "Coastline Kids", Source.AUDIUS)), row = row,
+            onDownload = {}, onMove = { _, _ -> }, more = listOf(MenuAction("Edit details", androidx.compose.material.icons.Icons.Rounded.Edit) {}),
+            onAddTo = {}, onRemove = {},
+            below = { recommended(listOf(r(5, "Similar Song", "Band Two")), row, onRefresh = {}, onAdd = {}, onPlay = { _, _ -> }) })
+    }
+
+    @Test fun duplicates() = shot("duplicates") {
+        DuplicatesScreen(listOf(listOf(tracks[0], tracks[0].copy(id = "srv:9"))), mapOf(tracks[0].id to 4), hiddenCount = 2, currentId = null,
+            onBack = {}, onPlay = {}, onHide = {}, onShowHidden = {})
+    }
+
+    @Test fun recentSearches() = shot("search_recent") {
+        SearchScreen("", {}, SearchState.Idle, RemoteResults(), row, null, {}, {}, {}, {}, recent = listOf("velvet hours", "paper moon"))
+    }
+
+    @Test fun searchTab() = shot("search_artists") {
+        SearchScreen("velvet", {}, SearchState.Done, RemoteResults(tracks = listOf(r(1, "Paper Moon", "Velvet Hours")),
+            artists = listOf(RemoteArtist(3, "Velvet Hours", null), RemoteArtist(4, "Velvet Underground Tribute", null))),
+            row, null, {}, {}, {}, {})
     }
 
     @Test fun mix() = shot("mix") {

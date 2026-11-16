@@ -71,6 +71,8 @@ private val MediaItem.isQueued: Boolean get() = mediaMetadata.extras?.getBoolean
 
 data class QueueItem(
     val index: Int,
+    /** A library id or a catalog key ("dz:123"). */
+    val id: String,
     val title: String,
     val artist: String,
     val artUri: String?,
@@ -248,6 +250,13 @@ class PlayerState(val controller: MediaController) {
         controller.play()
     }
 
+    /** More of the same list at its end (radio): not "queued", so they play after your own queue. */
+    fun append(items: List<MediaItem>) {
+        if (items.isEmpty() || controller.mediaItemCount == 0) return
+        context = context + items
+        controller.addMediaItems(items)
+    }
+
     /** Spotify order: after the current song and anything already queued, before the rest. */
     fun addToQueue(item: MediaItem) {
         if (controller.mediaItemCount == 0) return playItems(listOf(item), 0, "Queue", "Your queue")
@@ -273,6 +282,7 @@ class PlayerState(val controller: MediaController) {
             val mi = controller.getMediaItemAt(i)
             QueueItem(
                 index = i,
+                id = mi.mediaId,
                 title = mi.mediaMetadata.title?.toString() ?: "",
                 artist = mi.mediaMetadata.artist?.toString() ?: "",
                 artUri = mi.mediaMetadata.artworkUri?.toString(),

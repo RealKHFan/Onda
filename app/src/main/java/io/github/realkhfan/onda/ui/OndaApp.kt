@@ -182,6 +182,18 @@ import io.github.realkhfan.onda.player.QueueItem
 import io.github.realkhfan.onda.player.toMediaItem
 import io.github.realkhfan.onda.player.toPreviewItem
 import io.github.realkhfan.onda.scan.MusicLibrary
+import io.github.realkhfan.onda.core.M3u
+import io.github.realkhfan.onda.data.Suggest
+import io.github.realkhfan.onda.player.Autoplay
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.FileOpen
+import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.SelectAll
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -204,6 +216,9 @@ private data object StatsRoute : Route
 private data object HistoryRoute : Route
 private data object SmartRoute : Route
 private data class MixRoute(val kind: Discovery.Kind) : Route
+private data class ArtistMixRoute(val name: String) : Route
+private data object RadarRoute : Route
+private data object DuplicatesRoute : Route
 private data class RemoteArtistRoute(val artist: RemoteArtist) : Route
 private data class RemoteAlbumRoute(val album: RemoteAlbum) : Route
 
@@ -251,7 +266,12 @@ fun OndaApp(player: PlayerState?) {
     val savedAlbums by UserCollection.albums.collectAsState()
     val aiMarked by UserCollection.aiMarked.collectAsState()
     val hiddenSongs by UserCollection.hidden.collectAsState()
-    var renaming by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
+    var editing by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
+    var pinned by remember { mutableStateOf(Prefs.pinned(ctx)) }
+    var order by remember { mutableStateOf(Prefs.playlistOrder(ctx)) }
+    var searches by remember { mutableStateOf(Prefs.searches(ctx)) }
+    var savingQueue by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
     val remoteSongs by PlaylistStore.remote.collectAsState()
 
     val byId = remember(everyTrack) { everyTrack.associateBy { it.id } }
@@ -269,7 +289,15 @@ fun OndaApp(player: PlayerState?) {
         { r: RemoteTrack -> byTitle[Match.norm(r.title)]?.firstOrNull { Match.same(it.title, it.artist, r.title, r.artist) } }
     }
     val playlistArt: (PlaylistStore.Playlist) -> String? =
-        { pl -> pl.trackIds.firstNotNullOfOrNull { byId[it]?.artUri ?: remoteSongs[it]?.cover } }
+        { pl -> pl.cover?.let { "file://$it" } ?: pl.trackIds.firstNotNullOfOrNull { byId[it]?.artUri ?: remoteSongs[it]?.cover } }
+    // Pinned first (newest pin on top), then the order you picked, like the desktop's sidebar.
+    val orderedPlaylists = remember(playlists, pinned, order) {
+        when (order) {
+            "A–Z" -> playlists.sortedBy { it.name.lowercase() }
+            "Most songs" -> playlists.sortedByDescending { it.trackIds.size }
+            else -> playlists
+        }.sortedBy { pinned.indexOf(it.id).let { i -> if (i < 0) Int.MAX_VALUE else i } }
+    }
 
     var tab by rememberSaveable { mutableIntStateOf(0) }
     // Screens opened on top of the current tab; Back pops one (album -> artist -> search results).
@@ -281,8 +309,8 @@ fun OndaApp(player: PlayerState?) {
     var menuFor by remember { mutableStateOf<MenuFor?>(null) }
     var remoteMenu by remember { mutableStateOf<RemoteTrack?>(null) }
     var remoteMenuPlaylist by remember { mutableStateOf<String?>(null) } // set when opened from a playlist row
-    var addTrack by remember { mutableStateOf<Track?>(null) }
-    var pendingAdd by remember { mutableStateOf<Track?>(null) }
+    var addTracks by remember { mutableStateOf<List<Track>?>(null) }
+    var pendingAdd by remember { mutableStateOf<List<Track>?>(null) }
     var showCreate by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
@@ -313,6 +341,8 @@ fun OndaApp(player: PlayerState?) {
         try {
             results = Catalog.search(q, appleOn, freeOn, jamendoId)
             searchState = SearchState.Done
+            delay(2000) // still the same words two seconds later: worth keeping as a recent search
+            if (!results.isEmpty) { Prefs.rememberSearch(ctx, q); searches = Prefs.searches(ctx) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -370,6 +400,59 @@ fun OndaApp(player: PlayerState?) {
     }
     val rowCtx = RemoteRowContext(localFor, wantKeys, player?.currentId) { PlaylistStore.toggleWant(it) }
 
+    /**
+     * Radio, like the desktop's: [first] plays now and similar songs follow it. [first] null: the radio starts
+     * with the similar songs themselves, or, with [keepCurrent], they follow the song that's playing.
+     */
+    fun startRadio(first: androidx.media3.common.MediaItem?, artist: String, skip: String, label: String, keepCurrent: Boolean = false) {
+        val p = player ?: return
+        if (!keepCurrent) first?.let { p.playItems(listOf(it), 0, "Radio", label) }
+        toast("Starting radio…")
+        scope.launch {
+            val more = Autoplay.similar(listOf(artist), setOf(skip), tracks, n = 25, listenBrainz = Prefs.listenBrainz(ctx))
+            when {
+                more.isEmpty() -> toast("No similar songs found")
+                first == null && !keepCurrent -> p.playItems(more, 0, "Radio", label)
+                else -> p.append(more)
+            }
+        }
+    }
+    fun addToPlaylist(pl: PlaylistStore.Playlist, list: List<Track>) {
+        PlaylistStore.addToPlaylist(pl.id, list.map { it.id })
+        toast(if (list.size == 1) "Added to ${pl.name}" else "Added ${songCount(list.size)} to ${pl.name}")
+    }
+    fun togglePin(id: String) {
+        pinned = if (id in pinned) pinned - id else listOf(id) + pinned
+        Prefs.setPinned(ctx, pinned)
+    }
+    // Playlist files: the same .m3u format as the desktop, so a playlist moves between both.
+    val exportFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/x-mpegurl")) { uri ->
+        val pl = exporting ?: return@rememberLauncherForActivityResult
+        exporting = null
+        if (uri == null) return@rememberLauncherForActivityResult
+        val list = pl.trackIds.mapNotNull { id ->
+            byId[id] ?: remoteSongs[id]?.let { r -> localFor(r) ?: Track(r.key, "", r.title, r.artist, r.album, r.artist, 0, r.durationSec * 1000L, "", r.cover) }
+        }
+        val text = M3u.write(pl.name, list) { t -> t.fileName.takeIf { it.isNotEmpty() && !t.id.startsWith(Server.PREFIX) }?.let { "${t.folderName}/$it" } }
+        val ok = runCatching { ctx.contentResolver.openOutputStream(uri, "wt")!!.use { it.write(text.toByteArray()) } }.isSuccess
+        toast(if (ok) "Saved “${pl.name}” as a playlist file" else "Couldn't save the file")
+    }
+    val importFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = runCatching {
+            ctx.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull()?.substringBeforeLast('.') ?: "Imported playlist"
+        // A playlist file is text; anything over 2 MB isn't one.
+        val text = runCatching { ctx.contentResolver.openInputStream(uri)!!.use { it.readUpTo(2 * 1024 * 1024) }?.let(::String) }.getOrNull()
+        if (text == null || !text.contains("#EXT") && text.lines().none { it.isNotBlank() && !it.startsWith("#") }) { toast("That isn't a playlist file"); return@rememberLauncherForActivityResult }
+        val (title, entries) = M3u.parse(text, name)
+        val ids = M3u.match(entries, tracks)
+        if (ids.isEmpty()) { toast("None of its songs are in your library"); return@rememberLauncherForActivityResult }
+        val id = PlaylistStore.createPlaylist(title)
+        PlaylistStore.addToPlaylist(id, ids)
+        toast("Imported “$title”: ${songCount(ids.size)}" + if (ids.size < entries.size) " of ${entries.size} found" else "")
+    }
+
     // Daily 10 / Weekly 30: built from what you play, like, save and own; rebuilt when the day / week changes.
     val mixes by Mixes.mixes.collectAsState()
     val mixesBuilding by Mixes.building.collectAsState()
@@ -419,6 +502,7 @@ fun OndaApp(player: PlayerState?) {
                     onSettings = { scope.launch { drawerState.close() }; push(SettingsRoute) },
                     onStats = { scope.launch { drawerState.close() }; push(StatsRoute) },
                     onHistory = { scope.launch { drawerState.close() }; push(HistoryRoute) },
+                    onDuplicates = { scope.launch { drawerState.close() }; push(DuplicatesRoute) },
                 )
             },
         ) {
@@ -459,7 +543,35 @@ fun OndaApp(player: PlayerState?) {
                             onRetry = { Mixes.refresh(taste) },
                             onMenu = { remoteMenu = it },
                         )
-                        QueueRoute -> QueueScreen(player) { pop() }
+                        QueueRoute -> QueueScreen(
+                            player,
+                            recent = remember(plays, byId) { plays.asReversed().mapNotNull { byId[it.key] }.distinctBy { it.id }.take(10) },
+                            onSave = { savingQueue = true },
+                        ) { pop() }
+                        is ArtistMixRoute -> {
+                            var list by remember(d.name) { mutableStateOf<List<RemoteTrack>?>(null) }
+                            LaunchedEffect(d.name) {
+                                val own = tracks.filter { Match.norm(it.artist) == Match.norm(d.name) }.shuffled().take(10)
+                                val keys = own.map { Match.norm(it.artist) + "|" + Match.norm(it.title) }.toSet()
+                                list = Smart.interleave(own.map { it.asRemote() }, Suggest.artistMix(d.name, keys, Prefs.listenBrainz(ctx)))
+                            }
+                            RemoteListScreen("${d.name} Mix", "${d.name} and similar artists", list, "Couldn't make this mix right now.", rowCtx,
+                                onBack = { pop() }, onPlayList = { l, i -> playRemoteList(l, i, "Playlist", "${d.name} Mix") },
+                                onMenu = { r -> localFor(r)?.let { menuFor = MenuFor(it, null, false) } ?: run { remoteMenu = r } })
+                        }
+                        RadarRoute -> {
+                            var list by remember { mutableStateOf<List<RemoteTrack>?>(null) }
+                            LaunchedEffect(Unit) { list = Suggest.releaseRadar(releases) }
+                            RemoteListScreen("Release radar", "New songs from artists you follow and play", list, "Couldn't load the new releases right now.", rowCtx,
+                                onBack = { pop() }, onPlayList = { l, i -> playRemoteList(l, i, "Playlist", "Release radar") }, onMenu = { remoteMenu = it })
+                        }
+                        DuplicatesRoute -> {
+                            val counts = remember(plays) { plays.groupingBy { it.key }.eachCount() }
+                            DuplicatesScreen(remember(tracks) { Smart.duplicates(tracks) }, counts, hiddenSongs.count(UserCollection::isLibraryKey), player?.currentId,
+                                onBack = { pop() }, onPlay = { player?.play(listOf(it), 0, "Library", "Duplicates") },
+                                onHide = { t -> UserCollection.toggleHidden(t.id); undoable("Hidden: ${t.title}") { UserCollection.toggleHidden(t.id) } },
+                                onShowHidden = { UserCollection.showHiddenSongs() })
+                        }
                         StatsRoute -> StatsScreen(plays, tracks, { byId[it] }, { name -> artists.firstOrNull { Match.norm(it.name) == Match.norm(name) }?.artUri }, player,
                             onBack = { pop() }, onOpenAlbum = { list, title, artist, art -> push(TracksRoute(title, "Album · $artist", art, list, "Album")) })
                         HistoryRoute -> HistoryScreen(plays, { byId[it] }, player) { pop() }
@@ -478,11 +590,18 @@ fun OndaApp(player: PlayerState?) {
                             emptyText = "Songs you like show up here. Tap ♥ in the player or Add to Liked Songs in a song's ⋮ menu.",
                             onBack = { pop() }, onMenu = { menuFor = MenuFor(it, LIKED_ID, false) }, onQueue = ::queue,
                             onDownload = downloadAll(likedTracks),
+                            onAddTo = { addTracks = it },
+                            onRemove = { list ->
+                                val before = liked
+                                PlaylistStore.setLiked(before - list.map { it.id }.toSet())
+                                undoable("Removed ${songCount(list.size)} from Liked Songs") { PlaylistStore.setLiked(before) }
+                            },
                         )
                         WantRoute -> WantScreen(want, rowCtx, onBack = { pop() }, onPlay = { playRemote(it, "Playlist", "Want to listen") })
                         is RemoteArtistRoute -> RemoteArtistScreen(
                             d.artist, rowCtx, onBack = { pop() },
                             onPlayList = { list, i, label -> playRemoteList(list, i, "Artist", label) },
+                            onRadio = { startRadio(null, d.artist.name, "", "${d.artist.name} Radio") },
                             onOpenAlbum = { push(RemoteAlbumRoute(it)) },
                         )
                         is RemoteAlbumRoute -> RemoteAlbumScreen(
@@ -508,16 +627,49 @@ fun OndaApp(player: PlayerState?) {
                                 }
                                 val owned = ownedPairs.map { it.second }
                                 val ownedIds = ownedPairs.map { it.first }
+                                var recRound by remember(pl.id) { mutableIntStateOf(0) }
+                                var recs by remember(pl.id) { mutableStateOf<List<RemoteTrack>?>(null) }
+                                LaunchedEffect(pl.id, recRound, pl.trackIds.isEmpty()) {
+                                    recs = null
+                                    recs = Suggest.recommendFor(pl.id, owned.map { it.artist to it.title } + previews.map { it.artist to it.title },
+                                        pl.trackIds.toSet(), Prefs.listenBrainz(ctx), refresh = recRound > 0)
+                                }
+                                val shownRecs = recs?.filter { r -> r.key !in pl.trackIds && localFor(r)?.id?.let { it in pl.trackIds } != true }
                                 TrackListScreen(
-                                    title = pl.name, subtitle = "Playlist · ${songCount(pl.trackIds.size)}", art = playlistArt(pl),
+                                    title = pl.name, subtitle = (if (pl.id in pinned) "Pinned · " else "") + "Playlist · ${songCount(pl.trackIds.size)}",
+                                    description = pl.description, art = playlistArt(pl),
                                     tracks = owned, kind = "Playlist", sourceId = pl.id, player = player,
                                     previews = previews, row = rowCtx,
                                     onPlayPreview = { i -> playRemoteList(previews, i, "Playlist", pl.name) },
                                     onPreviewMenu = { remoteMenu = it; remoteMenuPlaylist = pl.id },
                                     emptyText = "This playlist is empty. Add songs with Add to playlist in any song's ⋮ menu.",
                                     onBack = { pop() }, onMenu = { menuFor = MenuFor(it, pl.id, false) }, onQueue = ::queue,
-                                    onDelete = { confirmDelete = pl },
-                                    onRename = { renaming = pl },
+                                    more = listOf(
+                                        MenuAction("Edit details", Icons.Rounded.Edit) { editing = pl },
+                                        MenuAction(if (pl.id in pinned) "Unpin" else "Pin to the top", Icons.Rounded.PushPin) { togglePin(pl.id) },
+                                        MenuAction("Duplicate", Icons.Rounded.ContentCopy) {
+                                            PlaylistStore.duplicate(pl.id)?.let { id -> toast("Made “${pl.name} (copy)”"); push(PlaylistRoute(id)) }
+                                        },
+                                        MenuAction("Save as playlist file", Icons.Rounded.Save) { exporting = pl; exportFile.launch("${pl.name}.m3u") },
+                                        MenuAction("Delete playlist", Icons.Rounded.Delete) { confirmDelete = pl },
+                                    ),
+                                    onAddTo = { addTracks = it },
+                                    onRemove = { list ->
+                                        val before = pl.trackIds
+                                        // A song can be saved under its catalog key and play from your file: both ids go.
+                                        val gone = list.map { it.id }.toSet() + ownedPairs.filter { (_, t) -> list.any { it.id == t.id } }.map { it.first }
+                                        PlaylistStore.setTracks(pl.id, before.filterNot { it in gone })
+                                        undoable("Removed ${songCount(list.size)} from the playlist") { PlaylistStore.setTracks(pl.id, before) }
+                                    },
+                                    below = {
+                                        recommended(shownRecs, rowCtx, onRefresh = { recRound++ },
+                                            onAdd = { r ->
+                                                val own = localFor(r)
+                                                PlaylistStore.addToPlaylist(pl.id, listOf(own?.id ?: r.key), if (own == null) listOf(r) else emptyList())
+                                                toast("Added to ${pl.name}")
+                                            },
+                                            onPlay = { l, i -> playRemoteList(l, i, "Playlist", "Recommended for ${pl.name}") })
+                                    },
                                     onMove = { from, to ->
                                         PlaylistStore.moveInPlaylist(pl.id, pl.trackIds.indexOf(ownedIds[from]), pl.trackIds.indexOf(ownedIds[to]))
                                     },
@@ -530,10 +682,11 @@ fun OndaApp(player: PlayerState?) {
                             sourceId = null, player = player, round = d.round,
                             onBack = { pop() }, onMenu = { menuFor = MenuFor(it, null, false) }, onQueue = ::queue,
                             onDownload = downloadAll(d.tracks),
+                            onAddTo = { addTracks = it },
                         )
                         null -> when (tab) {
                             0 -> HomeScreen(
-                                playlists, playlistArt, scanning, folders.isEmpty(),
+                                orderedPlaylists, playlistArt, scanning, folders.isEmpty(),
                                 onAvatar = { scope.launch { drawerState.open() } },
                                 onAddFolder = { LibraryActions.addFolder?.invoke() },
                                 onOpenLiked = { push(LikedRoute) },
@@ -554,9 +707,17 @@ fun OndaApp(player: PlayerState?) {
                                 },
                                 onPlayRecent = { list, i -> player?.play(list, i, "Playlist", "Recently played") },
                                 onOpenHistory = { push(HistoryRoute) },
+                                topMixes = remember(plays, artistPics) {
+                                    Smart.topArtists(plays, System.currentTimeMillis(), 6) { UserCollection.isBlocked(it) }.map { name ->
+                                        name to (artistPics[name.lowercase()]?.ifBlank { null } ?: tracks.firstOrNull { Match.norm(it.artist) == Match.norm(name) }?.artUri)
+                                    }
+                                },
+                                onOpenTopMix = { push(ArtistMixRoute(it)) },
+                                onOpenRadar = { push(RadarRoute) },
                             )
                             1 -> SearchScreen(
                                 query, { query = it }, searchState, results, rowCtx,
+                                recent = searches, onForget = { Prefs.forgetSearch(ctx, it); searches = Prefs.searches(ctx) },
                                 errorDetail = searchError,
                                 onOpenAppInfo = { openAppInfo(ctx) },
                                 onPlay = { playRemote(it, "Search", query.trim()) },
@@ -564,7 +725,9 @@ fun OndaApp(player: PlayerState?) {
                                 onOpenAlbum = { push(RemoteAlbumRoute(it)) },
                             )
                             else -> LibraryScreen(
-                                playlists = playlists, playlistArt = playlistArt,
+                                playlists = orderedPlaylists, playlistArt = playlistArt,
+                                pinned = pinned.toSet(), order = order, onOrder = { order = it; Prefs.setPlaylistOrder(ctx, it) },
+                                onImport = { importFile.launch(arrayOf("*/*")) },
                                 likedCount = likedTracks.size, wantCount = want.size,
                                 albums = albums, artists = artists, folders = folderGroups, songs = songs,
                                 savedAlbums = savedAlbums, followed = followed,
@@ -654,7 +817,7 @@ fun OndaApp(player: PlayerState?) {
                     if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) { PlaylistStore.toggleLike(t.id) })
             }
             add(MenuAction("Share", Icons.Rounded.Share) { share(ctx, "${t.title} — ${t.artist}") })
-            add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTrack = t })
+            add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
             Downloads.forTrack(t, serverCfg)?.let { item -> add(MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) }) }
             if (inPlaylist && pid != null) {
                 add(MenuAction("Remove from this playlist", Icons.Rounded.RemoveCircleOutline) {
@@ -678,6 +841,9 @@ fun OndaApp(player: PlayerState?) {
                 add(MenuAction("Play next", Icons.Rounded.QueuePlayNext) { player?.playNext(t.toMediaItem()); toast("Playing next") })
             }
             add(MenuAction("Add to queue", Icons.AutoMirrored.Rounded.PlaylistAdd) { queue(t) })
+            add(MenuAction("Start radio", Icons.Rounded.Radio) {
+                startRadio(t.toMediaItem(), t.artist, t.id, "${t.title} Radio", keepCurrent = m.fromPlayer && player?.currentId == t.id)
+            })
             if (m.fromPlayer) {
                 add(MenuAction("Go to queue", Icons.AutoMirrored.Rounded.QueueMusic) { fullPlayer = false; push(QueueRoute) })
             }
@@ -716,17 +882,22 @@ fun OndaApp(player: PlayerState?) {
             inPlaylist?.let { pl ->
                 MenuAction("Remove from this playlist", Icons.Rounded.RemoveCircleOutline) { PlaylistStore.removeFromPlaylist(pl, r.key) }
             },
+            MenuAction("Start radio", Icons.Rounded.Radio) {
+                val playing = player?.currentId == r.key
+                if (!playing) playRemote(r, "Radio", "${r.title} Radio")
+                startRadio(null, r.artist, r.key, "${r.title} Radio", keepCurrent = true)
+            },
             MenuAction("Go to queue", Icons.AutoMirrored.Rounded.QueueMusic) { fullPlayer = false; push(QueueRoute) },
         )
         SongMenu(r.title, r.artist, r.cover, actions) { remoteMenu = null; remoteMenuPlaylist = null }
     }
 
-    addTrack?.let { t ->
+    addTracks?.let { list ->
         AddToPlaylistSheet(
-            playlists,
-            onDismiss = { addTrack = null },
-            onPick = { pl -> PlaylistStore.addToPlaylist(pl.id, listOf(t.id)); addTrack = null; toast("Added to ${pl.name}") },
-            onCreate = { pendingAdd = t; addTrack = null; showCreate = true },
+            orderedPlaylists,
+            onDismiss = { addTracks = null },
+            onPick = { pl -> addToPlaylist(pl, list); addTracks = null },
+            onCreate = { pendingAdd = list; addTracks = null; showCreate = true },
         )
     }
 
@@ -735,7 +906,7 @@ fun OndaApp(player: PlayerState?) {
             onDismiss = { showCreate = false; pendingAdd = null },
             onCreate = { name ->
                 val id = PlaylistStore.createPlaylist(name)
-                pendingAdd?.let { PlaylistStore.addToPlaylist(id, listOf(it.id)); toast("Added to ${name.ifBlank { "New playlist" }}") }
+                pendingAdd?.let { list -> PlaylistStore.playlists.value.firstOrNull { it.id == id }?.let { addToPlaylist(it, list) } }
                 pendingAdd = null; showCreate = false
             },
         )
@@ -745,7 +916,11 @@ fun OndaApp(player: PlayerState?) {
         AlertDialog(
             onDismissRequest = { confirmDelete = null },
             confirmButton = {
-                TextButton(onClick = { PlaylistStore.deletePlaylist(pl.id); confirmDelete = null; pop() }) {
+                TextButton(onClick = {
+                    val at = playlists.indexOfFirst { it.id == pl.id }
+                    PlaylistStore.deletePlaylist(pl.id); confirmDelete = null; pop()
+                    undoable("Deleted “${pl.name}”") { PlaylistStore.restore(pl, at) } // a pin stays, so it comes back pinned
+                }) {
                     Text("Delete", color = ErrorRed)
                 }
             },
@@ -756,23 +931,46 @@ fun OndaApp(player: PlayerState?) {
         )
     }
 
-    renaming?.let { pl ->
+    editing?.let { pl ->
+        PlaylistDetailsDialog(pl, playlistArt(pl), onDismiss = { editing = null }) { name, about, picked, removed ->
+            val cover = when {
+                picked != null -> saveCover(ctx, pl.id, picked) ?: pl.cover.also { toast("Couldn't use that photo") }
+                removed -> null
+                else -> pl.cover
+            }
+            if (cover != pl.cover) pl.cover?.let { old -> runCatching { java.io.File(old).delete() } }
+            PlaylistStore.setDetails(pl.id, name, about, cover)
+            editing = null
+        }
+    }
+
+    if (savingQueue) {
+        val day = remember { java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("d MMM")) }
         CreatePlaylistDialog(
-            onDismiss = { renaming = null },
-            onCreate = { name -> if (name.isNotBlank()) PlaylistStore.renamePlaylist(pl.id, name); renaming = null },
-            heading = "Rename playlist", initial = pl.name, confirm = "Rename",
+            onDismiss = { savingQueue = false },
+            onCreate = { name ->
+                val items = player?.queue().orEmpty()
+                val songs = items.mapNotNull { q -> remoteOf(q.id, q.title, q.artist, "", q.artUri) }
+                val id = PlaylistStore.createPlaylist(name.ifBlank { "Queue $day" })
+                PlaylistStore.addToPlaylist(id, items.map { it.id }.distinct(), songs)
+                savingQueue = false
+                toast("Saved ${songCount(items.map { it.id }.distinct().size)} as a playlist")
+            },
+            heading = "Save queue as playlist", initial = "Queue $day", confirm = "Save",
         )
     }
 
     if (showDevices) DevicesSheet { showDevices = false }
 }
 
-private fun currentRemote(p: PlayerState): RemoteTrack? {
-    val key = p.currentId ?: return null
+private fun currentRemote(p: PlayerState): RemoteTrack? = p.currentId?.let { remoteOf(it, p.title, p.artist, p.album, p.artUri) }
+
+/** A catalog song back from a player item's key and tags (null for your own songs). */
+private fun remoteOf(key: String, title: String, artist: String, album: String, art: String?): RemoteTrack? {
     val source = Source.of(key) ?: return null
     val rest = key.removePrefix(source.prefix)
-    return if (source.full) RemoteTrack(0, p.title, p.artist, p.album, p.artUri, null, 0, source, ref = rest)
-    else RemoteTrack(rest.toLongOrNull() ?: return null, p.title, p.artist, "", p.artUri, null, 0, source)
+    return if (source.full) RemoteTrack(0, title, artist, album, art, null, 0, source, ref = rest)
+    else RemoteTrack(rest.toLongOrNull() ?: return null, title, artist, "", art, null, 0, source)
 }
 
 /* ---------------- Home ---------------- */
@@ -797,6 +995,9 @@ internal fun HomeScreen(
     recent: List<Track> = emptyList(),
     onPlayRecent: (List<Track>, Int) -> Unit = { _, _ -> },
     onOpenHistory: () -> Unit = {},
+    topMixes: List<Pair<String, String?>> = emptyList(),
+    onOpenTopMix: (String) -> Unit = {},
+    onOpenRadar: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize()) {
         // Greets you like the desktop does.
@@ -832,10 +1033,23 @@ internal fun HomeScreen(
                     }
                 }
             }
+            if (topMixes.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text("Your top mixes", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 20.sp,
+                        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
+                }
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(topMixes, key = { it.first }) { (name, art) -> TopMixCard(name, art) { onOpenTopMix(name) } }
+                    }
+                }
+            }
             if (releases.isNotEmpty()) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
-                    Text("New releases", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 20.sp,
-                        modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
+                    Row(Modifier.padding(top = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("New releases", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 20.sp, modifier = Modifier.weight(1f))
+                        TextButton(onClick = onOpenRadar) { Text("Play as a playlist", color = Accent) }
+                    }
                 }
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     val today = remember { java.time.LocalDate.now() }
@@ -911,8 +1125,13 @@ internal fun LibraryScreen(
     onPlaySongs: (List<Track>, Int) -> Unit,
     onMenu: (Track) -> Unit,
     onQueue: (Track) -> Unit,
+    pinned: Set<String> = emptySet(),
+    order: String = "Custom",
+    onOrder: (String) -> Unit = {},
+    onImport: () -> Unit = {},
 ) {
     var chip by rememberSaveable { mutableIntStateOf(0) }
+    var ordering by remember { mutableStateOf(false) }
     var searching by rememberSaveable { mutableStateOf(false) }
     var q by rememberSaveable { mutableStateOf("") }
     BackHandler(enabled = searching) { searching = false; q = "" }
@@ -985,8 +1204,22 @@ internal fun LibraryScreen(
                             }
                         }
                         item { GroupRow("Smart playlists", "Most played, On repeat, Never played, Forgotten favourites", onOpenSmart) { IconTile(Icons.Rounded.AutoAwesome, 52.dp, CardBg, Accent) } }
-                        items(playlists) { pl ->
-                            GroupRow(pl.name, "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) }) {
+                        if (playlists.size > 1) item {
+                            Box(Modifier.padding(start = 4.dp)) {
+                                TextButton(onClick = { ordering = true }) {
+                                    Icon(Icons.AutoMirrored.Rounded.Sort, null, tint = TextDim, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Playlists: $order", color = TextDim, fontSize = 13.sp)
+                                }
+                                DropdownMenu(ordering, { ordering = false }) {
+                                    listOf("Custom", "A–Z", "Most songs").forEach { o ->
+                                        DropdownMenuItem({ Text(o, color = if (o == order) Accent else TextMain) }, { onOrder(o); ordering = false })
+                                    }
+                                }
+                            }
+                        }
+                        items(playlists, key = { it.id }) { pl ->
+                            GroupRow(pl.name, (if (pl.id in pinned) "Pinned · " else "") + "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) }) {
                                 Art(playlistArt(pl), 52.dp)
                             }
                         }
@@ -998,6 +1231,7 @@ internal fun LibraryScreen(
                         if (playlists.isEmpty()) item {
                             Text("Tap + to create your first playlist.", color = TextDim, modifier = Modifier.padding(24.dp))
                         }
+                        item { GroupRow("Import a playlist file", ".m3u or .m3u8, e.g. saved by Onda on your PC", onImport) { IconTile(Icons.Rounded.FileOpen, 52.dp, CardBg, TextDim) } }
                     }
                     1 -> {
                         items(savedAlbums) { a -> GroupRow(a.title, "Saved · ${a.artist}", { onOpenRemoteAlbum(a) }) { Art(a.cover, 52.dp) } }
@@ -1035,28 +1269,53 @@ internal fun TrackListScreen(
     tile: ImageVector? = null,
     round: Boolean = false,
     emptyText: String? = null,
-    onDelete: (() -> Unit)? = null,
+    description: String = "",
     previews: List<RemoteTrack> = emptyList(),
     row: RemoteRowContext? = null,
     onPlayPreview: (index: Int) -> Unit = {},
     onPreviewMenu: (RemoteTrack) -> Unit = {},
     onDownload: (() -> Unit)? = null,
-    onRename: (() -> Unit)? = null,
     onMove: ((from: Int, to: Int) -> Unit)? = null,
+    /** The playlist's own ⋮ menu (edit, pin, duplicate, save as file, delete). */
+    more: List<MenuAction> = emptyList(),
+    /** Long-press selects songs; these act on the selection (null: not offered here). */
+    onAddTo: ((List<Track>) -> Unit)? = null,
+    onRemove: ((List<Track>) -> Unit)? = null,
+    below: (LazyListScope.() -> Unit)? = null,
 ) {
     val reorder = rememberReorder()
     // Sort and find, like the desktop's list header.
     var sort by remember(title) { mutableStateOf(Smart.Sort.CUSTOM) }
     var filter by remember(title) { mutableStateOf<String?>(null) }
     var sorting by remember { mutableStateOf(false) }
+    var moreOpen by remember { mutableStateOf(false) }
+    var selected by remember(title) { mutableStateOf<Set<String>>(emptySet()) }
+    BackHandler(enabled = selected.isNotEmpty()) { selected = emptySet() }
     val plays by PlayLog.plays.collectAsState()
     val counts = remember(plays) { plays.groupingBy { it.key }.eachCount() }
     val shown = remember(tracks, sort, counts, filter) {
         val f = filter?.let(Match::norm).orEmpty()
         Smart.sorted(tracks, sort, counts).filter { f.isEmpty() || Match.norm("${it.title} ${it.artist} ${it.album}").contains(f) }
     }
+    val picked = shown.filter { it.id in selected }
     Column(Modifier.fillMaxSize()) {
-        BackTopBar(title, onBack) {
+        if (selected.isNotEmpty()) {
+            SelectionBar(
+                count = picked.size,
+                onClose = { selected = emptySet() },
+                onPlay = { player?.play(picked, 0, kind, title, sourceId, shuffled = false); selected = emptySet() },
+                onQueue = { picked.forEach(onQueue); selected = emptySet() },
+                onAddTo = onAddTo?.let { add -> { add(picked); selected = emptySet() } },
+                actions = buildList {
+                    add(MenuAction("Select all", Icons.Rounded.SelectAll) { selected = shown.map { it.id }.toSet() })
+                    add(MenuAction("Add to Liked Songs", Icons.Rounded.FavoriteBorder) { PlaylistStore.addLikes(picked.map { it.id }); selected = emptySet() })
+                    onRemove?.let { rm -> add(MenuAction("Remove from this list", Icons.Rounded.RemoveCircleOutline) { rm(picked); selected = emptySet() }) }
+                    add(MenuAction("Hide from library", Icons.Rounded.VisibilityOff) {
+                        picked.filterNot { it.id in UserCollection.hidden.value }.forEach { UserCollection.toggleHidden(it.id) }; selected = emptySet()
+                    })
+                },
+            )
+        } else BackTopBar(title, onBack) {
             if (tracks.size > 1) IconButton(onClick = { filter = if (filter == null) "" else null }) {
                 Icon(Icons.Rounded.Search, "Find in this list", tint = if (filter != null) Accent else TextDim)
             }
@@ -1067,45 +1326,55 @@ internal fun TrackListScreen(
                 }
             }
             if (tracks.isNotEmpty()) IconButton(onClick = { shown.forEach(onQueue) }) { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add all to the queue", tint = TextDim) }
-            if (onRename != null) IconButton(onClick = onRename) { Icon(Icons.Rounded.Edit, "Rename playlist", tint = TextDim) }
             if (onDownload != null) IconButton(onClick = onDownload) { Icon(Icons.Rounded.Download, "Download $title", tint = TextDim) }
-            if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) }
-        }
-        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (tile != null) IconTile(tile, 96.dp) else Art(art, 96.dp, round = round)
-            Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f)) {
-                Text(subtitle + if (tracks.any { it.durationMs > 0 }) " · ${Smart.length(tracks)}" else "", color = TextDim, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            if (shown.isNotEmpty()) player?.play(shown, 0, kind, title, sourceId, shuffled = false) else onPlayPreview(-1)
-                        },
-                        enabled = tracks.isNotEmpty() || previews.isNotEmpty(),
-                    ) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
-                    OutlinedButton(
-                        onClick = { player?.play(shown, Random.nextInt(shown.size), kind, title, sourceId, shuffled = true) },
-                        enabled = shown.isNotEmpty(),
-                    ) { Icon(Icons.Rounded.Shuffle, null); Text("Shuffle") }
+            if (more.isNotEmpty()) Box {
+                IconButton(onClick = { moreOpen = true }) { Icon(Icons.Rounded.MoreVert, "More for $title", tint = TextDim) }
+                DropdownMenu(moreOpen, { moreOpen = false }) {
+                    more.forEach { a -> DropdownMenuItem({ Text(a.label) }, { moreOpen = false; a.run() }, leadingIcon = { Icon(a.icon, null) }) }
                 }
             }
         }
-        Spacer(Modifier.height(8.dp))
-        filter?.let { f ->
-            OutlinedTextField(f, { filter = it }, placeholder = { Text("Find in $title") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 8.dp))
-        }
-        if (tracks.isEmpty() && previews.isEmpty() && emptyText != null) Text(emptyText, color = TextDim, modifier = Modifier.padding(24.dp))
         LazyColumn(Modifier.fillMaxSize()) {
-            itemsIndexed(shown) { i, t ->
-                val row = @Composable {
-                    SwipeTrackRow(t, player?.currentId == t.id, onQueue = { onQueue(t) }, onMenu = { onMenu(t) }) {
-                        player?.play(shown, i, kind, title, sourceId)
+            item {
+                Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (tile != null) IconTile(tile, 96.dp) else Art(art, 96.dp, round = round)
+                    Spacer(Modifier.width(16.dp))
+                    Column(Modifier.weight(1f)) {
+                        if (description.isNotBlank()) Text(description, color = TextMain, fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                        Text(subtitle + if (tracks.any { it.durationMs > 0 }) " · ${Smart.length(tracks)}" else "", color = TextDim, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    if (shown.isNotEmpty()) player?.play(shown, 0, kind, title, sourceId, shuffled = false) else onPlayPreview(-1)
+                                },
+                                enabled = tracks.isNotEmpty() || previews.isNotEmpty(),
+                            ) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") }
+                            OutlinedButton(
+                                onClick = { player?.play(shown, Random.nextInt(shown.size), kind, title, sourceId, shuffled = true) },
+                                enabled = shown.isNotEmpty(),
+                            ) { Icon(Icons.Rounded.Shuffle, null); Text("Shuffle") }
+                        }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                filter?.let { f ->
+                    OutlinedTextField(f, { filter = it }, placeholder = { Text("Find in $title") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 8.dp))
+                }
+                if (tracks.isEmpty() && previews.isEmpty() && emptyText != null) Text(emptyText, color = TextDim, modifier = Modifier.padding(24.dp))
+            }
+            itemsIndexed(shown) { i, t ->
+                val selecting = selected.isNotEmpty()
+                val toggle = { selected = if (t.id in selected) selected - t.id else selected + t.id }
+                val row = @Composable {
+                    SwipeTrackRow(
+                        t, player?.currentId == t.id, onQueue = { onQueue(t) }, onMenu = { onMenu(t) },
+                        selected = t.id in selected, onLongClick = toggle,
+                    ) { if (selecting) toggle() else player?.play(shown, i, kind, title, sourceId) }
+                }
                 // Dragging moves songs only in the list's own order.
-                if (onMove == null || sort != Smart.Sort.CUSTOM || filter != null) {
+                if (onMove == null || sort != Smart.Sort.CUSTOM || filter != null || selecting) {
                     row()
                 } else {
                     Row(Modifier.reorderRow(reorder, i, shown.size), verticalAlignment = Alignment.CenterVertically) {
@@ -1118,6 +1387,26 @@ internal fun TrackListScreen(
                 item { SectionLabel("Previews · not in your library") }
                 itemsIndexed(previews) { i, r -> RemoteRow(r, row, onPlay = { onPlayPreview(i) }, onMenu = { onPreviewMenu(r) }) }
             }
+            below?.invoke(this)
+        }
+    }
+}
+
+/** Shown instead of the title bar while songs are selected (long-press a song to start). */
+@Composable
+private fun SelectionBar(count: Int, onClose: () -> Unit, onPlay: () -> Unit, onQueue: () -> Unit, onAddTo: (() -> Unit)?, actions: List<MenuAction>) {
+    var open by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().background(Raised).padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Stop selecting", tint = TextMain) }
+        Text("$count selected", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+        IconButton(onClick = onPlay, enabled = count > 0) { Icon(Icons.Rounded.PlayArrow, "Play selected", tint = TextMain) }
+        IconButton(onClick = onQueue, enabled = count > 0) { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add selected to the queue", tint = TextMain) }
+        if (onAddTo != null) IconButton(onClick = onAddTo, enabled = count > 0) { Icon(Icons.Rounded.AddCircleOutline, "Add selected to a playlist", tint = TextMain) }
+        Box {
+            IconButton(onClick = { open = true }) { Icon(Icons.Rounded.MoreVert, "More for the selected songs", tint = TextMain) }
+            DropdownMenu(open, { open = false }) {
+                actions.forEach { a -> DropdownMenuItem({ Text(a.label) }, { open = false; a.run() }, leadingIcon = { Icon(a.icon, null) }) }
+            }
         }
     }
 }
@@ -1125,7 +1414,7 @@ internal fun TrackListScreen(
 /* ---------------- Queue ---------------- */
 
 @Composable
-private fun QueueScreen(player: PlayerState?, onBack: () -> Unit) {
+private fun QueueScreen(player: PlayerState?, recent: List<Track>, onSave: () -> Unit, onBack: () -> Unit) {
     val items = remember(player?.queueVersion, player?.currentId) { player?.queue() ?: emptyList() }
     val now = items.firstOrNull { it.isCurrent }
     val queued = items.filter { it.queued && !it.isCurrent }
@@ -1133,7 +1422,9 @@ private fun QueueScreen(player: PlayerState?, onBack: () -> Unit) {
     val reorderQueued = rememberReorder()
     val reorderRest = rememberReorder()
     Column(Modifier.fillMaxSize()) {
-        BackTopBar("Queue", onBack)
+        BackTopBar("Queue", onBack) {
+            if (now != null) IconButton(onClick = onSave) { Icon(Icons.Rounded.Save, "Save the queue as a playlist", tint = TextDim) }
+        }
         LazyColumn(Modifier.fillMaxSize()) {
             if (now == null) item { Text("Nothing is playing.", color = TextDim, modifier = Modifier.padding(24.dp)) }
             if (now != null) {
@@ -1161,6 +1452,15 @@ private fun QueueScreen(player: PlayerState?, onBack: () -> Unit) {
                         modifier = Modifier.reorderRow(reorderRest, i, rest.size)) {
                         DragHandle(reorderRest, i, rest.size, q.title) { from, to -> player?.move(rest[from].index, rest[to].index) }
                     }
+                }
+            }
+            // Tapping one plays it now and keeps the rest of the queue, like on the desktop.
+            val earlier = recent.filter { it.id != now?.id }
+            if (earlier.isNotEmpty()) {
+                item { SectionLabel("Recently played") }
+                items(earlier, key = { "h" + it.id }) { t ->
+                    QueueRow(QueueItem(-1, t.id, t.title, t.artist, t.artUri, queued = false, isCurrent = false),
+                        onClick = { player?.playNext(t.toMediaItem()); player?.next() }, onRemove = null)
                 }
             }
         }
@@ -1476,12 +1776,12 @@ internal fun SettingsScreen(
 }
 
 @Composable
-private fun DrawerSheet(onSettings: () -> Unit, onStats: () -> Unit, onHistory: () -> Unit) {
+private fun DrawerSheet(onSettings: () -> Unit, onStats: () -> Unit, onHistory: () -> Unit, onDuplicates: () -> Unit) {
     ModalDrawerSheet(modifier = Modifier.fillMaxWidth(0.55f), drawerContainerColor = CardBg) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Onda", color = Accent, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.padding(bottom = 12.dp))
             listOf(Triple("Settings", Icons.Rounded.Settings, onSettings), Triple("Your stats", Icons.Rounded.BarChart, onStats),
-                Triple("History", Icons.Rounded.History, onHistory)).forEach { (label, icon, go) ->
+                Triple("History", Icons.Rounded.History, onHistory), Triple("Duplicates", Icons.Rounded.ContentCopy, onDuplicates)).forEach { (label, icon, go) ->
                 Row(Modifier.fillMaxWidth().clickable(onClick = go).padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(icon, null, tint = TextMain)
                     Spacer(Modifier.width(12.dp))
@@ -1556,7 +1856,10 @@ internal fun SectionLabel(text: String, modifier: Modifier = Modifier.padding(16
 
 /** A song row. Dragging it right past 40% and letting go adds it to the queue, exactly once. */
 @Composable
-private fun SwipeTrackRow(t: Track, playing: Boolean, onQueue: () -> Unit, onMenu: () -> Unit, onClick: () -> Unit) {
+private fun SwipeTrackRow(
+    t: Track, playing: Boolean, onQueue: () -> Unit, onMenu: () -> Unit,
+    selected: Boolean = false, onLongClick: (() -> Unit)? = null, onClick: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     val fire by rememberUpdatedState(onQueue)
@@ -1592,11 +1895,12 @@ private fun SwipeTrackRow(t: Track, playing: Boolean, onQueue: () -> Unit, onMen
                         wasArmed = nowArmed
                     }
                 }
-                .clickable(onClick = onClick)
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = onLongClick?.let { "Select" })
+                .then(if (selected) Modifier.background(Accent.copy(alpha = 0.18f)) else Modifier)
                 .padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Art(t.artUri, 48.dp)
+            if (selected) IconTile(Icons.Rounded.Check, 48.dp) else Art(t.artUri, 48.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(t.title, color = if (playing) Accent else TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)

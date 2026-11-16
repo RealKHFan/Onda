@@ -35,6 +35,21 @@ object Prefs {
 
     fun clearServer(ctx: Context) = p(ctx).edit().remove("srv_url").remove("srv_user").remove("srv_salt").remove("srv_token").apply()
 
+    /** Playlists pinned to the top (newest pin first), and how the rest are ordered: "Custom", "A–Z" or "Most songs". */
+    fun pinned(ctx: Context): List<String> = p(ctx).getString("pinned", "")!!.split('\n').filter { it.isNotBlank() }
+    fun setPinned(ctx: Context, ids: List<String>) = p(ctx).edit().putString("pinned", ids.joinToString("\n")).apply()
+    fun playlistOrder(ctx: Context): String = p(ctx).getString("playlist_order", "Custom") ?: "Custom"
+    fun setPlaylistOrder(ctx: Context, order: String) = p(ctx).edit().putString("playlist_order", order).apply()
+
+    /** Your last 10 searches, newest first (on this phone only). */
+    fun searches(ctx: Context): List<String> = p(ctx).getString("searches", "")!!.split('\n').filter { it.isNotBlank() }
+    fun rememberSearch(ctx: Context, q: String) {
+        val t = q.trim().takeIf { it.length >= 2 } ?: return
+        p(ctx).edit().putString("searches", (listOf(t) + searches(ctx).filterNot { it.equals(t, true) }).take(10).joinToString("\n")).apply()
+    }
+    fun forgetSearch(ctx: Context, q: String?) =
+        p(ctx).edit().putString("searches", if (q == null) "" else (searches(ctx) - q).joinToString("\n")).apply()
+
     /** Highlight colour (ARGB). */
     fun accent(ctx: Context): Long = p(ctx).getLong("accent", 0xFF9D7BFF)
     fun setAccent(ctx: Context, argb: Long) = p(ctx).edit().putLong("accent", argb).apply()

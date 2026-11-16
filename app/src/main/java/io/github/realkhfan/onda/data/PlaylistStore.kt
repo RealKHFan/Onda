@@ -14,7 +14,8 @@ import java.util.UUID
 /** Local JSON store for user playlists and Liked Songs. Tracks are referenced by their stable id. */
 object PlaylistStore {
 
-    data class Playlist(val id: String, val name: String, val trackIds: List<String>)
+    /** [cover]: an image of yours, copied into Onda's files; null = made from the album covers. */
+    data class Playlist(val id: String, val name: String, val trackIds: List<String>, val description: String = "", val cover: String? = null)
 
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
@@ -54,9 +55,8 @@ object PlaylistStore {
 
     /** The playlist with this name, or a new one: importing again fills the same playlist instead of a copy. */
     fun importInto(name: String, ids: List<String>, songs: List<RemoteTrack>) {
-        _remote.value = _remote.value + songs.associateBy { it.key }
         val id = _playlists.value.firstOrNull { it.name == name }?.id ?: createPlaylist(name)
-        addToPlaylist(id, ids)
+        addToPlaylist(id, ids, songs)
     }
 
     fun load(context: Context) {
@@ -71,8 +71,31 @@ object PlaylistStore {
         return id
     }
 
-    fun renamePlaylist(id: String, name: String) {
-        _playlists.value = _playlists.value.map { if (it.id == id) it.copy(name = name) else it }
+    /** Name, description and cover (like the desktop's Edit playlist). */
+    fun setDetails(id: String, name: String, description: String, cover: String?) {
+        _playlists.value = _playlists.value.map { if (it.id == id) it.copy(name = name.ifBlank { it.name }, description = description.trim(), cover = cover) else it }
+        write()
+    }
+
+    /** "… (copy)" with the same songs; returns its id. */
+    fun duplicate(id: String): String? {
+        val pl = _playlists.value.firstOrNull { it.id == id } ?: return null
+        val newId = UUID.randomUUID().toString()
+        val cover = pl.cover?.let { c -> runCatching { File(c).let { f -> File(f.parentFile, "$newId.${f.extension}").also { f.copyTo(it) }.path } }.getOrNull() }
+        _playlists.value = _playlists.value + pl.copy(id = newId, name = "${pl.name} (copy)", cover = cover)
+        write()
+        return newId
+    }
+
+    /** Undo for a deleted playlist, back in its place (its catalog songs are still known until the app restarts). */
+    fun restore(pl: Playlist, at: Int) {
+        _playlists.value = _playlists.value.toMutableList().apply { add(at.coerceIn(0, size), pl) }
+        write()
+    }
+
+    /** Undo: Liked Songs as they were. */
+    fun setLiked(ids: List<String>) {
+        _liked.value = ids
         write()
     }
 
@@ -81,7 +104,9 @@ object PlaylistStore {
         write()
     }
 
-    fun addToPlaylist(id: String, trackIds: List<String>) {
+    /** [songs]: catalog songs among [trackIds], kept so the playlist can show and preview them. */
+    fun addToPlaylist(id: String, trackIds: List<String>, songs: List<RemoteTrack> = emptyList()) {
+        if (songs.isNotEmpty()) _remote.value = _remote.value + songs.associateBy { it.key }
         _playlists.value = _playlists.value.map { pl ->
             if (pl.id == id) pl.copy(trackIds = pl.trackIds + trackIds.filterNot { pl.trackIds.contains(it) })
             else pl
@@ -139,6 +164,8 @@ object PlaylistStore {
                     id = o.getString("id"),
                     name = o.getString("name"),
                     trackIds = (0 until tracks.length()).map { tracks.getString(it) },
+                    description = o.optString("desc"),
+                    cover = o.optString("cover").ifBlank { null },
                 )
             }
             val liked = root.optJSONArray("liked") ?: JSONArray()
@@ -163,7 +190,9 @@ object PlaylistStore {
                     JSONObject()
                         .put("id", pl.id)
                         .put("name", pl.name)
-                        .put("tracks", JSONArray(pl.trackIds)),
+                        .put("tracks", JSONArray(pl.trackIds))
+                        .put("desc", pl.description.ifBlank { null })
+                        .put("cover", pl.cover),
                 )
             }
             root.put("playlists", pls)
