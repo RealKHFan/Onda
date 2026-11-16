@@ -106,6 +106,31 @@ class LinkTest {
             // An old message (replayed later) is refused.
             val old = JSONObject().put("t", System.currentTimeMillis() - 3_600_000L).toString().toByteArray()
             assertEquals(408, post("/v1/hello", LinkCrypto.seal(link, old, "/v1/hello"), "test-phone").first)
+            // The phone plays: this PC shows it, and its buttons reach the phone through its inbox.
+            fun next(key: String): JSONObject { repeat(5) { call("/v1/inbox").second!!.let { if (it.has(key)) return it } }; error("no $key") }
+            assertEquals(200, call("/v1/phone/now", JSONObject().put("has", true).put("playing", true).put("title", "Tides").put("artist", "Lumen Trio")
+                .put("pos", 5000).put("dur", 200_000).put("shuffle", true).put("repeat", 1)).first)
+            val now = runBlocking(Dispatchers.Swing) { Link.activePhone() }
+            assertEquals("Tides", now?.s?.optString("title"))
+            assertEquals("Test phone", now?.name)
+            runBlocking(Dispatchers.Swing) { Link.phoneCommand("toggle"); Link.phoneCommand("shuffle") { put("on", false) } }
+            assertEquals("toggle", next("cmd").getString("cmd"))
+            assertEquals(false, next("cmd").getBoolean("on"))
+            // Shown at once: paused, shuffle off; still the place to play (it played a moment ago).
+            runBlocking(Dispatchers.Swing) {
+                assertEquals(false, Link.phoneNow?.playing)
+                assertEquals(false, Link.phoneNow?.s?.optBoolean("shuffle"))
+                assertNotNull(Link.activePhone())
+                Link.takeFromPhone()
+            }
+            assertTrue(next("handover").getBoolean("handover"))
+            // This PC playing again: the phone isn't the place to play any more, and hears it.
+            runBlocking(Dispatchers.Swing) { Link.playingHere() }
+            assertTrue(next("pcPlaying").getBoolean("pcPlaying"))
+            assertEquals(null, runBlocking(Dispatchers.Swing) { Link.phoneNow })
+            // A paused phone that hasn't played lately isn't shown.
+            call("/v1/phone/now", JSONObject().put("has", true).put("playing", false).put("title", "Tides"))
+            assertEquals(null, runBlocking(Dispatchers.Swing) { Link.activePhone() })
         } finally {
             runBlocking(Dispatchers.Swing) {
                 // Leave the real collection as it was.

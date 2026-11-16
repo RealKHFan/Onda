@@ -138,6 +138,74 @@ object Link {
 
     fun connected(p: Phone) = System.currentTimeMillis() - (seen[p.id] ?: 0) < 40_000
 
+    /* ---------- your phone playing (this PC is its remote) ---------- */
+
+    /** What a phone said it plays ([s]: has, playing, key, title, artist, album, art, pos, dur, shuffle, repeat), and when. */
+    data class PhoneNow(val phoneId: String, val name: String, val s: JSONObject, val at: Long, val playedAt: Long) {
+        val playing get() = s.optBoolean("playing")
+        /** Where the song is now (it went on playing since the phone said). */
+        fun position(now: Long = System.currentTimeMillis()) = (s.optLong("pos") + if (playing) now - at else 0).coerceAtMost(s.optLong("dur").takeIf { it > 0 } ?: Long.MAX_VALUE)
+    }
+    var phoneNow by mutableStateOf<PhoneNow?>(null); private set
+
+    /**
+     * The phone that plays right now, while this PC doesn't: it says so at least every 10 s while it plays; paused, it stays
+     * the place to play for 10 minutes after it last played, like Spotify's devices.
+     */
+    fun activePhone(now: Long = System.currentTimeMillis()): PhoneNow? = phoneNow?.takeIf { n ->
+        on && player?.playing != true && (if (n.playing) now - n.at < 30_000 else now - n.playedAt < 10 * 60_000)
+    }
+
+    private fun notPlaying(p: Phone) { if (phoneNow?.phoneId == p.id) phoneNow = null }
+
+    private fun tell(phoneId: String, msg: JSONObject) { inbox.getOrPut(phoneId) { LinkedBlockingQueue() }.offer(msg) }
+
+    /** Play/pause, next, previous, seek (ms), shuffle (on), repeat (mode 0 off, 1 all, 2 one) on the phone. */
+    fun phoneCommand(cmd: String, extra: JSONObject.() -> Unit = {}) {
+        val n = phoneNow ?: return
+        val msg = JSONObject().put("cmd", cmd).apply(extra)
+        tell(n.phoneId, msg)
+        // Shown at once; the phone confirms within a second.
+        val s = JSONObject(n.s.toString()).put("pos", n.position())
+        when (cmd) {
+            "toggle" -> s.put("playing", !n.playing)
+            "seek" -> s.put("pos", msg.optLong("ms"))
+            "shuffle" -> s.put("shuffle", msg.optBoolean("on"))
+            "repeat" -> s.put("repeat", msg.optInt("mode"))
+        }
+        phoneNow = n.copy(s = s, at = System.currentTimeMillis())
+    }
+
+    /** "Sync now" here: the phone syncs (it always merges both sides). */
+    fun syncNow(p: Phone) = tell(p.id, JSONObject().put("sync", true))
+
+    /** "This PC": the phone hands what it plays over to this PC (and becomes its remote). */
+    fun takeFromPhone() { phoneNow?.let { tell(it.phoneId, JSONObject().put("handover", true)) } }
+
+    /** Plays a list on the phone that's playing (instead of here); false when none is (a paused one leaves it to this PC). */
+    fun playOnActivePhone(items: List<Player.Item>, start: Int): Boolean {
+        val n = activePhone()?.takeIf { it.playing } ?: return false
+        // The phone's shuffle and repeat stay; shuffled: the chosen song first, the rest mixed (the phone keeps the order sent).
+        val shuffle = n.s.optBoolean("shuffle")
+        val list = if (shuffle) listOf(items[start]) + items.filterIndexed { i, _ -> i != start }.shuffled() else items
+        tell(n.phoneId, JSONObject().put("play", LinkSync.queueToJson(queueOf(list, if (shuffle) 0 else start, 0).copy(shuffle = shuffle, repeat = n.s.optInt("repeat")))))
+        return true
+    }
+
+    /** Adds a song to the queue of the phone that's playing; false when none is. */
+    fun addOnActivePhone(item: Player.Item, next: Boolean): Boolean {
+        val n = activePhone()?.takeIf { it.playing } ?: return false
+        tell(n.phoneId, JSONObject().put("add", LinkSync.queueToJson(queueOf(listOf(item), 0, 0))).put("next", next))
+        return true
+    }
+
+    /** This PC started playing: a linked phone that isn't playing shows it (it becomes the remote). */
+    fun playingHere() {
+        phoneNow = null // this PC is the place to play now
+        if (!on) return
+        phones.filter(::connected).forEach { tell(it.id, JSONObject().put("pcPlaying", true)) }
+    }
+
     /* ---------- requests ---------- */
 
     private fun handle(ex: HttpExchange) {
@@ -166,11 +234,13 @@ object Link {
                 JSONObject().put("ok", true)
             } ?: return ex.sendResponseHeaders(409, -1)
             "/v1/player/state" -> runBlocking(Dispatchers.Swing) { playerState() }
-            "/v1/player/cmd" -> runBlocking(Dispatchers.Swing) { command(req); playerState() }
+            "/v1/player/cmd" -> runBlocking(Dispatchers.Swing) { notPlaying(phone); command(req); playerState() }
             "/v1/player/play" -> runBlocking(Dispatchers.Swing) {
+                notPlaying(phone)
                 JSONObject().put("missing", playHere(LinkSync.queueFromJson(req.getJSONObject("queue"))))
             }
             "/v1/player/take" -> runBlocking(Dispatchers.Swing) {
+                notPlaying(phone)
                 // The phone takes over: what plays here, from here on.
                 val q = queueHere()
                 player?.pause()
@@ -183,6 +253,14 @@ object Link {
                 JSONObject().put("added", items.size)
             }
             "/v1/inbox" -> inbox.getOrPut(phone.id) { LinkedBlockingQueue() }.poll(20, TimeUnit.SECONDS) ?: JSONObject()
+            // What the phone plays (when it changes, and every few seconds while it plays).
+            "/v1/phone/now" -> runBlocking(Dispatchers.Swing) {
+                val now = System.currentTimeMillis()
+                val before = phoneNow?.takeIf { it.phoneId == phone.id }
+                phoneNow = if (req.optBoolean("has")) PhoneNow(phone.id, phone.name, req, now, if (req.optBoolean("playing")) now else before?.playedAt ?: 0)
+                    else phoneNow?.takeIf { it.phoneId != phone.id }
+                JSONObject()
+            }
             // Songs and covers: only files of your library (found by the song), never a path the phone names.
             "/v1/file/stat" -> runBlocking(Dispatchers.Swing) { fileOf(LinkSync.songFromJson(req.getJSONObject("song"))) }
                 .let { f -> JSONObject().put("found", f != null).put("size", f?.length() ?: 0).put("ext", f?.extension?.lowercase() ?: "") }
@@ -236,6 +314,7 @@ object Link {
         })
         return JSONObject().put("has", true).put("playing", p.playing).put("key", cur.id).put("title", cur.title).put("artist", cur.artist).put("album", cur.album)
             .put("art", cur.art?.takeIf { it.startsWith("http") }).put("pos", p.positionMs).put("dur", p.durationMs).put("volume", p.volume).put("next", next)
+            .put("shuffle", p.shuffle).put("repeat", p.repeat)
     }
 
     private fun command(req: JSONObject) {
@@ -246,18 +325,23 @@ object Link {
             "prev" -> p.previous()
             "seek" -> p.seek(req.optLong("ms"))
             "volume" -> { p.changeVolume(req.optDouble("v", p.volume)); state.setVolume(p.volume) }
+            "shuffle" -> p.shuffleOn(req.optBoolean("on"))
+            "repeat" -> p.repeatMode(req.optInt("mode"))
         }
     }
 
-    /** What plays here, from the current song on. */
+    /** What plays here, from the current song on, with this player's shuffle and repeat. */
     private fun queueHere(): LinkSync.Queue? {
         val p = player ?: return null
         val cur = p.current ?: return null
-        val items = listOf(cur) + p.upcoming().map { it.second }
+        return queueOf(listOf(cur) + p.upcoming().map { it.second }, 0, p.positionMs).copy(shuffle = p.shuffle, repeat = p.repeat)
+    }
+
+    private fun queueOf(items: List<Player.Item>, start: Int, positionMs: Long): LinkSync.Queue {
         val lib = LinkSync.Library(state.library, state.rawTracks, state.collection.remote.associateBy { it.key })
         val songs = items.map { i -> lib.song(i.id)?.takeIf { it.title.isNotEmpty() } ?: LinkSync.Song(i.id.takeIf { io.github.realkhfan.onda.core.Source.of(it) != null }, i.title, i.artist, i.album, i.durationMs) }
         val catalog = items.mapNotNull { i -> LinkSync.remoteOf(i.id, i.title, i.artist, i.album, i.art, i.durationMs)?.let { r -> if (i.deezerId > 0) r.copy(id = i.deezerId) else r } }
-        return LinkSync.Queue(songs, catalog, p.positionMs)
+        return LinkSync.Queue(songs, catalog, positionMs, start = start)
     }
 
     /** Songs from the phone as player items here (null: not on this PC). */
@@ -321,9 +405,11 @@ object Link {
         val items = resolveHere(q)
         val found = items.filterNotNull()
         if (found.isEmpty()) return q.songs.size
-        p.play(found, 0)
-        // The first song goes on where the phone was (if it's the same song).
-        if (items.first() != null && q.positionMs > 3000) state.launch { delay(800); p.seek(q.positionMs) }
+        val start = items.take(q.start.coerceIn(0, items.size)).count { it != null }.coerceAtMost(found.lastIndex)
+        p.play(found, start, here = true)
+        p.adopt(q.shuffle, q.repeat)
+        // The song goes on where the phone was (if it's the same song).
+        if (items.getOrNull(q.start) != null && q.positionMs > 3000) state.launch { delay(800); p.seek(q.positionMs) }
         return q.songs.size - found.size
     }
 }

@@ -99,6 +99,20 @@ class FolderPickerTest {
         assertEquals(null, FolderPicker.resolve(" "))
     }
 
+    @Test fun aShareMountedHereIsUsedInsteadOfItsNetworkAddress() {
+        val mounts = """
+            /dev/nvme0n1p3 / btrfs rw 0 0
+            //10.0.0.3/music /var/mnt/nas cifs rw,relatime 0 0
+            //10.0.0.3/My\040Files /var/mnt/my\040files smb3 rw 0 0
+        """.trimIndent()
+        assertEquals("/var/mnt/nas/Backup/Onda", FolderPicker.mounted("smb://10.0.0.3/music/Backup/Onda", mounts))
+        assertEquals("/var/mnt/nas", FolderPicker.mounted("smb://10.0.0.3/Music/", mounts))
+        assertEquals("/var/mnt/my files/a b", FolderPicker.mounted("smb://10.0.0.3/My%20Files/a%20b", mounts))
+        assertEquals("/var/mnt/my files/a b", FolderPicker.mounted("smb://10.0.0.3/My Files/a b", mounts))
+        assertEquals(null, FolderPicker.mounted("smb://10.0.0.3/photos", mounts)) // not mounted: Onda says how
+        assertEquals(null, FolderPicker.mounted("sftp://10.0.0.3/music", mounts))
+    }
+
     @Test fun noPickerInstalledIsReported() = kotlinx.coroutines.runBlocking {
         // This build machine has neither kdialog nor zenity.
         assertEquals(FolderPicker.Result.NoPicker, FolderPicker.pick("/tmp"))

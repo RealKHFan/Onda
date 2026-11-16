@@ -127,12 +127,21 @@ object LinkSync {
     }
 
     /** What's playing, handed to the other device ("Play on…"): the songs from the current one on, and where in it. */
-    data class Queue(val songs: List<Song>, val catalog: List<RemoteTrack>, val positionMs: Long)
+    /**
+     * Songs in play order, starting at [start] ([positionMs] into it). [shuffle] and [repeat] (0 off, 1 all, 2 one) go along,
+     * so the other device carries on the same way; the order stays as sent.
+     */
+    data class Queue(
+        val songs: List<Song>, val catalog: List<RemoteTrack>, val positionMs: Long,
+        val start: Int = 0, val shuffle: Boolean = false, val repeat: Int = 0,
+    )
 
     fun queueToJson(q: Queue): JSONObject = JSONObject().put("songs", JSONArray(q.songs.map(::song)))
         .put("catalog", JSONArray(q.catalog.map(::track))).put("pos", q.positionMs)
+        .put("start", q.start).put("shuffle", q.shuffle).put("repeat", q.repeat)
 
-    fun queueFromJson(o: JSONObject) = Queue(objects(o.optJSONArray("songs")).map(::song), objects(o.optJSONArray("catalog")).map(::track), o.optLong("pos"))
+    fun queueFromJson(o: JSONObject) = Queue(objects(o.optJSONArray("songs")).map(::song), objects(o.optJSONArray("catalog")).map(::track), o.optLong("pos"),
+        o.optInt("start"), o.optBoolean("shuffle"), o.optInt("repeat").coerceIn(0, 2))
 
     /** A catalog song from a player item's key and tags (null for your own songs). */
     fun remoteOf(key: String, title: String, artist: String, album: String, art: String?, durationMs: Long = 0): RemoteTrack? {

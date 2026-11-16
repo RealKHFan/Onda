@@ -119,3 +119,14 @@ class LinkSyncHealTest {
         assertEquals(mapOf(id to "content://9"), LinkSync.heal(listOf(id, "~song:Nobody\u001FNothing"), listOf(file)))
     }
 }
+
+class LinkSyncQueueTest {
+    @Test fun aQueueCarriesItsStartShuffleAndRepeat() {
+        val q = LinkSync.Queue(listOf(LinkSync.Song(null, "Tides", "Lumen Trio"), LinkSync.Song("dz:5", "Paper Moon", "Velvet Hours")), emptyList(), 61_000,
+            start = 1, shuffle = true, repeat = 2)
+        assertEquals(q, LinkSync.queueFromJson(LinkSync.queueToJson(q)))
+        // From an older Onda (without them): the first song, shuffle and repeat off.
+        val old = LinkSync.queueFromJson(LinkSync.queueToJson(q).apply { remove("start"); remove("shuffle"); remove("repeat") })
+        assertEquals(Triple(0, false, 0), Triple(old.start, old.shuffle, old.repeat))
+    }
+}

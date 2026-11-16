@@ -3,6 +3,7 @@ package io.github.realkhfan.onda.desktop
 import io.github.realkhfan.onda.core.LinkSync
 
 import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.Computer
 
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.semantics.customActions
@@ -424,6 +425,7 @@ private class Ctx(
                 }
                 FolderPicker.Result.NoPicker -> toast("No file picker found on this system.")
                 FolderPicker.Result.Cancelled -> {}
+                is FolderPicker.Result.Remote -> toast(r.message)
             }
         }
     }
@@ -1221,6 +1223,7 @@ private fun WantPage(ctx: Ctx, back: (() -> Unit)?) {
                 is FolderPicker.Result.Picked -> r.path.let { if (File(it).extension.isEmpty()) "$it.txt" else it }
                 FolderPicker.Result.NoPicker -> "$home/Want to listen.txt"
                 FolderPicker.Result.Cancelled -> return@launch
+                is FolderPicker.Result.Remote -> { ctx.toast(r.message); return@launch }
             }
             val text = io.github.realkhfan.onda.core.M3u.wantList(list)
             if (runCatching { withContext(kotlinx.coroutines.Dispatchers.IO) { File(path).writeText(text) } }.isSuccess) {
@@ -1468,6 +1471,7 @@ private fun SettingsPage(ctx: Ctx) {
                                 is FolderPicker.Result.Picked -> { state.addFolder(r.path); folderNote = null }
                                 FolderPicker.Result.Cancelled -> {}
                                 FolderPicker.Result.NoPicker -> folderNote = "No folder picker found on this system. Type the folder's path below."
+                                is FolderPicker.Result.Remote -> folderNote = r.message
                             }
                         }
                     }) { Text("Add folder") }
@@ -1554,6 +1558,7 @@ private fun SettingsPage(ctx: Ctx) {
                                 is FolderPicker.Result.Picked -> state.launch { SpotifyImports.run(File(r.path), state) }
                                 FolderPicker.Result.NoPicker -> ctx.toast("No file picker found on this system.")
                                 FolderPicker.Result.Cancelled -> {}
+                                is FolderPicker.Result.Remote -> ctx.toast(r.message)
                             }
                         }
                     }) { Text("Choose Spotify export") }
@@ -1566,6 +1571,7 @@ private fun SettingsPage(ctx: Ctx) {
                                 }
                                 FolderPicker.Result.NoPicker -> ctx.toast("No file picker found on this system.")
                                 FolderPicker.Result.Cancelled -> {}
+                                is FolderPicker.Result.Remote -> ctx.toast(r.message)
                             }
                         }
                     }) { Text("Import playlist file (M3U)") }
@@ -1681,6 +1687,8 @@ private fun SettingsPage(ctx: Ctx) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Rounded.PhoneAndroid, null, tint = if (Link.connected(ph)) Accent else TextDim)
                             Text(ph.name + if (Link.connected(ph)) " · connected" else "", color = TextMain, modifier = Modifier.padding(start = 10.dp).width(300.dp))
+                            // Both ways at once (it merges; nothing is replaced): the phone syncs within seconds.
+                            if (Link.connected(ph)) TextButton(onClick = { Link.syncNow(ph); ctx.toast("Syncing with ${ph.name}…") }) { Text("Sync now", color = Accent) }
                             TextButton(onClick = { Link.forget(ph) }) { Text("Unpair", color = TextDim) }
                         }
                     }
@@ -1703,6 +1711,7 @@ private fun SettingsPage(ctx: Ctx) {
                                 is FolderPicker.Result.Picked -> r.path
                                 FolderPicker.Result.Cancelled -> return@launch
                                 FolderPicker.Result.NoPicker -> System.getProperty("user.home") + "/" + name
+                                is FolderPicker.Result.Remote -> { note = r.message; return@launch }
                             }
                             note = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { state.backup(File(path)) }; "Saved to $path" }
                                 .getOrElse { "Couldn't save the backup." }
@@ -1714,6 +1723,7 @@ private fun SettingsPage(ctx: Ctx) {
                             if (r is FolderPicker.Result.Picked) note = if (runCatching { state.restore(File(r.path)) }.getOrDefault(false))
                                 "Restored. Your previous data is kept in before-restore.zip." else "That file isn't an Onda backup."
                             if (r is FolderPicker.Result.NoPicker) note = "No file picker found on this system."
+                            if (r is FolderPicker.Result.Remote) note = r.message
                         }
                     }) { Text("Restore") }
                 }
@@ -1726,6 +1736,7 @@ private fun SettingsPage(ctx: Ctx) {
                                 is FolderPicker.Result.Picked -> { state.setBackupDir(r.path); state.launch { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { state.dailyBackup() } } }
                                 FolderPicker.Result.NoPicker -> note = "No folder picker found on this system."
                                 FolderPicker.Result.Cancelled -> {}
+                                is FolderPicker.Result.Remote -> note = r.message
                             }
                         }
                     }) { Text(if (state.settings.backupDir == null) "Choose folder" else "Change", color = Accent) }
@@ -1753,6 +1764,7 @@ private fun SettingsPage(ctx: Ctx) {
                                 }
                                 FolderPicker.Result.NoPicker -> note = "No folder picker found on this system."
                                 FolderPicker.Result.Cancelled -> {}
+                                is FolderPicker.Result.Remote -> note = r.message
                             }
                         }
                     }) { Text(if (state.settings.copyDir == null) "Choose folder" else "Change", color = Accent) }
@@ -2025,6 +2037,10 @@ private fun rememberArtTint(art: String?): Color {
 private fun PlayerBar(ctx: Ctx, panel: Panel, toggle: (Panel) -> Unit) {
     val player = ctx.player
     val state = ctx.state
+    // Your phone playing (and this PC not): the bar shows it and its buttons control it.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Link.phoneNow != null) { while (Link.phoneNow != null) { now = System.currentTimeMillis(); delay(500) } }
+    Link.activePhone(now)?.let { return PhonePlayerBar(ctx, it, now) }
     val cur = player?.current
     Row(Modifier.fillMaxWidth().height(96.dp).background(Side).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
@@ -2181,6 +2197,59 @@ private fun qualityOf(item: Player.Item): String? {
     return q
 }
 
+/** The player bar while your phone plays: its song, and buttons that control it there. */
+@Composable
+private fun PhonePlayerBar(ctx: Ctx, n: Link.PhoneNow, now: Long) {
+    val s = n.s
+    val title = s.optString("title"); val artist = s.optString("artist")
+    // A catalog song has its cover link; for your own songs, the same song's cover here (if it's on this PC too).
+    val art = s.optString("art").takeIf { it.startsWith("http") } ?: remember(title, artist) {
+        val lib = LinkSync.Library(ctx.state.library, ctx.state.rawTracks, emptyMap())
+        ctx.state.byId[lib.id(LinkSync.Song(null, title, artist))]?.artUri
+    }
+    val dur = s.optLong("dur"); val pos = n.position(now)
+    val shuffle = s.optBoolean("shuffle"); val repeat = s.optInt("repeat")
+    Row(Modifier.fillMaxWidth().height(96.dp).background(Side).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Art(art, 56)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f, fill = false)) {
+                Text(title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                Text(artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.PhoneAndroid, null, tint = Accent, modifier = Modifier.size(14.dp))
+                    Text(" Playing on ${n.name}", color = Accent, fontSize = 11.sp, maxLines = 1)
+                }
+            }
+        }
+        Column(Modifier.weight(1.3f), horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Tip("Shuffle") { IconButton(onClick = { Link.phoneCommand("shuffle") { put("on", !shuffle) } }) { Icon(Icons.Rounded.Shuffle, "Shuffle", tint = if (shuffle) Accent else TextDim) } }
+                Tip("Previous") { IconButton(onClick = { Link.phoneCommand("prev") }) { Icon(Icons.Rounded.SkipPrevious, "Previous", tint = TextMain) } }
+                IconButton(onClick = { Link.phoneCommand("toggle") }, Modifier.size(44.dp).clip(CircleShape).background(Accent)) {
+                    Icon(if (n.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (n.playing) "Pause" else "Play", tint = Color.Black)
+                }
+                Tip("Next") { IconButton(onClick = { Link.phoneCommand("next") }) { Icon(Icons.Rounded.SkipNext, "Next", tint = TextMain) } }
+                IconButton(onClick = { Link.phoneCommand("repeat") { put("mode", (repeat + 1) % 3) } }) {
+                    Icon(if (repeat == 2) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Repeat", tint = if (repeat > 0) Accent else TextDim)
+                }
+            }
+            var dragging by remember { mutableStateOf(false) }
+            var dragValue by remember { mutableFloatStateOf(0f) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(time(pos), color = TextDim, fontSize = 11.sp)
+                ThinSlider(if (dragging) dragValue else if (dur > 0) pos.toFloat() / dur else 0f, "Position", { dragging = true; dragValue = it },
+                    onDone = { if (dur > 0) Link.phoneCommand("seek") { put("ms", (dragValue * dur).toLong()) }; dragging = false },
+                    modifier = Modifier.width(420.dp).padding(horizontal = 8.dp))
+                Text(time(dur), color = TextDim, fontSize = 11.sp)
+            }
+        }
+        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            OutputButton(ctx.state, ctx.player)
+        }
+    }
+}
+
 /** Speakers, headphones, HDMI: where Onda plays (the rest of the system keeps its own output). */
 @Composable
 private fun OutputButton(state: AppState, player: Player?) {
@@ -2189,9 +2258,13 @@ private fun OutputButton(state: AppState, player: Player?) {
     var devices by remember { mutableStateOf<List<Outputs.Device>>(emptyList()) }
     LaunchedEffect(open) { if (open) devices = withContext(kotlinx.coroutines.Dispatchers.IO) { Outputs.list() } }
     Box {
-        Tip("Play on…") { IconButton(onClick = { open = true }) { Icon(Icons.Rounded.Speaker, "Play on…", tint = if (state.settings.output != null) Accent else TextDim) } }
+        val onPhone = Link.activePhone()
+        Tip("Play on…") { IconButton(onClick = { open = true }) { Icon(if (onPhone != null) Icons.Rounded.PhoneAndroid else Icons.Rounded.Speaker, "Play on…", tint = if (state.settings.output != null || onPhone != null) Accent else TextDim) } }
         DropdownMenu(open, { open = false }, modifier = Modifier.background(Color(0xFF2E2E38))) {
             Text("Play on", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 4.dp))
+            // Your phone plays: bring it here (it carries on here from the same place).
+            if (onPhone != null) DropdownMenuItem({ Text("This PC", color = TextMain) }, { Link.takeFromPhone(); open = false },
+                leadingIcon = { Icon(Icons.Rounded.Computer, null, tint = TextDim) })
             DropdownMenuItem({ Text("System default", color = if (state.settings.output == null) Accent else TextMain) },
                 { state.setOutput(null); player.setOutput(null); open = false })
             devices.forEach { d ->
@@ -2201,8 +2274,10 @@ private fun OutputButton(state: AppState, player: Player?) {
             if (devices.isEmpty()) Text("No other outputs found (needs pactl).", color = TextDim, fontSize = 12.sp, modifier = Modifier.padding(16.dp, 4.dp))
             // Your phone, when Onda is open on it: what plays here moves there.
             Link.phones.filter { Link.on && Link.connected(it) }.forEach { ph ->
-                DropdownMenuItem({ Text(ph.name, color = TextMain) }, { Link.playOnPhone(ph); open = false },
-                    leadingIcon = { Icon(Icons.Rounded.PhoneAndroid, null, tint = TextDim) })
+                val active = onPhone?.phoneId == ph.id
+                DropdownMenuItem({ Text(if (active) "${ph.name} · playing" else ph.name, color = if (active) Accent else TextMain) },
+                    { if (!active) Link.playOnPhone(ph); open = false },
+                    leadingIcon = { Icon(Icons.Rounded.PhoneAndroid, null, tint = if (active) Accent else TextDim) })
             }
         }
     }
@@ -2762,6 +2837,7 @@ private fun PlaylistDialog(state: AppState, id: String, close: () -> Unit) {
                                     ?.let { cover = it; removeCover = false } ?: run { note = "Pick a JPG, PNG or WebP image." }
                                 FolderPicker.Result.NoPicker -> note = "No file picker found on this system."
                                 FolderPicker.Result.Cancelled -> {}
+                                is FolderPicker.Result.Remote -> note = r.message
                             }
                         }
                     }) { Text("Choose image", color = Accent) }

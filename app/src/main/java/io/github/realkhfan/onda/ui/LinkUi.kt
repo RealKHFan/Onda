@@ -55,6 +55,8 @@ import io.github.realkhfan.onda.core.Track
 import io.github.realkhfan.onda.data.Link
 import io.github.realkhfan.onda.player.PlayerState
 import io.github.realkhfan.onda.player.Remote
+import io.github.realkhfan.onda.player.RemotePlayer
+import io.github.realkhfan.onda.player.Shuffle
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -66,16 +68,19 @@ internal fun queueHere(p: PlayerState, byId: Map<String, Track>): LinkSync.Queue
         if (Source.of(q.id) != null) LinkSync.Song(q.id, q.title, q.artist)
         else byId[q.id]?.let { LinkSync.Song(null, it.title, it.artist, it.album, it.durationMs) } ?: LinkSync.Song(null, q.title, q.artist)
     }
-    return LinkSync.Queue(songs, items.mapNotNull { LinkSync.remoteOf(it.id, it.title, it.artist, "", it.artUri) }, p.position())
+    return LinkSync.Queue(songs, items.mapNotNull { LinkSync.remoteOf(it.id, it.title, it.artist, "", it.artUri) }, p.position(),
+        shuffle = Shuffle.on, repeat = RemotePlayer.pcRepeat(p.controller.repeatMode))
 }
 
 /** Plays a queue from the PC here (songs this phone doesn't have are left out); returns what to tell you. */
 internal fun playFromPc(p: PlayerState, q: LinkSync.Queue, library: List<Track>, pcName: String): String {
-    val (items, missing) = Link.resolve(q, library)
-    if (items.isEmpty()) return "None of those songs are on this phone."
-    p.playItems(items, 0, "Your PC", pcName, shuffled = false)
+    val r = Link.resolve(q, library)
+    if (r.items.isEmpty()) return "None of those songs are on this phone."
+    // The PC's order, shuffle and repeat carry on here.
+    p.controller.repeatMode = RemotePlayer.exoRepeat(q.repeat)
+    p.playItems(r.items, r.start, "Your PC", pcName, shuffled = q.shuffle, keepOrder = true)
     if (q.positionMs > 3000) p.seekTo(q.positionMs)
-    return if (missing > 0) "Playing here · ${songCount(missing)} not on this phone" else "Playing here"
+    return if (r.missing > 0) "Playing here · ${songCount(r.missing)} not on this phone" else "Playing here"
 }
 
 /** "Play on…": this phone or Onda on your PC (and the PC's controls while it plays there). */
@@ -183,7 +188,7 @@ private fun RemoteControls(s: JSONObject, send: (String, JSONObject.() -> Unit) 
 
 /** Settings → Your PC: link with Onda on your PC, sync, unlink. */
 @Composable
-internal fun PcSettings(onMessage: (String) -> Unit) {
+internal fun PcSettings(onMessage: (String) -> Unit, getAll: MenuAction? = null) {
     val pc by Link.pc.collectAsState()
     val status by Link.status.collectAsState()
     val syncing by Link.syncing.collectAsState()
@@ -200,6 +205,9 @@ internal fun PcSettings(onMessage: (String) -> Unit) {
             Button(onClick = { Link.syncLater(onMessage) }, enabled = !syncing) { Text(if (syncing) "Syncing…" else "Sync now") }
             OutlinedButton(onClick = { Link.unlink() }) { Text("Unlink") }
         }
+        // "Sync now" merges both ways, so it never matters which side starts it.
+        Text("Sync now merges both sides: nothing on the PC or here is replaced.", color = TextDim, fontSize = 12.sp)
+        getAll?.let { a -> OutlinedButton(onClick = a.run) { Icon(a.icon, null); Spacer(Modifier.width(6.dp)); Text(a.label) } }
     }
     if (linking) LinkDialog(onMessage, onDone = { msg -> linking = false; msg?.let(onMessage) })
 }

@@ -62,12 +62,12 @@ fun RemoteTrack.toPreviewItem(): MediaItem? {
     return if (source == Source.DEEZER) toMediaItem(PreviewResolver.uriFor(id)) else toMediaItem(p)
 }
 
-private fun MediaItem.markQueued(): MediaItem =
+internal fun MediaItem.markQueued(): MediaItem =
     buildUpon()
         .setMediaMetadata(mediaMetadata.buildUpon().setExtras(Bundle().apply { putBoolean(QUEUED, true) }).build())
         .build()
 
-private val MediaItem.isQueued: Boolean get() = mediaMetadata.extras?.getBoolean(QUEUED) == true
+internal val MediaItem.isQueued: Boolean get() = mediaMetadata.extras?.getBoolean(QUEUED) == true
 
 data class QueueItem(
     val index: Int,
@@ -102,9 +102,9 @@ class PlayerState(val controller: MediaController) {
     var durationMs by mutableLongStateOf(0L)
         private set
 
-    /** Onda shuffles the list itself (ExoPlayer's shuffle stays off), so queued songs land where you expect. */
-    var shuffle by mutableStateOf(false)
-        private set
+    /** Shuffle here ([Shuffle]), or the PC's while this phone is its remote. */
+    val shuffle: Boolean get() = if (Remote.on.value) remoteShuffle else Shuffle.on
+    private var remoteShuffle by mutableStateOf(false)
 
     /** "Playing from <kind>" / <label>, and the playlist id when playing from one. */
     var sourceKind by mutableStateOf("Library")
@@ -130,8 +130,6 @@ class PlayerState(val controller: MediaController) {
     val fullFrom: Source? get() = catalog?.takeIf { it.full } ?: PreviewResolver.fullCopyOf(currentId)
     val isPreview: Boolean get() = catalog != null && fullFrom == null
 
-    /** The playing context in its original order, without queued songs. */
-    private var context: List<MediaItem> = emptyList()
     private var lastIndex = 0
 
     // Play log for the mixes: a song counts once it has played 30 s, or most of a short one (like a preview).
@@ -170,8 +168,10 @@ class PlayerState(val controller: MediaController) {
     }
 
     init {
-        controller.shuffleModeEnabled = false
+        if (!Remote.on.value) controller.shuffleModeEnabled = false // Onda shuffles the list itself
+        remoteShuffle = controller.shuffleModeEnabled
         controller.addListener(object : Player.Listener {
+            override fun onShuffleModeEnabledChanged(enabled: Boolean) { remoteShuffle = enabled }
             override fun onIsPlayingChanged(playing: Boolean) {
                 tally()
                 since = if (playing) SystemClock.elapsedRealtime() else -1
@@ -192,7 +192,7 @@ class PlayerState(val controller: MediaController) {
                 ) {
                     controller.removeMediaItem(prev)
                 }
-                if (auto && now < prev && shuffle) rebuildUpcoming() // reshuffle after each full loop
+                if (auto && now < prev && shuffle && !Remote.on.value) Shuffle.rebuildUpcoming(controller) // reshuffle after each full loop
                 refresh()
                 startTally(mediaItem)
             }
@@ -236,42 +236,34 @@ class PlayerState(val controller: MediaController) {
 
     fun playItems(
         items: List<MediaItem>, start: Int, kind: String, label: String,
-        id: String? = null, shuffled: Boolean = shuffle,
+        id: String? = null, shuffled: Boolean = shuffle, keepOrder: Boolean = false,
     ) {
         if (items.isEmpty()) return
-        val s = start.coerceIn(0, items.lastIndex)
-        context = items
-        shuffle = shuffled
         sourceKind = kind; sourceLabel = label; sourceId = id
-        // Shuffled: the tapped song first, the rest in random order.
-        val list = if (shuffled) listOf(items[s]) + items.filterIndexed { i, _ -> i != s }.shuffled() else items
-        controller.setMediaItems(list, if (shuffled) 0 else s, 0L)
-        controller.prepare()
-        controller.play()
+        if (Remote.on.value) { // plays on the PC, with the PC's own shuffle
+            controller.setMediaItems(items, start.coerceIn(0, items.lastIndex), 0L)
+            controller.prepare(); controller.play()
+            return
+        }
+        Shuffle.play(controller, items, start, shuffled, keepOrder = keepOrder)
     }
 
     /** More of the same list at its end (radio): not "queued", so they play after your own queue. */
     fun append(items: List<MediaItem>) {
         if (items.isEmpty() || controller.mediaItemCount == 0) return
-        context = context + items
+        Shuffle.append(items)
         controller.addMediaItems(items)
     }
 
     /** Spotify order: after the current song and anything already queued, before the rest. */
     fun addToQueue(item: MediaItem) {
         if (controller.mediaItemCount == 0) return playItems(listOf(item), 0, "Queue", "Your queue")
-        controller.addMediaItem(queueEnd(), item.markQueued())
+        controller.addMediaItem(controller.queueEnd(), item.markQueued())
     }
 
     fun playNext(item: MediaItem) {
         if (controller.mediaItemCount == 0) return playItems(listOf(item), 0, "Queue", "Your queue")
         controller.addMediaItem(controller.currentMediaItemIndex + 1, item.markQueued())
-    }
-
-    private fun queueEnd(): Int {
-        var i = controller.currentMediaItemIndex + 1
-        while (i < controller.mediaItemCount && controller.getMediaItemAt(i).isQueued) i++
-        return i
     }
 
     /** The current song and everything after it; history is hidden, like Spotify. */
@@ -323,35 +315,14 @@ class PlayerState(val controller: MediaController) {
 
     fun next() = controller.seekToNextMediaItem()
 
-    fun prev() {
-        if (controller.currentPosition > 3000) controller.seekTo(0) else controller.seekToPreviousMediaItem()
-    }
+    /** The song that played before (or the start of this one after 3 s); see [HistoryPlayer]. */
+    fun prev() = controller.seekToPrevious()
 
     fun seekTo(ms: Long) = controller.seekTo(ms)
 
     fun toggleShuffle() {
-        shuffle = !shuffle
-        val cur = controller.currentMediaItemIndex
-        if (controller.mediaItemCount == 0 || cur < 0 || context.isEmpty()) return
-        if (cur > 0) controller.removeMediaItems(0, cur) // history would duplicate the rebuilt list
-        rebuildUpcoming()
-        if (!shuffle) { // put back the songs before this one so Previous walks the original order
-            val pos = context.indexOfFirst { it.mediaId == controller.currentMediaItem?.mediaId }
-            if (pos > 0) controller.addMediaItems(0, context.take(pos))
-        }
-    }
-
-    /** Replaces everything after the current song and its queued songs with the rest of the context. */
-    private fun rebuildUpcoming() {
-        val end = queueEnd()
-        if (end < controller.mediaItemCount) controller.removeMediaItems(end, controller.mediaItemCount)
-        val pos = context.indexOfFirst { it.mediaId == controller.currentMediaItem?.mediaId }
-        val rest = when {
-            shuffle -> context.filterIndexed { i, _ -> i != pos }.shuffled()
-            pos >= 0 -> context.drop(pos + 1)
-            else -> context
-        }
-        if (rest.isNotEmpty()) controller.addMediaItems(rest)
+        if (Remote.on.value) controller.shuffleModeEnabled = !remoteShuffle // the PC's shuffle
+        else Shuffle.toggle(controller)
     }
 
     fun cycleRepeat() {

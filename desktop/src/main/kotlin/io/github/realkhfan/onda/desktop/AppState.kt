@@ -677,7 +677,8 @@ class AppState(private val scope: CoroutineScope) {
         val dir = settings.copyDir?.let { java.io.File(it).absoluteFile } ?: return
         if (copying) return
         if (scanning) { copyNote = "Waiting for the music scan to finish; Onda checks again in 30 minutes."; return }
-        if (!dir.isDirectory) { copyNote = "The folder isn't there right now (a drive or share not connected?). Onda tries again in 30 minutes."; return }
+        // Off the UI thread: a share whose server is off can take seconds to answer.
+        if (!withContext(Dispatchers.IO) { dir.isDirectory }) { copyNote = "The folder isn't there right now (a drive or share not connected?). Onda tries again in 30 minutes."; return }
         copying = true
         try {
             val done = withContext(Dispatchers.IO) { readCopied() }
@@ -687,8 +688,9 @@ class AppState(private val scope: CoroutineScope) {
             var copied = 0; var failed = 0
             for ((i, id) in todo.withIndex()) {
                 if (todo.size > 3) copyNote = "Copying new songs: ${i + 1} of ${todo.size}…"
-                val r = withContext(Dispatchers.IO) { runCatching { copyOne(java.io.File(java.net.URI(id)).absoluteFile, roots, fromPhone, dir) } }
-                if (r.isSuccess) { done += id; if (r.getOrThrow()) copied++ } else { failed++; if (!dir.isDirectory) break }
+                val r = withContext(Dispatchers.IO) { runCatching { copyOne(java.io.File(java.net.URI(id)).absoluteFile, roots, fromPhone, dir) }.also { if (it.isFailure && !dir.isDirectory) return@withContext null } }
+                    ?: break // the folder went away (share disconnected): the rest waits for the next check
+                if (r.isSuccess) { done += id; if (r.getOrThrow()) copied++ } else failed++
                 if (i % 25 == 24) withContext(Dispatchers.IO) { writeCopied(done) }
             }
             withContext(Dispatchers.IO) { writeCopied(done) }

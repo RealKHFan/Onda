@@ -598,6 +598,8 @@ fun OndaApp(player: PlayerState?) {
                             onImport = { uris -> SpotifyImporter.start(ctx, uris, tracks) },
                             library = tracks,
                             onMessage = ::toast,
+                            // Every greyed-out song in your playlists and Liked Songs, copied from your PC at once.
+                            getAllFromPc = getMissing((playlists.flatMap { it.trackIds } + liked).distinct().mapNotNull(LinkSync::missingTrack)).firstOrNull(),
                         ) { pop() }
                         MatchRoute -> MatchScreen(onBack = { pop() }, onRename = { push(RenameRoute) })
                         RenameRoute -> RenameScreen(
@@ -1653,6 +1655,7 @@ internal fun SettingsScreen(
     onImport: (List<Uri>) -> Unit,
     library: List<Track> = emptyList(),
     onMessage: (String) -> Unit = {},
+    getAllFromPc: MenuAction? = null,
     onBack: () -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -1776,7 +1779,7 @@ internal fun SettingsScreen(
             CrossfadeSetting(ctx)
             EqualizerSettings(ctx)
             SectionLabel("Your PC", Modifier.padding(0.dp))
-            PcSettings(onMessage)
+            PcSettings(onMessage, getAllFromPc)
             SectionLabel("Loudness", Modifier.padding(0.dp))
             LoudnessSettings(ctx, library)
             SectionLabel("Display", Modifier.padding(0.dp))

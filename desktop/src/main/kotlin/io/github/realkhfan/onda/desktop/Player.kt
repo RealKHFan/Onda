@@ -138,9 +138,18 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         }
     }
 
-    fun play(items: List<Item>, start: Int) {
+    /**
+     * While your phone is the one playing, a new list goes there instead ([elsewhere] returns true); [here]: play it on this
+     * PC anyway (the phone handing its music over).
+     */
+    var elsewhere: ((items: List<Item>, start: Int) -> Boolean)? = null
+    var addElsewhere: ((item: Item, next: Boolean) -> Boolean)? = null
+
+    fun play(items: List<Item>, start: Int, here: Boolean = false) {
         if (items.isEmpty()) return
+        if (!here && elsewhere?.invoke(items, start.coerceIn(items.indices)) == true) return
         cancelCrossfade()
+        went()
         queue = items
         index = start.coerceIn(items.indices)
         order = makeOrder()
@@ -157,6 +166,12 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         load(seekTo = positionMs)
     }
 
+    /** A queue from your phone: its order stays as it came, with its shuffle and repeat. */
+    fun adopt(shuffle: Boolean, repeat: Int) {
+        this.shuffle = shuffle; this.repeat = repeat.coerceIn(0, 2)
+        order = queue.indices.toList()
+    }
+
     /** Adds after the songs already waiting after the current one. */
     fun enqueue(item: Item) = insert(item, atEnd = true)
 
@@ -164,6 +179,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     fun playNext(item: Item) = insert(item, atEnd = false)
 
     private fun insert(item: Item, atEnd: Boolean) {
+        if (addElsewhere?.invoke(item, !atEnd) == true) return
         if (index < 0) return play(listOf(item), 0)
         queue = queue + item
         val at = if (atEnd) order.size else order.indexOf(index) + 1
@@ -187,22 +203,39 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         if (auto && repeat == 2 && !afterError) return load()
         val pos = order.indexOf(index)
         when {
-            pos + 1 < order.size -> index = order[pos + 1]
-            repeat == 1 && !afterError -> { order = makeOrder(first = null); index = order.first() } // a new round, reshuffled
+            pos + 1 < order.size -> { went(); index = order[pos + 1] }
+            repeat == 1 && !afterError -> { went(); order = makeOrder(first = null); index = order.first() } // a new round, reshuffled
             else -> { stop(); return }
         }
         load()
     }
 
+    /** Songs that played before this one, newest last. */
+    private val played = ArrayDeque<Item>()
+    private fun went() { current?.let { played.addLast(it); if (played.size > 200) played.removeFirst() } }
+
+    /** Back to the song that played before (not the one before in the list: shuffle, jumps and new lists reorder that). */
     fun previous() {
         if (index < 0) return
         cancelCrossfade()
         if (positionMs > 3000) return seek(0)
-        val pos = order.indexOf(index)
-        if (pos > 0) { index = order[pos - 1]; load() } else seek(0)
+        val last = played.removeLastOrNull()
+        if (last == null) {
+            // Nothing played before (just opened): the list's previous song, unless it's shuffled (that one never played).
+            val pos = order.indexOf(index)
+            if (pos > 0 && !shuffle) { index = order[pos - 1]; load() } else seek(0)
+            return
+        }
+        var i = queue.indexOf(last)
+        if (i == index) return seek(0)
+        if (i < 0) { queue = queue + last; i = queue.lastIndex } else order = order - i
+        // Just before this song, so Next comes back here.
+        order = order.toMutableList().apply { add(indexOf(index).coerceAtLeast(0), i) }
+        index = i
+        load()
     }
 
-    fun jumpTo(i: Int) { if (i in queue.indices) { cancelCrossfade(); index = i; playing = true; load() } }
+    fun jumpTo(i: Int) { if (i in queue.indices) { cancelCrossfade(); if (i != index) went(); index = i; playing = true; load() } }
 
     fun seek(ms: Long) {
         cancelCrossfade()
@@ -331,6 +364,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         val handed = gaplessItem
         val at = handed?.let { h -> queue.indexOfFirst { it === h } } ?: -1
         if (at < 0) { gaplessNext = -1; gaplessItem = null; return next() } // removed from the queue meanwhile: play what's next instead
+        if (at != index) went()
         index = at
         playingItem = current
         gaplessNext = -1; gaplessItem = null
@@ -415,6 +449,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         leaving()
         bin.stop()
         val old = bin; bin = spare; spare = old
+        went()
         index = c.target
         playingItem = current
         gaplessNext = -1; gaplessItem = null

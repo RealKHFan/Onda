@@ -34,6 +34,21 @@ class RemotePlayerTest {
         assertEquals(Player.STATE_IDLE, p.playbackState)
     }
 
+    @Test fun showsAndSwitchesThePcsShuffleAndRepeat() {
+        val p = RemotePlayer(Looper.getMainLooper(), CoroutineScope(Dispatchers.Unconfined))
+        p.show(JSONObject().put("has", true).put("playing", true).put("title", "Tides").put("shuffle", true).put("repeat", 2))
+        assertTrue(p.shuffleModeEnabled)
+        assertEquals(Player.REPEAT_MODE_ONE, p.repeatMode)
+        // Shown at once (the PC isn't reachable in this test; its next answer would confirm it).
+        p.shuffleModeEnabled = false
+        p.repeatMode = Player.REPEAT_MODE_ALL
+        org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(false, p.shuffleModeEnabled)
+        assertEquals(Player.REPEAT_MODE_ALL, p.repeatMode)
+        assertEquals(listOf(0, 1, 2), listOf(Player.REPEAT_MODE_OFF, Player.REPEAT_MODE_ALL, Player.REPEAT_MODE_ONE).map(RemotePlayer::pcRepeat))
+        assertEquals(Player.REPEAT_MODE_ONE, RemotePlayer.exoRepeat(2))
+    }
+
     @Test fun playerItemsBecomeSongsThePcCanFind() {
         val mine = MediaItem.Builder().setMediaId("content://9").setMediaMetadata(MediaMetadata.Builder().setTitle("Glass").setArtist("Other Band").build()).build()
         val preview = MediaItem.Builder().setMediaId("dz:7").setMediaMetadata(MediaMetadata.Builder().setTitle("Paper Moon").setArtist("Velvet Hours").build()).build()

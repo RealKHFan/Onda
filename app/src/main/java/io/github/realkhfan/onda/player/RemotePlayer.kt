@@ -67,6 +67,7 @@ class RemotePlayer(looper: Looper, private val scope: CoroutineScope) : SimpleBa
             COMMAND_PLAY_PAUSE, COMMAND_STOP, COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM, COMMAND_SEEK_TO_PREVIOUS, COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
             COMMAND_SEEK_TO_NEXT, COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, COMMAND_GET_CURRENT_MEDIA_ITEM, COMMAND_GET_TIMELINE, COMMAND_GET_METADATA,
             COMMAND_SET_MEDIA_ITEM, COMMAND_CHANGE_MEDIA_ITEMS, COMMAND_GET_VOLUME, COMMAND_SET_VOLUME,
+            COMMAND_SET_SHUFFLE_MODE, COMMAND_SET_REPEAT_MODE,
         ).build()
         val b = State.Builder().setAvailableCommands(commands).setVolume(st?.optDouble("volume", 1.0)?.toFloat() ?: 1f)
         if (st == null || !st.optBoolean("has")) return b.setPlaybackState(STATE_IDLE).build()
@@ -81,6 +82,7 @@ class RemotePlayer(looper: Looper, private val scope: CoroutineScope) : SimpleBa
         }
         val pos = st.optLong("pos") + if (playing) System.currentTimeMillis() - at else 0
         return b.setPlaylist(playlist).setCurrentMediaItemIndex(0)
+            .setShuffleModeEnabled(st.optBoolean("shuffle")).setRepeatMode(exoRepeat(st.optInt("repeat")))
             .setPlaybackState(STATE_READY).setPlayWhenReady(playing, PLAY_WHEN_READY_CHANGE_REASON_REMOTE)
             .setContentPositionMs(if (playing) PositionSupplier.getExtrapolating(pos, 1f) else PositionSupplier.getConstant(pos))
             .build()
@@ -104,10 +106,25 @@ class RemotePlayer(looper: Looper, private val scope: CoroutineScope) : SimpleBa
 
     override fun handleSetVolume(volume: Float): ListenableFuture<*> = send("volume") { put("v", volume.toDouble()) }
 
-    // Playing something in Onda while it's a remote plays it on the PC, as with Spotify Connect.
+    // The PC's shuffle and repeat; shown at once, the PC confirms with its next answer.
+    override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<*> {
+        s = s?.let { JSONObject(it.toString()).put("shuffle", shuffleModeEnabled) }
+        return send("shuffle") { put("on", shuffleModeEnabled) }
+    }
+
+    override fun handleSetRepeatMode(repeatMode: Int): ListenableFuture<*> {
+        s = s?.let { JSONObject(it.toString()).put("repeat", pcRepeat(repeatMode)) }
+        return send("repeat") { put("mode", pcRepeat(repeatMode)) }
+    }
+
+    // Playing something in Onda while it's a remote plays it on the PC, as with Spotify Connect, with the PC's shuffle and repeat.
     override fun handleSetMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
-        val from = if (startIndex == C.INDEX_UNSET) 0 else startIndex
-        val q = queueOf(mediaItems.drop(from), if (startPositionMs == C.TIME_UNSET) 0 else startPositionMs)
+        val from = if (startIndex == C.INDEX_UNSET) 0 else startIndex.coerceIn(0, (mediaItems.size - 1).coerceAtLeast(0))
+        val shuffle = s?.optBoolean("shuffle") == true
+        // Shuffled: the chosen song first and the rest mixed (the PC keeps the order it gets).
+        val list = if (shuffle && mediaItems.isNotEmpty()) listOf(mediaItems[from]) + mediaItems.filterIndexed { i, _ -> i != from }.shuffled() else mediaItems
+        val q = queueOf(list, if (startPositionMs == C.TIME_UNSET) 0 else startPositionMs)
+            .copy(start = if (shuffle) 0 else from, shuffle = shuffle, repeat = s?.optInt("repeat") ?: 0)
         scope.launch { Link.playThere(q) }
         return Futures.immediateVoidFuture()
     }
@@ -126,6 +143,10 @@ class RemotePlayer(looper: Looper, private val scope: CoroutineScope) : SimpleBa
     override fun handleRelease(): ListenableFuture<*> { stopPolling(); return Futures.immediateVoidFuture() }
 
     companion object {
+        /** The PC counts repeat as 0 off, 1 all, 2 one. */
+        fun exoRepeat(pc: Int) = when (pc) { 1 -> REPEAT_MODE_ALL; 2 -> REPEAT_MODE_ONE; else -> REPEAT_MODE_OFF }
+        fun pcRepeat(exo: Int) = when (exo) { REPEAT_MODE_ALL -> 1; REPEAT_MODE_ONE -> 2; else -> 0 }
+
         /** Player items as songs the PC can find (catalog songs by key, yours by artist and title). */
         fun queueOf(items: List<MediaItem>, positionMs: Long): LinkSync.Queue {
             val songs = items.map { m ->

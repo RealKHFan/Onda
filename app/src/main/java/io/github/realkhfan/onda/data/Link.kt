@@ -323,23 +323,34 @@ object Link {
     /** Play this here (the PC's "Play on… your phone"). */
     var onPlay: ((LinkSync.Queue) -> Unit)? = null
 
+    /** The PC as this phone's remote: "cmd" (toggle, next, prev, seek, shuffle, repeat), "add", "handover"; and "pcPlaying". */
+    var onMessage: ((JSONObject) -> Unit)? = null
+
+    fun onWifi(context: Context): Boolean = context.getSystemService(android.net.ConnectivityManager::class.java).let { cm ->
+        cm.getNetworkCapabilities(cm.activeNetwork)?.let {
+            it.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) || it.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+        } == true
+    }
+
+    /** Tells the PC what plays here, so it shows it and can control it (only when linked and on Wi-Fi). */
+    suspend fun reportNow(context: Context, now: JSONObject) {
+        if (_pc.value == null || !onWifi(context)) return
+        call("/v1/phone/now", now, 4_000)
+    }
+
     /**
      * Waits for the PC (up to 20 s per request) while the playback service runs: what to play, a sync, a song to send.
      * Only on Wi-Fi, where the PC can be.
      */
     suspend fun listen(context: Context) {
         while (true) {
-            val wifi = context.getSystemService(android.net.ConnectivityManager::class.java).let { cm ->
-                cm.getNetworkCapabilities(cm.activeNetwork)?.let {
-                    it.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) || it.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
-                } == true
-            }
-            if (_pc.value == null || !wifi) { kotlinx.coroutines.delay(30_000); continue }
+            if (_pc.value == null || !onWifi(context)) { kotlinx.coroutines.delay(30_000); continue }
             val r = call("/v1/inbox", timeoutMs = 30_000)?.takeIf { it.status == 200 }?.json
             if (r == null) { kotlinx.coroutines.delay(20_000); continue } // the PC isn't reachable right now
             r.optJSONObject("play")?.let(LinkSync::queueFromJson)?.let { q -> onPlay?.invoke(q) }
             if (r.optBoolean("sync")) syncLater()
             r.optJSONObject("send")?.let { send(context, LinkSync.songFromJson(it)) }
+            if (r.has("cmd") || r.has("add") || r.optBoolean("handover") || r.optBoolean("pcPlaying")) onMessage?.invoke(r)
         }
     }
 
@@ -366,14 +377,19 @@ object Link {
 
 
     /** Songs to play here: yours where found, catalog songs as previews; returns those found and how many weren't. */
-    fun resolve(q: LinkSync.Queue, library: List<Track>): Pair<List<androidx.media3.common.MediaItem>, Int> {
+    /** [start]: where the queue's start song is among [items] (songs not here are left out). */
+    data class Resolved(val items: List<androidx.media3.common.MediaItem>, val start: Int, val missing: Int)
+
+    fun resolve(q: LinkSync.Queue, library: List<Track>): Resolved {
         val lib = LinkSync.Library(library, raw(), emptyMap())
         val catalog = q.catalog.associateBy { it.key }
         val byId = library.associateBy { it.id }
-        val items = q.songs.mapNotNull { s ->
+        val all = q.songs.map { s ->
             if (s.key != null) catalog[s.key]?.let { r -> library.firstOrNull { Match.same(it.title, it.artist, r.title, r.artist) }?.toMediaItem() ?: r.toPreviewItem() }
             else byId[lib.id(s)]?.toMediaItem()
         }
-        return items to (q.songs.size - items.size)
+        val items = all.filterNotNull()
+        val start = all.take(q.start.coerceIn(0, all.size)).count { it != null }.coerceAtMost((items.size - 1).coerceAtLeast(0))
+        return Resolved(items, start, q.songs.size - items.size)
     }
 }

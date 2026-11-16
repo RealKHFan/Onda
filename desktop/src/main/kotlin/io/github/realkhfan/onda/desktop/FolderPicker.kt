@@ -11,6 +11,36 @@ object FolderPicker {
         data object Cancelled : Result
         /** Neither tool is installed: the typed path field is the way. */
         data object NoPicker : Result
+        /** A network place (smb://…) that isn't mounted as a folder on this PC: only KDE apps can reach those. */
+        data class Remote(val url: String) : Result {
+            val message get() = "That's a network place ($url), which Onda can't open. Mount the share once so it's a normal folder " +
+                "on this PC (README.txt shows how), then choose it again."
+        }
+    }
+
+    /** The picker's answer: a local path, the same place inside a mounted share, or a network place Onda can't use. */
+    private fun answer(out: String, ok: (File) -> Boolean): Result {
+        if (!Regex("^[a-z][a-z0-9+.-]*://", RegexOption.IGNORE_CASE).containsMatchIn(out) || out.startsWith("file://")) {
+            val f = File(out.removePrefix("file://"))
+            return if (ok(f)) Result.Picked(f.path) else Result.Cancelled
+        }
+        val local = runCatching { mounted(out, File("/proc/mounts").readText()) }.getOrNull()
+        return if (local != null && ok(File(local))) Result.Picked(local) else Result.Remote(out)
+    }
+
+    /** smb://host/share/a/b -> the same folder below where //host/share is mounted (cifs), if it is. */
+    internal fun mounted(url: String, mounts: String): String? {
+        val u = java.net.URI(url.replace(" ", "%20"))
+        if (!u.scheme.equals("smb", true) || u.host == null) return null
+        val parts = (u.path ?: "").trim('/').split('/').filter { it.isNotEmpty() }
+        val share = parts.firstOrNull() ?: return null
+        val octal = Regex("""\\([0-7]{3})""") // /proc/mounts writes a space as \040
+        return mounts.lineSequence().map { it.split(' ') }.firstNotNullOfOrNull { f ->
+            val src = f.getOrNull(0)?.replace(octal) { it.groupValues[1].toInt(8).toChar().toString() } ?: return@firstNotNullOfOrNull null
+            val at = f.getOrNull(1)?.replace(octal) { it.groupValues[1].toInt(8).toChar().toString() }
+            if (f.getOrNull(2) in setOf("cifs", "smb3") && at != null && src.trimEnd('/').equals("//${u.host}/$share", true))
+                (listOf(at) + parts.drop(1)).joinToString("/") else null
+        }
     }
 
     suspend fun pick(start: String): Result = withContext(Dispatchers.IO) {
@@ -22,7 +52,7 @@ object FolderPicker {
             val p = try { ProcessBuilder(cmd).start() } catch (_: Exception) { continue } // not installed: try the next
             val out = p.inputStream.bufferedReader().readText().trim()
             val code = p.waitFor()
-            return@withContext if (code == 0 && File(out).isDirectory) Result.Picked(out) else Result.Cancelled
+            return@withContext if (code == 0 && out.isNotEmpty()) answer(out) { it.isDirectory } else Result.Cancelled
         }
         Result.NoPicker
     }
@@ -37,7 +67,7 @@ object FolderPicker {
             val p = try { ProcessBuilder(cmd).start() } catch (_: Exception) { continue }
             val out = p.inputStream.bufferedReader().readText().trim()
             val code = p.waitFor()
-            return@withContext if (code == 0 && out.isNotEmpty() && (save || File(out).isFile)) Result.Picked(out) else Result.Cancelled
+            return@withContext if (code == 0 && out.isNotEmpty()) answer(out) { save || it.isFile } else Result.Cancelled
         }
         Result.NoPicker
     }

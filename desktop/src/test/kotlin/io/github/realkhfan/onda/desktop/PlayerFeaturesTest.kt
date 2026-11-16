@@ -145,6 +145,28 @@ class QueueEditingTest {
     }
     private fun item(n: Int) = Player.Item("id$n", "Song $n", "Artist", "Album", null, silence)
 
+    @Test fun previousGoesBackToWhatActuallyPlayed() {
+        val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
+        fun cur() = onUi { p.current?.id }
+        // Paused, so no song passes 3 s (Previous would start it over) on a slow machine.
+        onUi { p.play((1..6).map(::item), 0); p.pause() }
+        onUi { p.jumpTo(4); p.pause() } // skips 2-4
+        onUi { p.previous() }
+        assertEquals("id1", cur()) // what played before, not id4
+        onUi { p.next() }
+        assertEquals("id5", cur()) // and forward to where it was
+        onUi { p.toggleShuffle(); p.next() }
+        onUi { p.previous() }
+        assertEquals("id5", cur())
+        onUi { p.toggleShuffle(); p.previous() } // shuffle off: Previous still follows what played
+        assertEquals("id1", cur())
+        // A queue from the phone keeps its order, shuffle and repeat.
+        onUi { p.play(listOf(item(9), item(8), item(7)), 0, here = true); p.adopt(shuffle = true, repeat = 1) }
+        assertEquals(listOf("id8", "id7"), onUi { p.upcoming().map { it.second.id } })
+        assertEquals(true to 1, onUi { p.shuffle to p.repeat })
+        onUi { p.close() }
+    }
+
     @Test fun removeMoveAppendAndClear() {
         val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
         var lastSongCalls = 0

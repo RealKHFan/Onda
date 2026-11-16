@@ -61,7 +61,19 @@ fun main(args: Array<String>) {
                     p.resumeAt = { state.resumeAt(it.id) }; p.onLeave = { item, pos, dur -> state.leftAt(item.id, pos, dur) }
                     state.settings.output?.let { o -> if (Outputs.list().any { it.name == o }) p.setOutput(o) } }
         }
-        remember { Link.player = player; Link.load(state); 0 } // the phone link, if you turned it on
+        remember {
+            Link.player = player; Link.load(state) // the phone link, if you turned it on
+            // While your phone is the one playing, new music goes there, as with Spotify's devices.
+            player?.elsewhere = Link::playOnActivePhone
+            player?.addElsewhere = Link::addOnActivePhone
+            0
+        }
+        // Starting to play here: a linked phone that isn't playing shows it and becomes the remote (once per start, so
+        // "Stop using this phone as the remote" there holds until this PC starts again).
+        LaunchedEffect(player) {
+            val p = player ?: return@LaunchedEffect
+            snapshotFlow { p.playing }.collect { playing -> if (playing) Link.playingHere() }
+        }
         // Changes here reach a linked phone a few seconds later (it syncs while Onda is open on it).
         LaunchedEffect(Unit) {
             androidx.compose.runtime.snapshotFlow { state.linkFingerprint() }.collectLatest { f -> delay(3000); if (Link.on) Link.changed(f) }
