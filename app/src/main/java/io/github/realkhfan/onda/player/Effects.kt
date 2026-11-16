@@ -24,6 +24,7 @@ object Effects {
         apply(gains)
         enhancer?.release()
         enhancer = runCatching { LoudnessEnhancer(sessionId) }.getOrNull()
+        boostOn = null
         push()
     }
 
@@ -38,11 +39,17 @@ object Effects {
     var normalize = false; set(v) { field = v; push() }
     var songGainDb = 0.0; set(v) { field = v; push() }
     var fade = 1f; set(v) { field = v; push() }
+    /** Crossfade: the outgoing song's share (1 = all of it). */
+    var crossOut = 1f; set(v) { field = v; push() }
+
+    private var boostOn: Boolean? = null // what the enhancer was last told (it's not asked again 30 times a second in a crossfade)
 
     @Synchronized private fun push() {
-        val boost = enhancer?.let { e -> runCatching { e.setTargetGain(if (normalize) BOOST_DB * 100 else 0); e.enabled = normalize; if (normalize) BOOST_DB else 0 }.getOrDefault(0) } ?: 0
+        val e = enhancer
+        if (e != null && boostOn != normalize) runCatching { e.setTargetGain(if (normalize) BOOST_DB * 100 else 0); e.enabled = normalize; boostOn = normalize }
+        val boost = if (e != null && boostOn == true) BOOST_DB else 0
         val level = if (normalize) 10.0.pow((songGainDb - boost) / 20).coerceAtMost(1.0) else 1.0
-        setVolume?.invoke((level * fade).toFloat().coerceIn(0f, 1f))
+        setVolume?.invoke((level * fade * crossOut).toFloat().coerceIn(0f, 1f))
     }
 
     @Synchronized fun apply(newGains: List<Double>) {

@@ -63,7 +63,12 @@ class AppState(private val scope: CoroutineScope) {
     /** Catalog songs shown or played this run, so the heart and menus can save them. */
     private val seen = HashMap<String, RemoteTrack>()
 
-    init { accentState.value = androidx.compose.ui.graphics.Color(settings.accent.toInt()); Lrclib.init(Store.cache); Overrides.load(Store.data); ListenBrainz.load(Store.data) }
+    init {
+        accentState.value = androidx.compose.ui.graphics.Color(settings.accent.toInt()); Lrclib.init(Store.cache); Overrides.load(Store.data); ListenBrainz.load(Store.data)
+        // Cover photos no playlist uses any more (deleted playlists, replaced photos), once per start so Undo still works.
+        val used = collection.playlists.mapNotNull { it.cover }.toSet()
+        java.io.File(Store.data, "playlist_covers").listFiles()?.filter { it.path !in used }?.forEach { it.delete() }
+    }
 
     /** Details accepted from the online match (shown instead of the file's tags) and artist photos found with it. */
     var meta by mutableStateOf(Overrides.meta.value); private set
@@ -243,26 +248,28 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     /** An artist's mix: their songs in your library mixed with songs of similar artists (for this session). */
-    private val artistMixes = HashMap<String, List<Track>>()
-    suspend fun artistMix(name: String): List<Track> {
-        artistMixes[name]?.let { return it }
+    private val artistMixes = HashMap<String, Pair<Long, List<Track>>>()
+    /** Mixes and the radar are made again after this long (or with Refresh). */
+    private val freshMs = 6 * 3_600_000L
+    suspend fun artistMix(name: String, refresh: Boolean = false): List<Track> {
+        artistMixes[name]?.takeIf { !refresh && System.currentTimeMillis() - it.first < freshMs }?.let { return it.second }
         val own = library.filter { Match.norm(it.artist) == Match.norm(name) }.shuffled().take(10)
         val ownKeys = own.map { Match.norm(it.artist) + "|" + Match.norm(it.title) }.toSet()
         val similar = runCatching { Discover.similar(listOf(name), settings.listenBrainz, skip = { notWanted(it) || Match.norm(it.artist) + "|" + Match.norm(it.title) in ownKeys }, n = 20) }
-            .getOrDefault(emptyList()).onEach { seen[it.key] = it }.map { own(it) ?: asTrack(it) }
+            .getOrDefault(emptyList()).shuffled().onEach { seen[it.key] = it }.map { own(it) ?: asTrack(it) }
         val mixed = ArrayList<Track>()
         val a = own.iterator(); val b = similar.iterator()
         while (a.hasNext() || b.hasNext()) { if (a.hasNext()) mixed += a.next(); repeat(2) { if (b.hasNext()) mixed += b.next() } }
-        return mixed.distinctBy { it.id }.also { artistMixes[name] = it }
+        return mixed.distinctBy { it.id }.also { artistMixes[name] = System.currentTimeMillis() to it }
     }
 
     /** New releases as songs: the tracks of the newest releases of your artists (for this session). */
-    private var radar: List<RemoteTrack>? = null
-    suspend fun releaseRadar(): List<RemoteTrack> {
-        radar?.let { return it }
+    private var radar: Pair<Long, List<RemoteTrack>>? = null
+    suspend fun releaseRadar(refresh: Boolean = false): List<RemoteTrack> {
+        radar?.takeIf { !refresh && System.currentTimeMillis() - it.first < freshMs }?.let { return it.second }
         val tracks = releases.items.take(12).flatMap { a -> runCatching { Deezer.album(a.id).second }.getOrDefault(emptyList()).take(3) }
             .filterNot(::notWanted).onEach { seen[it.key] = it }
-        return tracks.also { if (it.isNotEmpty()) radar = it }
+        return tracks.also { if (it.isNotEmpty()) radar = System.currentTimeMillis() to it }
     }
 
     fun setGapless(on: Boolean) = update(settings.copy(gapless = on))
@@ -489,6 +496,55 @@ class AppState(private val scope: CoroutineScope) {
 
     /* ---------- Phone link (library sync) ---------- */
 
+    /* Playlist covers over the link: known by their hash, kept in playlist_covers. */
+    private val coverHashes = HashMap<String, String>()
+    fun coverHash(path: String): String? = coverHashes[path] ?: runCatching { LinkSync.hashOf(java.io.File(path).readBytes()) }.getOrNull()?.also { coverHashes[path] = it }
+    fun coverFiles(): Map<String, String> = (java.io.File(Store.data, "playlist_covers").listFiles().orEmpty().map { it.path } + collection.playlists.mapNotNull { it.cover })
+        .distinct().mapNotNull { p -> coverHash(p)?.let { it to p } }.toMap()
+    /** A cover the phone sent (checked against its hash). */
+    fun saveCover(hash: String, bytes: ByteArray): Boolean {
+        if (LinkSync.hashOf(bytes) != hash) return false
+        val dir = java.io.File(Store.data, "playlist_covers").apply { mkdirs() }
+        java.io.File(dir, "$hash.img").writeBytes(bytes)
+        return true
+    }
+
+    /* ---------- Playlist folders ---------- */
+
+    fun createFolder(name: String): String {
+        val id = UUID.randomUUID().toString()
+        change(collection.copy(folders = collection.folders + Store.Folder(id, name.trim().ifBlank { "New folder" })))
+        return id
+    }
+    fun renameFolder(id: String, name: String) = change(collection.copy(folders = collection.folders.map { if (it.id == id) it.copy(name = name.trim().ifBlank { it.name }) else it }))
+    /** The folder goes; its playlists stay, outside any folder. Returns what Undo needs. */
+    fun deleteFolder(id: String): Pair<Store.Folder, List<String>>? {
+        val f = collection.folders.firstOrNull { it.id == id } ?: return null
+        val inside = collection.playlists.filter { it.folder == id }.map { it.id }
+        change(collection.copy(folders = collection.folders - f, playlists = collection.playlists.map { if (it.folder == id) it.copy(folder = null) else it }))
+        return f to inside
+    }
+    fun restoreFolder(f: Store.Folder, ids: List<String>) =
+        change(collection.copy(folders = collection.folders + f, playlists = collection.playlists.map { if (it.id in ids) it.copy(folder = f.id) else it }))
+    fun moveToFolder(playlistId: String, folderId: String?) =
+        change(collection.copy(playlists = collection.playlists.map { if (it.id == playlistId) it.copy(folder = folderId) else it }))
+
+    /** Greyed-out songs (only on your phone) that are in your library now become the songs themselves. */
+    fun healMissing() {
+        val ids = (collection.playlists.flatMap { it.trackIds } + collection.liked).filter(LinkSync::isMissing).toSet()
+        val map = LinkSync.heal(ids, library)
+        if (map.isEmpty()) return
+        change(collection.copy(playlists = collection.playlists.map { p -> p.copy(trackIds = p.trackIds.map { map[it] ?: it }.distinct()) },
+            liked = collection.liked.map { map[it] ?: it }.distinct()))
+        plays = plays.map { p -> map[p.key]?.let { p.copy(key = it) } ?: p }
+        Store.savePlays(plays)
+    }
+
+    fun setCrossfade(s: Int) = update(settings.copy(crossfade = s.coerceIn(0, 12)))
+
+    /** What a sync carries, as one number (history aside): the phone is told to sync when it changes. */
+    fun linkFingerprint(): Int = listOf(collection, meta).hashCode()
+
     /** Your files and server songs with their own tags (no edits). */
     val rawTracks: List<Track> get() = serverTracks + local
 
@@ -497,7 +553,8 @@ class AppState(private val scope: CoroutineScope) {
         val c = collection
         val lib = LinkSync.Library(byId.values.toList(), rawTracks, c.remote.associateBy { it.key }, known)
         return LinkSync.Snapshot(
-            playlists = c.playlists.map { p -> LinkSync.Playlist(p.id, p.name, p.description, p.trackIds.mapNotNull(lib::song)) },
+            playlists = c.playlists.map { p -> LinkSync.Playlist(p.id, p.name, p.description, p.trackIds.mapNotNull(lib::song), p.cover?.let(::coverHash), p.folder) },
+            folders = c.folders.map { LinkSync.Folder(it.id, it.name) },
             liked = c.liked.mapNotNull(lib::song),
             want = c.want, catalog = c.remote, followed = c.followed, albums = c.albums,
             notInterested = c.hidden.filter { Source.of(it) != null }, blocked = c.blocked, ai = c.ai,
@@ -514,8 +571,10 @@ class AppState(private val scope: CoroutineScope) {
         val shown = Overrides.apply(raw, Overrides.meta.value)
         val lib = LinkSync.Library(shown, raw, emptyMap())
         val c = collection
+        val covers = coverFiles()
         change(c.copy(
-            playlists = s.playlists.map { p -> Store.Playlist(p.id, p.name, p.songs.map(lib::id).distinct(), p.description, c.playlists.firstOrNull { it.id == p.id }?.cover) },
+            playlists = s.playlists.map { p -> Store.Playlist(p.id, p.name, p.songs.map(lib::id).distinct(), p.description, p.cover?.let { covers[it] }, p.folder) },
+            folders = s.folders.map { Store.Folder(it.id, it.name) },
             liked = s.liked.map(lib::id).distinct(),
             want = s.want, remote = (s.catalog + c.remote).distinctBy { it.key }, followed = s.followed, albums = s.albums,
             hidden = c.hidden.filter { Source.of(it) == null } + s.notInterested, blocked = s.blocked, ai = s.ai,
@@ -666,7 +725,7 @@ class AppState(private val scope: CoroutineScope) {
 
     /** [from] / [to] are positions as shown (songs that can't be shown right now are skipped there). */
     fun movePlaylistTrack(id: String, from: Int, to: Int) = change(collection.copy(playlists = collection.playlists.map { pl ->
-        val shown = pl.trackIds.filter { trackFor(it) != null }
+        val shown = pl.trackIds.filter { listed(it) != null }
         if (pl.id != id || from !in shown.indices || to !in shown.indices) return@map pl
         val ids = pl.trackIds.toMutableList()
         val target = ids.indexOf(shown[to])

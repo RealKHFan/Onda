@@ -165,6 +165,7 @@ internal fun MiniPlayer(player: PlayerState, tint: Color, onOpen: () -> Unit) {
 }
 
 private fun artistLine(p: PlayerState) = when {
+    io.github.realkhfan.onda.player.Remote.on.value -> "On ${io.github.realkhfan.onda.data.Link.pc.value?.name ?: "your PC"} · ${p.artist}"
     p.isPreview -> "Preview · ${p.artist}"
     p.fullFrom != null -> "${p.fullFrom!!.label} · ${p.artist}"
     else -> p.artist

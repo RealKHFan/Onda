@@ -19,10 +19,10 @@ Onda is offline-first: it plays music you own or can legally stream, and works f
 - **Spotify import:** playlists, liked songs and recent listening history from Spotify's data export or Exportify CSVs.
 - **Downloads:** saved as real music files in your music folder, only from sources that allow it (your server, free catalogs).
 - **Android Auto:** playlists, albums, artists, search and voice.
-- **Phone and PC:** pair the phone with Onda on your Linux PC once (a 6-digit code); playlists, likes, Want to listen, follows, history and edited details stay in sync, and "Play on…" moves music between them or works as a remote. Over your home Wi-Fi only, end-to-end encrypted (AES-256-GCM), no cloud.
+- **Phone and PC:** pair the phone with Onda on your Linux PC once (a 6-digit code). Playlists (with folders and cover photos), likes, Want to listen, follows, history and edited details stay in sync within seconds while both are open. Songs only on one device show greyed out and can be streamed or copied over. "Play on…" moves music between them, and the phone becomes a remote for the PC (player bar, lock screen). Over your home Wi-Fi only, end-to-end encrypted (AES-256-GCM), no cloud.
 
 ## Linux
-A desktop version for Linux lives in `desktop/` (Compose for Desktop, GStreamer for playback) with the same features and design as the phone: your music folders and Navidrome server, catalog search with previews and free full songs, mixes, new releases, lyrics, metadata editing, loudness normalisation, an equalizer, downloads, Spotify import, backups, the phone link and your desktop's media controls (MPRIS). Build it with `./gradlew :desktop:createDistributable`; `desktop/packaging/install.sh` adds it to your app menu without root.
+A desktop version for Linux lives in `desktop/` (Compose for Desktop, GStreamer for playback) with the same features and design as the phone: your music folders and Navidrome server, catalog search with previews and free full songs, mixes, new releases, lyrics, metadata editing, loudness normalisation, crossfade, an equalizer, downloads, Spotify import, backups, the phone link and your desktop's media controls (MPRIS). Build it with `./gradlew :desktop:createDistributable`; `desktop/packaging/install.sh` adds it to your app menu without root.
 
 ## Privacy
 - No account, no analytics, no crash reporting, no device ID. Your history never leaves your devices (the phone and, if you link them, your own PC).

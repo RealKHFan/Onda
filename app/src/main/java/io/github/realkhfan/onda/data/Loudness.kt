@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -51,29 +52,43 @@ object Loudness {
         return R128.gainDb(lufs, peak)
     }
 
-    /** Measures your own files not measured yet, one after another in the background. */
+    private var todo: List<Track> = emptyList()
+
+    /**
+     * Measures your own files not measured yet, one after another, in a background service with a progress
+     * notification, so it goes on when Onda is closed.
+     */
     fun measure(context: Context, tracks: List<Track>) {
-        if (job?.isActive == true) return
-        val todo = tracks.filter { it.uri.startsWith("content:") && it.id !in _gains.value && it.id !in failed }.distinctBy { it.id }
+        if (_progress.value.running) return
+        todo = tracks.filter { it.uri.startsWith("content:") && it.id !in _gains.value && it.id !in failed }.distinctBy { it.id }
         if (todo.isEmpty()) return
-        val c = context.applicationContext
-        job = CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
-            _progress.value = Progress(true, 0, todo.size)
-            val found = HashMap<String, Gain>()
-            for ((i, t) in todo.withIndex()) {
+        _progress.value = Progress(true, 0, todo.size)
+        runCatching { context.startForegroundService(android.content.Intent(context, MeasureService::class.java)) }
+            .onFailure { _progress.value = Progress() } // Android refused (Onda not on screen): next time Onda opens
+    }
+
+    fun stop(context: Context) { context.stopService(android.content.Intent(context, MeasureService::class.java)); job?.cancel(); _progress.value = Progress() }
+
+    /** Called by [MeasureService]. */
+    internal suspend fun run(c: Context, onProgress: () -> Unit) = kotlinx.coroutines.coroutineScope {
+        job = coroutineContext[Job]
+        val list = todo
+        val found = HashMap<String, Gain>()
+        try {
+            for ((i, t) in list.withIndex()) {
                 if (!isActive) break
-                val g = runCatching { analyse(c, Uri.parse(t.uri)) { isActive } }.getOrNull()
+                val g = kotlinx.coroutines.withContext(Dispatchers.Default) { runCatching { analyse(c, Uri.parse(t.uri)) { isActive } }.getOrNull() }
                 if (g != null) found[t.id] = g else failed += t.id
-                _progress.value = Progress(true, i + 1, todo.size)
+                _progress.value = Progress(true, i + 1, list.size)
+                onProgress()
                 if (found.size >= 20) { _gains.value = _gains.value + found; found.clear(); write() }
             }
+        } finally {
             _gains.value = _gains.value + found
             write()
             _progress.value = Progress()
         }
     }
-
-    fun stop() { job?.cancel(); _progress.value = Progress() }
 
     private fun write() {
         val f = file ?: return
@@ -145,4 +160,47 @@ object Loudness {
             ex.release()
         }
     }
+}
+
+/** Keeps measuring while Onda is closed, with the progress notification Android requires. */
+class MeasureService : android.app.Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var job: Job? = null
+
+    override fun onBind(intent: android.content.Intent?) = null
+
+    private fun note(): android.app.Notification {
+        val nm = getSystemService(android.app.NotificationManager::class.java)
+        nm.createNotificationChannel(android.app.NotificationChannel("loudness", "Loudness", android.app.NotificationManager.IMPORTANCE_LOW))
+        val p = Loudness.progress.value
+        return android.app.Notification.Builder(this, "loudness").setSmallIcon(io.github.realkhfan.onda.R.drawable.ic_stat_onda)
+            .setContentTitle("Measuring loudness").setContentText("${p.done} of ${p.total} songs")
+            .setProgress(p.total, p.done, false).setOngoing(true).setOnlyAlertOnce(true)
+            .setContentIntent(android.app.PendingIntent.getActivity(this, 0, android.content.Intent(this, io.github.realkhfan.onda.MainActivity::class.java), android.app.PendingIntent.FLAG_IMMUTABLE))
+            .build()
+    }
+
+    override fun onStartCommand(intent: android.content.Intent?, flags: Int, startId: Int): Int {
+        if (android.os.Build.VERSION.SDK_INT >= 29) startForeground(NOTE, note(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        else startForeground(NOTE, note())
+        if (job?.isActive != true) job = scope.launch {
+            var last = 0L
+            try {
+                Loudness.run(applicationContext) {
+                    if (System.currentTimeMillis() - last > 2000) { last = System.currentTimeMillis(); runCatching { getSystemService(android.app.NotificationManager::class.java).notify(NOTE, note()) } }
+                }
+            } finally {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    // Android 15 limits background work like this to 6 hours a day; the rest waits for the next time Onda opens.
+    override fun onTimeout(startId: Int, fgsType: Int) { job?.cancel(); stopSelf() }
+
+    override fun onDestroy() { job?.cancel(); scope.cancel(); super.onDestroy() }
+
+    private companion object { const val NOTE = 4302 }
 }

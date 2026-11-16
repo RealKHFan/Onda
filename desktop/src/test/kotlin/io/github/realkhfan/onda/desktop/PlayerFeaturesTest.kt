@@ -108,6 +108,27 @@ class PlayerFeaturesTest {
         assertTrue(send("org.freedesktop.DBus.Properties.Get", "string:org.mpris.MediaPlayer2", "string:Identity").contains("\"Onda\""))
         m.close(); onUi { p.close() }
     }
+    @Test fun crossfadesBetweenSongsButNotWithinAnAlbum() {
+        val p = player()
+        val a = wav(3.0); val b = wav(3.0)
+        onUi { p.crossfade = 1 }
+        // Two albums: the second song fades in on the spare player before the first one ends.
+        onUi { p.play(listOf(item(1, a).copy(album = "One"), item(2, b).copy(album = "Two")), 0) }
+        waitFor(6000) { p.crossfading }
+        assertTrue("fading", onUi { p.crossfading })
+        assertEquals(0, onUi { p.index })
+        waitFor(4000) { p.index == 1 && !p.crossfading }
+        assertEquals(1, onUi { p.index })
+        assertTrue(onUi { p.playing })
+        // Same album: gapless, no fade.
+        onUi { p.play(listOf(item(3, a), item(4, b)), 0) }
+        var faded = false
+        val end = System.currentTimeMillis() + 4500
+        while (System.currentTimeMillis() < end) { if (onUi { p.crossfading }) faded = true; Thread.sleep(50) }
+        assertFalse("no crossfade within an album", faded)
+        assertEquals(1, onUi { p.index })
+        onUi { p.close() }
+    }
 }
 
 class QueueEditingTest {
@@ -161,4 +182,5 @@ class CollectionRulesTest {
         assertEquals(listOf("Paper Moon", "Night Drive"), s.playlistTracks(pl).map { it.title })
         s.deletePlaylist(pl)
     }
+
 }

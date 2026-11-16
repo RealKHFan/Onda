@@ -40,6 +40,8 @@ object Store {
         val software: Boolean = false, val songNotify: Boolean = false, val zoom: Float = 1f,
         /** [gapless]: no pause between files; [pinned]: playlist ids shown first; [picks]: song id to chosen lyrics (LRCLIB id, timing shift ms). */
         val gapless: Boolean = true, val pinned: List<String> = emptyList(), val picks: Map<String, Pair<Long, Long>> = emptyMap(),
+        /** Crossfade between songs, in seconds (0 = off). */
+        val crossfade: Int = 0,
         /** Last searches, newest first (on this PC only). */
         val searches: List<String> = emptyList(),
         /** [albumGain]: normalise whole albums; [output]: the chosen speakers (a sink name), null = system default. */
@@ -67,6 +69,7 @@ object Store {
             software = o.optBoolean("software"), songNotify = o.optBoolean("songNotify"),
             zoom = o.optDouble("zoom", 1.0).toFloat().coerceIn(0.7f, 1.6f),
             gapless = o.optBoolean("gapless", true),
+            crossfade = o.optInt("crossfade", 0).coerceIn(0, 12),
             albumGain = o.optBoolean("albumGain"), output = o.optString("output").ifBlank { null },
             cache = o.optBoolean("cache", true), accent = o.optLong("accent", 0xFF9D7BFF), compact = o.optBoolean("compact"), playlistOrder = o.optString("playlistOrder", "Custom"),
             lyricsScale = o.optDouble("lyricsScale", 1.0).toFloat().coerceIn(0.6f, 1.8f),
@@ -82,7 +85,7 @@ object Store {
         .put("autoplay", s.autoplay).put("background", s.background).put("releaseAlerts", s.releaseAlerts)
         .put("apple", s.apple).put("listenBrainz", s.listenBrainz).put("backupDir", s.backupDir).put("normalize", s.normalize)
         .put("eq", org.json.JSONArray(s.eq)).put("eqPreset", s.eqPreset).put("software", s.software).put("songNotify", s.songNotify).put("zoom", s.zoom.toDouble())
-        .put("gapless", s.gapless).put("pinned", org.json.JSONArray(s.pinned)).put("searches", org.json.JSONArray(s.searches))
+        .put("gapless", s.gapless).put("crossfade", s.crossfade).put("pinned", org.json.JSONArray(s.pinned)).put("searches", org.json.JSONArray(s.searches))
         .put("albumGain", s.albumGain).put("output", s.output).put("window", org.json.JSONArray(s.window)).put("maximized", s.maximized)
         .put("cache", s.cache).put("accent", s.accent).put("compact", s.compact).put("playlistOrder", s.playlistOrder).put("lyricsScale", s.lyricsScale.toDouble())
         .put("picks", JSONObject().apply { s.picks.forEach { (k, v) -> put(k, org.json.JSONArray().put(v.first).put(v.second)) } })
@@ -121,7 +124,11 @@ object Store {
         o.optString("albumArtist"), o.optInt("trackNo"), o.optLong("durationMs"), o.optString("folder"), o.optString("art").ifBlank { null }, o.optString("file"))
 
     /** [cover]: an image file of yours, copied into Onda's data folder; null = made from the album covers. */
-    data class Playlist(val id: String, val name: String, val trackIds: List<String>, val description: String = "", val cover: String? = null)
+    /** [folder]: the playlist folder it's in, or null. */
+    data class Playlist(val id: String, val name: String, val trackIds: List<String>, val description: String = "", val cover: String? = null, val folder: String? = null)
+
+    /** A folder of playlists. */
+    data class Folder(val id: String, val name: String)
 
     /** Liked songs (ids), your playlists, and catalog songs saved to Want to listen. */
     /** [remote]: catalog songs that Liked Songs or a playlist hold, so they can be shown and played. */
@@ -131,6 +138,7 @@ object Store {
         val followed: List<RemoteArtist> = emptyList(), val albums: List<RemoteAlbum> = emptyList(),
         /** "Not interested": song keys and artists (normalised) left out of suggestions; [ai]: artists you marked as AI. */
         val hidden: List<String> = emptyList(), val blocked: List<String> = emptyList(), val ai: List<String> = emptyList(),
+        val folders: List<Folder> = emptyList(),
     )
 
     fun collection(): Collection = runCatching {
@@ -138,7 +146,8 @@ object Store {
         Collection(
             liked = o.optJSONArray("liked").strings(),
             playlists = o.optJSONArray("playlists").objects().map { Playlist(it.getString("id"), it.getString("name"), it.optJSONArray("tracks").strings(),
-                it.optString("desc"), it.optString("cover").ifBlank { null }) },
+                it.optString("desc"), it.optString("cover").ifBlank { null }, it.optString("folder").ifBlank { null }) },
+            folders = o.optJSONArray("folders").objects().map { Folder(it.getString("id"), it.optString("name")) },
             want = o.optJSONArray("want").objects().map(::remote),
             remote = o.optJSONArray("remote").objects().map(::remote),
             followed = o.optJSONArray("followed").objects().map { RemoteArtist(it.getLong("id"), it.getString("name"), it.optString("pic").ifBlank { null }) },
@@ -153,7 +162,8 @@ object Store {
     fun saveCollection(c: Collection) = write("collection.json", JSONObject()
         .put("liked", JSONArray(c.liked))
         .put("playlists", JSONArray(c.playlists.map { JSONObject().put("id", it.id).put("name", it.name).put("tracks", JSONArray(it.trackIds))
-            .put("desc", it.description.ifBlank { null }).put("cover", it.cover) }))
+            .put("desc", it.description.ifBlank { null }).put("cover", it.cover).put("folder", it.folder) }))
+        .put("folders", JSONArray(c.folders.map { JSONObject().put("id", it.id).put("name", it.name) }))
         .put("want", JSONArray(c.want.map(::json)))
         .put("remote", JSONArray(c.remote.filter { r -> r.key in c.liked || c.playlists.any { r.key in it.trackIds } }.map(::json)))
         .put("followed", JSONArray(c.followed.map { JSONObject().put("id", it.id).put("name", it.name).put("pic", it.picture) }))

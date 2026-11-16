@@ -152,7 +152,7 @@ class PlayerState(val controller: MediaController) {
 
     private fun maybeLog() {
         val key = logKey ?: return
-        if (logged) return
+        if (logged || Remote.on.value) return // the PC keeps its own history of what plays there
         val need = if (durationMs > 0) minOf(30_000L, durationMs * 8 / 10) else 30_000L
         if (playedMs >= need) {
             PlayLog.add(key, logArtist, logTitle)

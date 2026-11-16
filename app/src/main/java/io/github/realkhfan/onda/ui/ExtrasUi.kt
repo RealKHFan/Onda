@@ -1,5 +1,10 @@
 package io.github.realkhfan.onda.ui
 
+import androidx.compose.ui.draw.alpha
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.MoreVert
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -162,9 +167,16 @@ internal fun ListeningClock(plays: List<Discovery.Play>) {
 
 /** What you played, newest first, by day. */
 @Composable
-internal fun HistoryScreen(plays: List<Discovery.Play>, trackFor: (String) -> Track?, player: PlayerState?, onBack: () -> Unit) {
-    val rows = remember(plays) { plays.asReversed().take(300).mapNotNull { p -> trackFor(p.key)?.let { p to it } } }
-    val tracks = rows.map { it.second }
+internal fun HistoryScreen(plays: List<Discovery.Play>, trackFor: (String) -> Track?, player: PlayerState?, onMenu: (Track) -> Unit = {}, onBack: () -> Unit) {
+    // Songs played on your PC that aren't on this phone are listed greyed out (their ⋮ menu still works).
+    val rows = remember(plays) {
+        plays.asReversed().take(300).mapNotNull { p ->
+            (trackFor(p.key) ?: p.takeIf { io.github.realkhfan.onda.core.Source.of(it.key) == null && it.title.isNotBlank() }
+                ?.let { io.github.realkhfan.onda.core.LinkSync.missingTrack(io.github.realkhfan.onda.core.LinkSync.Library.PLACEHOLDER + it.artist + '\u001F' + it.title) })
+                ?.let { p to it }
+        }
+    }
+    val tracks = rows.map { it.second }.filterNot { io.github.realkhfan.onda.core.LinkSync.isMissing(it.id) }
     val zone = ZoneId.systemDefault()
     val today = LocalDate.now(zone)
     val time = DateTimeFormatter.ofPattern("HH:mm")
@@ -176,14 +188,19 @@ internal fun HistoryScreen(plays: List<Discovery.Play>, trackFor: (String) -> Tr
                 item { SectionLabel(when (d) { today -> "Today"; today.minusDays(1) -> "Yesterday"; else -> d.format(DateTimeFormatter.ofPattern("EEEE, d MMMM")) }) }
                 items(idx) { i ->
                     val (p, t) = rows[i]
-                    Row(Modifier.fillMaxWidth().clickable { player?.play(tracks, i, "Playlist", "History") }.padding(16.dp, 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Art(t.artUri, 44.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(t.title, color = if (player?.currentId == t.id) Accent else TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(t.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val missing = io.github.realkhfan.onda.core.LinkSync.isMissing(t.id)
+                    Row(Modifier.fillMaxWidth().clickable(enabled = !missing) { player?.play(tracks, tracks.indexOf(t).coerceAtLeast(0), "Playlist", "History") }
+                        .padding(start = 16.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.weight(1f).alpha(if (missing) 0.4f else 1f), verticalAlignment = Alignment.CenterVertically) {
+                            Art(t.artUri, 44.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(t.title, color = if (player?.currentId == t.id) Accent else TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(if (missing) "${t.artist} · not on this phone" else t.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            Text(Instant.ofEpochMilli(p.atMs).atZone(zone).toLocalTime().format(time), color = TextDim, fontSize = 12.sp)
                         }
-                        Text(Instant.ofEpochMilli(p.atMs).atZone(zone).toLocalTime().format(time), color = TextDim, fontSize = 12.sp)
+                        IconButton(onClick = { onMenu(t) }) { Icon(Icons.Rounded.MoreVert, "More options for ${t.title}", tint = TextDim) }
                     }
                 }
             }

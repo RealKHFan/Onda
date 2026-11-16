@@ -94,6 +94,9 @@ object Downloads {
             Item(t.title, t.artist, Subsonic.downloadUrl(cfg, t.id.removePrefix(Server.PREFIX)), null, replaces = t.id)
         } else null
 
+    /** A song only on your PC (greyed out here): copied over the link; playlists and likes then hold the file. */
+    fun forMissing(t: Track): Item? = if (!io.github.realkhfan.onda.core.LinkSync.isMissing(t.id)) null else Item(t.title, t.artist, Link.linkUri(t), null, replaces = t.id)
+
     fun forRemote(r: RemoteTrack): Item? = if (!r.canDownload) null else FreeCatalogs.stream(r)?.let { url ->
         Item(r.title, r.artist, url, if (r.ref.contains('/')) r.ref.substringAfterLast('.', "mp3") else "mp3")
     }
@@ -106,7 +109,8 @@ object Downloads {
         if (items.isEmpty()) return "Nothing here can be downloaded."
         if (targetFolder(context) == null) return "Add a music folder first (Settings → Music folders), so downloads have a place to go."
         val cm = context.getSystemService(ConnectivityManager::class.java)
-        if (!Prefs.mobileDownloads(context) && cm.isActiveNetworkMetered) {
+        val fromPc = items.all { it.url.startsWith(io.github.realkhfan.onda.player.LinkDataSource.SCHEME + ":") }
+        if (!fromPc && !Prefs.mobileDownloads(context) && cm.isActiveNetworkMetered) {
             return "You're on mobile data. Downloads wait for Wi-Fi; allow mobile data in Settings → Downloads."
         }
         if (pendingFile == null) pendingFile = File(context.filesDir, "downloads.json")
@@ -202,6 +206,7 @@ object Downloads {
 
     /** The new file's id (the same id the library scan gives it), or null if a file of that name was already there. */
     private fun save(ctx: Context, tree: Uri, dir: Uri, item: Item, existing: MutableSet<String>): String? {
+        if (item.url.startsWith(io.github.realkhfan.onda.player.LinkDataSource.SCHEME + ":")) return saveFromPc(ctx, tree, dir, item, existing)
         val conn = URL(item.url).openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 30_000
@@ -231,6 +236,33 @@ object Downloads {
         } finally {
             conn.disconnect()
         }
+    }
+
+    /** The song's file from your PC, in encrypted pieces over the link. */
+    private fun saveFromPc(ctx: Context, tree: Uri, dir: Uri, item: Item, existing: MutableSet<String>): String? {
+        val song = io.github.realkhfan.onda.player.LinkDataSource.songOf(Uri.parse(item.url)) ?: throw Permanent("Bad song")
+        val (size, ext) = Link.stat(song) ?: if (Link.pc.value == null) throw Permanent("Not linked") else throw IOException("Your PC can't be reached or doesn't have it")
+        val name = FileNames.forSong(item.title, item.artist, ext) ?: throw Permanent("No usable name")
+        if (name.lowercase() in existing) return null
+        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+        val doc = DocumentsContract.createDocument(ctx.contentResolver, dir, mime, name) ?: throw IOException("Can't create file")
+        try {
+            (ctx.contentResolver.openOutputStream(doc) ?: throw IOException("Can't write")).use { out ->
+                var at = 0L
+                while (at < size) {
+                    val piece = Link.read(song, at, Link.CHUNK) ?: throw IOException("Lost the connection to your PC")
+                    if (piece.isEmpty()) break
+                    out.write(piece)
+                    at += piece.size
+                }
+                if (at != size) throw IOException("The file changed on your PC")
+            }
+        } catch (e: Exception) {
+            runCatching { DocumentsContract.deleteDocument(ctx.contentResolver, doc) } // no half-copied songs
+            throw e
+        }
+        existing += name.lowercase()
+        return DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getDocumentId(doc)).toString()
     }
 
     internal fun notification(ctx: Context, progress: Boolean): Notification {

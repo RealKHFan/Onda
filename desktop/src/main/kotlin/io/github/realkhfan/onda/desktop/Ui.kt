@@ -146,6 +146,8 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Speaker
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.OpenInFull
@@ -291,7 +293,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
         }
         Column(Modifier.fillMaxSize().background(Bg).dragAndDropTarget(shouldStartDragAndDrop = { true }, target = drop)) {
             Row(Modifier.weight(1f)) {
-                Sidebar(state, stack.first(), ::go) { naming = Naming.New() }
+                Sidebar(state, stack.first(), ::go, ctx.dialog, ctx.undoable) { naming = Naming.New() }
                 Column(Modifier.weight(1f).fillMaxHeight()) {
                     if (player == null) Note("Onda needs GStreamer to play music. On Bazzite it's already there; on other systems install gstreamer1 and its plugins.")
                     if (player != null && panel == Panel.LYRICS && lyricsBig) {
@@ -316,7 +318,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         View.Settings -> SettingsPage(ctx)
                         View.Match -> MatchPage(ctx, back)
                         View.Rename -> RenamePage(ctx, back)
-                        View.Liked -> SongList(ctx, "Liked Songs", "Playlist", state.likedTracks, back = back)
+                        View.Liked -> SongList(ctx, "Liked Songs", "Playlist", state.likedTracks, back = back) { GetFromPhone(ctx, state.likedTracks) }
                         View.Want -> WantPage(ctx, back)
                         is View.Playlist -> {
                             val pl = state.collection.playlists.firstOrNull { it.id == v.id }
@@ -329,6 +331,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                                     Tip("Edit playlist") { IconButton(onClick = { naming = Naming.EditPlaylist(pl.id) }) { Icon(Icons.Rounded.Edit, "Edit playlist", tint = TextDim) } }
                                     Tip("Delete playlist") { IconButton(onClick = { naming = Naming.Delete(pl.id, pl.name) }) { Icon(Icons.Rounded.Delete, "Delete playlist", tint = TextDim) } }
                                     DownloadAll(ctx, state.playlistTracks(pl.id))
+                                    GetFromPhone(ctx, state.playlistTracks(pl.id))
                                     Tip("Save as playlist file (M3U)") { IconButton(onClick = { ctx.exportM3u(pl.name, state.playlistTracks(pl.id)) }) { Icon(Icons.Rounded.SaveAlt, "Save as playlist file (M3U)", tint = TextDim) } }
                                 }
                             }
@@ -444,6 +447,9 @@ private class Ctx(
 private sealed interface Naming {
     data class New(val first: String? = null, val more: List<String> = emptyList()) : Naming
     data class Rename(val id: String, val name: String) : Naming
+    /** A new playlist folder ([move]: a playlist that goes into it). */
+    data class NewFolder(val move: String? = null) : Naming
+    data class RenameFolder(val id: String, val name: String) : Naming
     data class Delete(val id: String, val name: String) : Naming
     data class Edit(val t: Track) : Naming
     data class Info(val t: Track) : Naming
@@ -487,18 +493,22 @@ private fun NamingDialog(ctx: Ctx, n: Naming, close: () -> Unit) {
             dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
         return
     }
-    var name by remember { mutableStateOf(if (n is Naming.Rename) n.name else "") }
-    AlertDialog(onDismissRequest = close, title = { Text(if (n is Naming.Rename) "Rename playlist" else "New playlist") },
+    var name by remember { mutableStateOf(when (n) { is Naming.Rename -> n.name; is Naming.RenameFolder -> n.name; else -> "" }) }
+    AlertDialog(onDismissRequest = close, title = {
+        Text(when (n) { is Naming.Rename -> "Rename playlist"; is Naming.NewFolder -> "New folder"; is Naming.RenameFolder -> "Rename folder"; else -> "New playlist" })
+    },
         text = { TextBox(name, { name = it }, singleLine = true, placeholder = { Text("Name") }) },
         confirmButton = {
             TextButton(onClick = {
                 when (n) {
                     is Naming.New -> state.createPlaylist(name.trim(), listOfNotNull(n.first) + n.more)
                     is Naming.Rename -> state.renamePlaylist(n.id, name.trim())
+                    is Naming.NewFolder -> state.createFolder(name).let { id -> n.move?.let { state.moveToFolder(it, id) } }
+                    is Naming.RenameFolder -> state.renameFolder(n.id, name)
                     else -> Unit
                 }
                 close()
-            }) { Text(if (n is Naming.Rename) "Rename" else "Create", color = Accent) }
+            }) { Text(if (n is Naming.Rename || n is Naming.RenameFolder) "Rename" else "Create", color = Accent) }
         },
         dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
 }
@@ -625,6 +635,11 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
 /** The right-click menu of a song that's only on your phone: find it here, or tidy the list. */
 private fun missingMenu(ctx: Ctx, t: Track, inPlaylist: String?): List<ContextMenuItem> = buildList {
     val s = ctx.state
+    Link.phones.firstOrNull { Link.on && Link.connected(it) }?.let { ph ->
+        add(ContextMenuItem("Get it from ${ph.name}") {
+            ctx.toast(if (Link.getFromPhone(listOf(LinkSync.Song(null, t.title, t.artist)))) "Asked ${ph.name} for it; it arrives in “Onda from phone”" else "Your phone isn't connected")
+        })
+    }
     add(ContextMenuItem("Search for it") { s.searchFor = "${t.artist} ${t.title}"; ctx.push(View.Search) })
     ctx.player?.let { add(ContextMenuItem("Start radio") { ctx.artistRadio(t.artist) }) }
     if (s.isLiked(t.id)) add(ContextMenuItem("Remove from Liked Songs") { s.toggleLike(t.id); ctx.undoable("Removed from Liked Songs") { s.toggleLike(t.id) } })
@@ -761,7 +776,7 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
 /* ---------- Sidebar ---------- */
 
 @Composable
-private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, newPlaylist: () -> Unit) {
+private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Naming) -> Unit, undoable: (String, () -> Unit) -> Unit, newPlaylist: () -> Unit) {
     val compact = state.settings.compact
     @Composable
     fun Entry(v: View, label: String, icon: ImageVector, big: Boolean = false) {
@@ -811,6 +826,7 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, newPlaylist:
                 }
             }
             Tip("New playlist") { IconButton(onClick = newPlaylist, Modifier.size(32.dp)) { Icon(Icons.Rounded.Add, "New playlist", tint = TextDim) } }
+            Tip("New folder") { IconButton(onClick = { dialog(Naming.NewFolder()) }, Modifier.size(32.dp)) { Icon(Icons.Rounded.CreateNewFolder, "New folder", tint = TextDim) } }
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             Entry(View.Songs, "Songs", Icons.Rounded.MusicNote)
@@ -823,11 +839,43 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, newPlaylist:
             Entry(View.Want, "Want to listen", Icons.Rounded.Bookmark)
             // Pinned playlists first (newest pin on top), then the rest; right-click to pin or unpin.
             val pins = state.settings.pinned
-            state.sidebarPlaylists.forEach { pl ->
-                ContextMenuArea(items = { listOf(ContextMenuItem(if (pl.id in pins) "Unpin" else "Pin to the top") { state.togglePin(pl.id) }) }) {
+            val folders = state.collection.folders
+            @Composable fun PlaylistEntry(pl: Store.Playlist) {
+                ContextMenuArea(items = {
+                    buildList {
+                        add(ContextMenuItem(if (pl.id in pins) "Unpin" else "Pin to the top") { state.togglePin(pl.id) })
+                        folders.filter { it.id != pl.folder }.forEach { f -> add(ContextMenuItem("Move to “${f.name}”") { state.moveToFolder(pl.id, f.id) }) }
+                        add(ContextMenuItem("Move to a new folder…") { dialog(Naming.NewFolder(pl.id)) })
+                        if (pl.folder != null) add(ContextMenuItem("Take out of the folder") { state.moveToFolder(pl.id, null) })
+                    }
+                }) {
                     Entry(View.Playlist(pl.id), pl.name, if (pl.id in pins) Icons.Rounded.PushPin else Icons.AutoMirrored.Rounded.QueueMusic)
                 }
             }
+            // Folders first, like Spotify: click to open or close; right-click to rename or delete.
+            folders.forEach { f ->
+                var open by remember(f.id) { mutableStateOf(false) }
+                ContextMenuArea(items = {
+                    listOf(ContextMenuItem("Rename folder…") { dialog(Naming.RenameFolder(f.id, f.name)) },
+                        ContextMenuItem("Delete folder (its playlists stay)") {
+                            state.deleteFolder(f.id)?.let { (folder, ids) -> undoable("Deleted folder “${folder.name}”") { state.restoreFolder(folder, ids) } }
+                        })
+                }) {
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { open = !open }.padding(horizontal = 10.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (open) Icons.Rounded.FolderOpen else Icons.Rounded.Folder, null, tint = TextDim, modifier = Modifier.size(20.dp))
+                        if (!compact) {
+                            Spacer(Modifier.width(12.dp))
+                            Text(f.name, color = TextDim, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+                if (open) Column(Modifier.padding(start = if (compact) 0.dp else 14.dp)) {
+                    state.sidebarPlaylists.filter { it.folder == f.id }.forEach { PlaylistEntry(it) }
+                }
+            }
+            val folderIds = folders.map { it.id }.toSet()
+            state.sidebarPlaylists.filter { it.folder == null || it.folder !in folderIds }.forEach { PlaylistEntry(it) }
             state.serverPlaylists.forEach { Entry(View.ServerPlaylist(it), it.name, Icons.Rounded.Dns) }
         }
         if (state.scanning || state.syncing) {
@@ -1553,6 +1601,20 @@ private fun SettingsPage(ctx: Ctx) {
             }
         }
         item { Toggle("Gapless playback", "No pause between songs, so live albums and DJ mixes flow on. For your files and server songs.", state.settings.gapless) { state.setGapless(it); ctx.player?.gapless = it } }
+        item {
+            // The same setting as on the phone.
+            var cf by remember { mutableIntStateOf(state.settings.crossfade) }
+            Column(Modifier.width(520.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Crossfade", color = TextMain, modifier = Modifier.weight(1f))
+                    Text(if (cf == 0) "Off" else "$cf s", color = if (cf == 0) TextDim else Accent)
+                }
+                Slider(cf.toFloat(), { cf = it.toInt() }, valueRange = 0f..12f, steps = 11,
+                    onValueChangeFinished = { state.setCrossfade(cf); ctx.player?.crossfade = cf },
+                    colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent, inactiveTrackColor = Raised))
+                Text("The next song fades in while this one fades out. Songs of the same album play without a gap, as they were made.", color = TextDim, fontSize = 12.sp)
+            }
+        }
         item { Toggle("Start Onda when you log in", "Starts in the background, ready for media keys; open it from the app menu.", state.autostart) { state.setAutostart(it) } }
         item { Toggle("Song notifications", "A desktop notification with the cover when a new song starts and Onda isn't in front.", state.settings.songNotify, state::setSongNotify) }
         item { Toggle("Similar songs when the queue ends", "Keeps the music going with songs like the last ones.", state.settings.autoplay, state::setAutoplay) }
@@ -1594,6 +1656,7 @@ private fun SettingsPage(ctx: Ctx) {
                             TextButton(onClick = { Link.forget(ph) }) { Text("Unpair", color = TextDim) }
                         }
                     }
+                    Link.receiving.values.forEach { Text("Getting from your phone: $it", color = TextDim, fontSize = 12.sp) }
                     if (Link.lastSync > 0) Text("Last synced ${java.time.Instant.ofEpochMilli(Link.lastSync).atZone(java.time.ZoneId.systemDefault()).toLocalTime().withNano(0)}",
                         color = TextDim, fontSize = 12.sp)
                 }
@@ -2083,11 +2146,13 @@ private fun OutputButton(state: AppState, player: Player?) {
 @Composable
 private fun RadarPage(ctx: Ctx, back: (() -> Unit)?) {
     var list by remember { mutableStateOf<List<RemoteTrack>?>(null) }
-    LaunchedEffect(Unit) { list = ctx.state.releaseRadar() }
+    var round by remember { mutableIntStateOf(0) }
+    LaunchedEffect(round) { list = null; list = ctx.state.releaseRadar(refresh = round > 0) }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             Header("Release radar", "New songs from artists you follow and play", back = back) {
                 list?.takeIf { it.isNotEmpty() }?.let { l -> Button(onClick = { ctx.playRemote(l, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play") } }
+                if (list != null) TextButton(onClick = { round++ }) { Text("Refresh", color = TextDim) }
             }
         }
         val l = list
@@ -2103,9 +2168,10 @@ private fun RadarPage(ctx: Ctx, back: (() -> Unit)?) {
 @Composable
 private fun ArtistMixPage(ctx: Ctx, name: String, back: (() -> Unit)?) {
     var tracks by remember(name) { mutableStateOf<List<Track>?>(null) }
-    LaunchedEffect(name) { tracks = ctx.state.artistMix(name) }
+    var round by remember(name) { mutableIntStateOf(0) }
+    LaunchedEffect(name, round) { tracks = null; tracks = ctx.state.artistMix(name, refresh = round > 0) }
     val t = tracks ?: return Column { Header("$name Mix", "Making your mix…", back = back); LinearProgressIndicator(Modifier.fillMaxWidth().padding(24.dp), color = Accent, trackColor = Raised) }
-    SongList(ctx, "$name Mix", "$name and similar artists", t, back = back, mosaic = true)
+    SongList(ctx, "$name Mix", "$name and similar artists", t, back = back, mosaic = true) { TextButton(onClick = { round++ }) { Text("Refresh", color = TextDim) } }
 }
 
 /** Built-in playlists made from your library and listening. */
@@ -2428,7 +2494,13 @@ private fun StatsPage(ctx: Ctx) {
 @Composable
 private fun HistoryPage(ctx: Ctx) {
     val state = ctx.state
-    val rows = remember(state.plays, state.byId) { state.plays.asReversed().take(300).mapNotNull { p -> state.trackFor(p.key)?.let { p to it } } }
+    // Songs played on your phone that aren't on this PC are listed greyed out (right-click still works).
+    val rows = remember(state.plays, state.byId) {
+        state.plays.asReversed().take(300).mapNotNull { p ->
+            (state.trackFor(p.key) ?: p.takeIf { io.github.realkhfan.onda.core.Source.of(it.key) == null && it.title.isNotBlank() }
+                ?.let { LinkSync.missingTrack(LinkSync.Library.PLACEHOLDER + it.artist + '\u001F' + it.title) })?.let { p to it }
+        }
+    }
     val tracks = rows.map { it.second }
     val zone = java.time.ZoneId.systemDefault()
     val today = java.time.LocalDate.now()
@@ -2440,8 +2512,12 @@ private fun HistoryPage(ctx: Ctx) {
             item { Section(when (d) { today -> "Today"; today.minusDays(1) -> "Yesterday"; else -> d.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, d MMMM")) }) }
             items(idx) { i ->
                 val (p, t) = rows[i]
-                SongRow(null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
-                    note = java.time.Instant.ofEpochMilli(p.atMs).atZone(zone).toLocalTime().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))) { ctx.play(tracks, i) }
+                val missing = LinkSync.isMissing(t.id)
+                ContextMenuArea(items = { trackMenu(ctx, tracks, t, null, emptySet()) }) {
+                    SongRow(null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id, dim = missing,
+                        note = java.time.Instant.ofEpochMilli(p.atMs).atZone(zone).toLocalTime().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm")) +
+                            if (missing) " · Not on this PC" else "") { if (!missing) ctx.play(tracks, i) }
+                }
             }
         }
     }
@@ -2860,5 +2936,19 @@ private fun RenamePage(ctx: Ctx, back: (() -> Unit)?) {
                 Text("→ ${r.to}", color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
+    }
+}
+
+/** "Get N from your phone": a list's greyed-out songs, sent by the phone while Onda runs there. */
+@Composable
+private fun GetFromPhone(ctx: Ctx, list: List<Track>) {
+    val missing = list.filter { LinkSync.isMissing(it.id) }
+    val ph = Link.phones.firstOrNull { Link.on && Link.connected(it) } ?: return
+    if (missing.isEmpty()) return
+    Tip("Copy them from ${ph.name} into “Onda from phone”") {
+        TextButton(onClick = {
+            Link.getFromPhone(missing.map { LinkSync.Song(null, it.title, it.artist) })
+            ctx.toast("Asked ${ph.name} for ${missing.size} songs; they arrive in “Onda from phone”")
+        }) { Text("Get ${missing.size} from ${ph.name}", color = Accent) }
     }
 }

@@ -73,13 +73,43 @@ class LinkTest {
             // A stranger (or a changed message) gets nothing.
             assertEquals(401, post("/v1/sync/get", LinkCrypto.seal(LinkCrypto.linkKey("nope"), "{}".toByteArray(), "/v1/sync/get"), "test-phone").first)
             assertEquals(401, post("/v1/sync/get", LinkCrypto.seal(link, "{}".toByteArray(), "/v1/sync/get"), "someone-else").first)
+            // Covers and folders: a cover the phone sends is kept by its hash and given back the same.
+            val photo = ByteArray(5000) { (it * 7).toByte() }
+            val hash = LinkSync.hashOf(photo)
+            assertEquals(400, call("/v1/cover/put", JSONObject().put("hash", "wrong").put("data", java.util.Base64.getEncoder().encodeToString(photo))).first)
+            assertEquals(200, call("/v1/cover/put", JSONObject().put("hash", hash).put("data", java.util.Base64.getEncoder().encodeToString(photo))).first)
+            val got2 = call("/v1/sync/get").second!!
+            val snap2 = LinkSync.fromJson(got2.getJSONObject("snapshot"))
+            val withFolder = snap2.copy(folders = snap2.folders + LinkSync.Folder("link-folder", "Test folder"),
+                playlists = snap2.playlists.map { if (it.id == "link-test") it.copy(cover = hash, folder = "link-folder") else it })
+            assertEquals(200, call("/v1/sync/put", JSONObject().put("version", got2.getString("version")).put("snapshot", LinkSync.toJson(withFolder))).first)
+            val pl = state.collection.playlists.first { it.id == "link-test" }
+            assertEquals("link-folder", pl.folder)
+            assertEquals(hash, pl.cover?.let { LinkSync.hashOf(java.io.File(it).readBytes()) })
+            val (cst, cbytes) = post("/v1/cover/get", LinkCrypto.seal(link, JSONObject().put("hash", hash).put("t", System.currentTimeMillis()).toString().toByteArray(), "/v1/cover/get"), "test-phone")
+            assertEquals(200, cst)
+            assertTrue(LinkCrypto.open(link, cbytes!!, "/v1/cover/get#r")!!.contentEquals(photo))
+            // A song the phone sends lands in "Onda from phone" in the first music folder, in order only.
+            val music = java.nio.file.Files.createTempDirectory("onda-music").toFile()
+            val before = state.settings.folders
+            runBlocking(Dispatchers.Swing) { before.forEach(state::removeFolder); state.addFolder(music.path) }
+            val song = LinkSync.Song(null, "Sent Song", "Phone Artist")
+            fun put(offset: Long, data: ByteArray) = call("/v1/file/put", JSONObject().put("song", LinkSync.songToJson(song)).put("ext", "mp3")
+                .put("offset", offset).put("size", 6L).put("data", java.util.Base64.getEncoder().encodeToString(data))).first
+            assertEquals(200, put(0, byteArrayOf(1, 2, 3)))
+            assertEquals(409, put(5, byteArrayOf(9))) // a gap: refused
+            assertEquals(200, put(3, byteArrayOf(4, 5, 6)))
+            assertTrue(java.io.File(music, "Onda from phone/Phone Artist - Sent Song.mp3").readBytes().contentEquals(byteArrayOf(1, 2, 3, 4, 5, 6)))
+            runBlocking(Dispatchers.Swing) { state.removeFolder(music.path); before.forEach(state::addFolder) }
+            // A song that isn't a file here can't be read.
+            assertEquals(false, call("/v1/file/stat", JSONObject().put("song", LinkSync.songToJson(LinkSync.Song(null, "Nope", "Nobody")))).second!!.getBoolean("found"))
             // An old message (replayed later) is refused.
             val old = JSONObject().put("t", System.currentTimeMillis() - 3_600_000L).toString().toByteArray()
             assertEquals(408, post("/v1/hello", LinkCrypto.seal(link, old, "/v1/hello"), "test-phone").first)
         } finally {
             runBlocking(Dispatchers.Swing) {
                 // Leave the real collection as it was.
-                state.applyLink(state.linkSnapshot(emptyMap(), HashMap()).let { s -> s.copy(playlists = s.playlists.filterNot { it.id == "link-test" }) }, HashMap())
+                state.applyLink(state.linkSnapshot(emptyMap(), HashMap()).let { s -> s.copy(playlists = s.playlists.filterNot { it.id == "link-test" }, folders = s.folders.filterNot { it.id == "link-folder" }) }, HashMap())
                 Link.phones.filter { it.id == "test-phone" }.forEach(Link::forget)
                 Link.turn(false)
             }

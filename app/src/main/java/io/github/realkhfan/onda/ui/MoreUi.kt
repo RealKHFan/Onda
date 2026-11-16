@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -66,12 +67,13 @@ internal fun RemoteListScreen(
     list: List<RemoteTrack>?,
     emptyText: String,
     row: RemoteRowContext,
+    onRefresh: (() -> Unit)? = null,
     onBack: () -> Unit,
     onPlayList: (List<RemoteTrack>, Int) -> Unit,
     onMenu: (RemoteTrack) -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
-        BackTopBar(title, onBack)
+        BackTopBar(title, onBack) { if (onRefresh != null && list != null) TextButton(onClick = onRefresh) { Text("Refresh", color = TextDim) } }
         LazyColumn(Modifier.fillMaxSize()) {
             item {
                 Column(Modifier.fillMaxWidth().padding(16.dp, 0.dp, 16.dp, 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -387,13 +389,13 @@ internal fun LoudnessSettings(ctx: Context, library: List<Track>) {
     fun changed() { io.github.realkhfan.onda.player.Effects.normalize = on; io.github.realkhfan.onda.player.Effects.refresh?.invoke() }
     SettingSwitch("Even out loudness", "Songs play at one level. Each of your songs is measured once, on this phone; previews and server songs get the usual level.", on) {
         on = it; io.github.realkhfan.onda.data.Prefs.setNormalize(ctx, it); changed()
-        if (it) io.github.realkhfan.onda.data.Loudness.measure(ctx, files) else io.github.realkhfan.onda.data.Loudness.stop()
+        if (it) io.github.realkhfan.onda.data.Loudness.measure(ctx, files) else io.github.realkhfan.onda.data.Loudness.stop(ctx)
     }
     if (on) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(if (progress.running) "Measuring… ${progress.done} of ${progress.total}" else "$measured of ${songCount(files.size)} measured",
                 color = TextDim, fontSize = 12.sp, modifier = Modifier.weight(1f))
-            if (progress.running) TextButton(onClick = { io.github.realkhfan.onda.data.Loudness.stop() }) { Text("Stop", color = Accent) }
+            if (progress.running) TextButton(onClick = { io.github.realkhfan.onda.data.Loudness.stop(ctx) }) { Text("Stop", color = Accent) }
             else if (measured < files.size) TextButton(onClick = { io.github.realkhfan.onda.data.Loudness.measure(ctx, files) }) { Text("Measure the rest", color = Accent) }
         }
         if (progress.running) LinearProgressIndicator({ progress.done / progress.total.coerceAtLeast(1).toFloat() }, Modifier.fillMaxWidth(), color = Accent, trackColor = Raised)
@@ -433,5 +435,80 @@ private fun readQuality(ctx: Context, t: Track): String? {
         null
     } finally {
         runCatching { r.release() }
+    }
+}
+
+/** A folder's playlists; ⋮ renames or deletes the folder (its playlists stay). */
+@Composable
+internal fun FolderScreen(
+    f: PlaylistStore.Folder, playlists: List<PlaylistStore.Playlist>, playlistArt: (PlaylistStore.Playlist) -> String?, pinned: Set<String>,
+    onBack: () -> Unit, onOpen: (String) -> Unit, onRename: () -> Unit, onDelete: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize()) {
+        BackTopBar(f.name, onBack) {
+            Box {
+                androidx.compose.material3.IconButton(onClick = { open = true }) { Icon(androidx.compose.material.icons.Icons.Rounded.MoreVert, "More for ${f.name}", tint = TextDim) }
+                androidx.compose.material3.DropdownMenu(open, { open = false }) {
+                    androidx.compose.material3.DropdownMenuItem({ Text("Rename folder") }, { open = false; onRename() })
+                    androidx.compose.material3.DropdownMenuItem({ Text("Delete folder") }, { open = false; onDelete() })
+                }
+            }
+        }
+        LazyColumn(Modifier.fillMaxSize()) {
+            if (playlists.isEmpty()) item {
+                Text("No playlists here yet. In a playlist's ⋮ menu, choose Move to a folder.", color = TextDim, modifier = Modifier.padding(24.dp))
+            }
+            items(playlists, key = { it.id }) { pl ->
+                Row(Modifier.fillMaxWidth().clickable { onOpen(pl.id) }.padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Art(playlistArt(pl), 52.dp)
+                    Column(Modifier.padding(start = 12.dp)) {
+                        Text(pl.name, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text((if (pl.id in pinned) "Pinned · " else "") + "Playlist · ${songCount(pl.trackIds.size)}", color = TextDim, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Where a playlist goes: one of your folders, a new one, or none. */
+@Composable
+internal fun MoveToFolderDialog(
+    pl: PlaylistStore.Playlist, folders: List<PlaylistStore.Folder>, onDismiss: () -> Unit, onNew: () -> Unit, onPick: (String?) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Move “${pl.name}”") },
+        text = {
+            LazyColumn {
+                items(folders, key = { it.id }) { f ->
+                    Text(f.name, color = if (pl.folder == f.id) Accent else TextMain,
+                        modifier = Modifier.fillMaxWidth().clickable { onPick(f.id) }.padding(vertical = 12.dp))
+                }
+                item { Text("New folder…", color = Accent, modifier = Modifier.fillMaxWidth().clickable(onClick = onNew).padding(vertical = 12.dp)) }
+                if (pl.folder != null) item {
+                    Text("Not in a folder", color = TextDim, modifier = Modifier.fillMaxWidth().clickable { onPick(null) }.padding(vertical = 12.dp))
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextDim) } },
+        containerColor = CardBg,
+    )
+}
+
+/** Settings → Playback: crossfade length (songs of one album still play gaplessly). */
+@Composable
+internal fun CrossfadeSetting(ctx: Context) {
+    var s by remember { mutableIntStateOf(io.github.realkhfan.onda.data.Prefs.crossfade(ctx)) }
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Crossfade", color = TextMain, modifier = Modifier.weight(1f))
+            Text(if (s == 0) "Off" else "$s s", color = if (s == 0) TextDim else Accent)
+        }
+        androidx.compose.material3.Slider(s.toFloat(), { s = it.toInt() }, valueRange = 0f..12f, steps = 11,
+            onValueChangeFinished = { io.github.realkhfan.onda.data.Prefs.setCrossfade(ctx, s) },
+            colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent, inactiveTrackColor = Raised))
+        Text("The next song fades in while this one fades out. Songs of the same album play without a gap, as they were made.", color = TextDim, fontSize = 12.sp)
     }
 }

@@ -25,6 +25,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -55,12 +56,18 @@ fun main(args: Array<String>) {
         val state = remember { AppState(scope) }
         val player = remember {
             runCatching { Player(scope) }.onFailure { System.err.println("Onda: GStreamer could not start: $it") }.getOrNull()
-                ?.also { p -> p.gapless = state.settings.gapless; p.resolver = state::resolve; p.onLastSong = { state.extend(p) }; p.prefetch = state::prefetch
+                ?.also { p -> p.gapless = state.settings.gapless; p.crossfade = state.settings.crossfade; p.resolver = state::resolve; p.onLastSong = { state.extend(p) }; p.prefetch = state::prefetch
                     p.gain = { if (state.settings.normalize) Loudness.factor(it.id, state.albumMates(it.id)) else 1.0 }
                     p.resumeAt = { state.resumeAt(it.id) }; p.onLeave = { item, pos, dur -> state.leftAt(item.id, pos, dur) }
                     state.settings.output?.let { o -> if (Outputs.list().any { it.name == o }) p.setOutput(o) } }
         }
         remember { Link.player = player; Link.load(state); 0 } // the phone link, if you turned it on
+        // Changes here reach a linked phone a few seconds later (it syncs while Onda is open on it).
+        LaunchedEffect(Unit) {
+            androidx.compose.runtime.snapshotFlow { state.linkFingerprint() }.collectLatest { f -> delay(3000); if (Link.on) Link.changed(f) }
+        }
+        // Greyed-out songs (only on your phone) that are here now become the songs themselves.
+        LaunchedEffect(state.library) { state.healMissing() }
         val mpris = remember { arrayOfNulls<Mpris>(1) }
         val appIcon = remember {
             androidx.compose.ui.graphics.painter.BitmapPainter(org.jetbrains.skia.Image.makeFromEncoded(

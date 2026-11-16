@@ -189,6 +189,9 @@ import io.github.realkhfan.onda.data.Suggest
 import io.github.realkhfan.onda.data.Loudness
 import io.github.realkhfan.onda.data.ArtistIds
 import io.github.realkhfan.onda.player.OpenWith
+import io.github.realkhfan.onda.player.LinkDataSource
+import androidx.compose.material.icons.rounded.CreateNewFolder
+import androidx.compose.material.icons.rounded.Folder
 import io.github.realkhfan.onda.data.Link
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.mutableLongStateOf
@@ -227,6 +230,7 @@ private data class MixRoute(val kind: Discovery.Kind) : Route
 private data class ArtistMixRoute(val name: String) : Route
 private data object RadarRoute : Route
 private data object DuplicatesRoute : Route
+private data class FolderRoute(val id: String) : Route
 private data class RemoteArtistRoute(val artist: RemoteArtist) : Route
 private data class RemoteAlbumRoute(val album: RemoteAlbum) : Route
 
@@ -280,6 +284,11 @@ fun OndaApp(player: PlayerState?) {
     var searches by remember { mutableStateOf(Prefs.searches(ctx)) }
     var savingQueue by remember { mutableStateOf(false) }
     var editFor by remember { mutableStateOf<Track?>(null) }
+    var movingToFolder by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
+    var folderEdit by remember { mutableStateOf<PlaylistStore.Folder?>(null) }
+    var newFolder by remember { mutableStateOf(false) }
+    val playlistFolders by PlaylistStore.folders.collectAsState()
+    val linkedPc by Link.pc.collectAsState()
     var editMany by remember { mutableStateOf<List<Track>?>(null) }
     val keptWant = remember { mutableSetOf<String>() }
     var exporting by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
@@ -380,6 +389,12 @@ fun OndaApp(player: PlayerState?) {
         toast(Downloads.start(ctx, items) ?: "Downloading ${songCount(items.size)}…")
     }
     /** The download button's action for a list, or null when nothing in it may be downloaded (your server's songs, free songs that allow it). */
+    /** "Get N songs from your PC" for a list's greyed-out songs (when linked). */
+    fun getMissing(list: List<Track>): List<MenuAction> {
+        val pc = linkedPc ?: return emptyList()
+        val items = list.mapNotNull(Downloads::forMissing).takeIf { it.isNotEmpty() } ?: return emptyList()
+        return listOf(MenuAction("Get ${songCount(items.size)} from ${pc.name}", Icons.Rounded.Download) { download(items) })
+    }
     fun downloadAll(list: List<Track>, free: List<RemoteTrack> = emptyList()): (() -> Unit)? =
         (list.mapNotNull { Downloads.forTrack(it, serverCfg) } + free.mapNotNull { Downloads.forRemote(it) })
             .takeIf { it.isNotEmpty() }?.let { items -> { download(items) } }
@@ -519,10 +534,8 @@ fun OndaApp(player: PlayerState?) {
         p.playItems(listOf(own?.toMediaItem() ?: OpenWith.item(ctx, uri)), 0, "Files", "Opened file", shuffled = false)
     }
 
-    // Onda on your PC: sync when Onda opens (once your music is scanned) and every 15 minutes while it's open,
-    // and play here what the PC sends ("Play on… your phone"). Only while Onda is on screen, to spare the battery.
-    val linkedPc by Link.pc.collectAsState()
-    val latestTracks by rememberUpdatedState(tracks)
+    // Onda on your PC: sync when Onda opens (once your music is scanned) and every 15 minutes while it's open.
+    // (What the PC sends to play here is picked up by the playback service.)
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(linkedPc != null, scanning) {
         if (linkedPc == null || scanning) return@LaunchedEffect
@@ -530,16 +543,10 @@ fun OndaApp(player: PlayerState?) {
             while (true) { Link.syncLater(); delay(15 * 60_000L) }
         }
     }
-    LaunchedEffect(linkedPc?.id, player) {
-        val p = player ?: return@LaunchedEffect
-        if (linkedPc == null) return@LaunchedEffect
-        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
-            while (true) {
-                val q = Link.inbox()
-                if (q == null) delay(20_000) // the PC isn't reachable right now
-                else if (q.songs.isNotEmpty()) toast(playFromPc(p, q, latestTracks, linkedPc?.name ?: "Your PC"))
-            }
-        }
+    // A greyed-out song (only on the PC) that's here now (copied, downloaded, scanned) becomes the song itself.
+    LaunchedEffect(tracks) {
+        val missing = (playlists.flatMap { it.trackIds } + liked).filter(LinkSync::isMissing).toSet()
+        LinkSync.heal(missing, tracks).takeIf { it.isNotEmpty() }?.let { PlaylistStore.migrateIds(it); PlayLog.migrateIds(it) }
     }
 
     // A song that can't play (server offline, preview gone) says why once.
@@ -612,20 +619,34 @@ fun OndaApp(player: PlayerState?) {
                         ) { pop() }
                         is ArtistMixRoute -> {
                             var list by remember(d.name) { mutableStateOf<List<RemoteTrack>?>(null) }
-                            LaunchedEffect(d.name) {
+                            var round by remember(d.name) { mutableIntStateOf(0) }
+                            LaunchedEffect(d.name, round) {
+                                list = null
                                 val own = tracks.filter { Match.norm(it.artist) == Match.norm(d.name) }.shuffled().take(10)
                                 val keys = own.map { Match.norm(it.artist) + "|" + Match.norm(it.title) }.toSet()
-                                list = Smart.interleave(own.map { it.asRemote() }, Suggest.artistMix(d.name, keys, Prefs.listenBrainz(ctx)))
+                                list = Smart.interleave(own.map { it.asRemote() }, Suggest.artistMix(d.name, keys, Prefs.listenBrainz(ctx), refresh = round > 0))
                             }
-                            RemoteListScreen("${d.name} Mix", "${d.name} and similar artists", list, "Couldn't make this mix right now.", rowCtx,
+                            RemoteListScreen("${d.name} Mix", "${d.name} and similar artists", list, "Couldn't make this mix right now.", rowCtx, onRefresh = { round++ },
                                 onBack = { pop() }, onPlayList = { l, i -> playRemoteList(l, i, "Playlist", "${d.name} Mix") },
                                 onMenu = { r -> localFor(r)?.let { menuFor = MenuFor(it, null, false) } ?: run { remoteMenu = r } })
                         }
                         RadarRoute -> {
                             var list by remember { mutableStateOf<List<RemoteTrack>?>(null) }
-                            LaunchedEffect(Unit) { list = Suggest.releaseRadar(releases) }
-                            RemoteListScreen("Release radar", "New songs from artists you follow and play", list, "Couldn't load the new releases right now.", rowCtx,
+                            var round by remember { mutableIntStateOf(0) }
+                            LaunchedEffect(round) { list = null; list = Suggest.releaseRadar(releases, refresh = round > 0) }
+                            RemoteListScreen("Release radar", "New songs from artists you follow and play", list, "Couldn't load the new releases right now.", rowCtx, onRefresh = { round++ },
                                 onBack = { pop() }, onPlayList = { l, i -> playRemoteList(l, i, "Playlist", "Release radar") }, onMenu = { remoteMenu = it })
+                        }
+                        is FolderRoute -> {
+                            val f = playlistFolders.firstOrNull { it.id == d.id }
+                            if (f == null) LaunchedEffect(Unit) { pop() }
+                            else FolderScreen(f, orderedPlaylists.filter { it.folder == f.id }, playlistArt, pinned.toSet(),
+                                onBack = { pop() }, onOpen = { push(PlaylistRoute(it)) }, onRename = { folderEdit = f },
+                                onDelete = {
+                                    val inside = playlists.filter { it.folder == f.id }.map { it.id }
+                                    PlaylistStore.deleteFolder(f.id); pop()
+                                    undoable("Deleted folder “${f.name}” (its playlists stay)") { PlaylistStore.restoreFolder(f, inside) }
+                                })
                         }
                         DuplicatesRoute -> {
                             val counts = remember(plays) { plays.groupingBy { it.key }.eachCount() }
@@ -636,7 +657,7 @@ fun OndaApp(player: PlayerState?) {
                         }
                         StatsRoute -> StatsScreen(plays, tracks, { byId[it] }, { name -> artists.firstOrNull { Match.norm(it.name) == Match.norm(name) }?.artUri }, player,
                             onBack = { pop() }, onOpenAlbum = { list, title, artist, art -> push(TracksRoute(title, "Album · $artist", art, list, "Album")) })
-                        HistoryRoute -> HistoryScreen(plays, { byId[it] }, player) { pop() }
+                        HistoryRoute -> HistoryScreen(plays, { byId[it] }, player, onMenu = { menuFor = MenuFor(it, null, false) }) { pop() }
                         SmartRoute -> {
                             val now = remember { System.currentTimeMillis() }
                             val lists = remember(tracks, plays, liked) { Smart.Kind.entries.associateWith { Smart.list(it, tracks, plays, liked, byId::get, now) } }
@@ -652,6 +673,7 @@ fun OndaApp(player: PlayerState?) {
                             emptyText = "Songs you like show up here. Tap ♥ in the player or Add to Liked Songs in a song's ⋮ menu.",
                             onBack = { pop() }, onMenu = { menuFor = MenuFor(it, LIKED_ID, false) }, onQueue = ::queue,
                             onDownload = downloadAll(likedTracks),
+                            more = getMissing(likedShown),
                             onAddTo = { addTracks = it }, onEdit = { editMany = it },
                             onRemove = { list ->
                                 val before = liked
@@ -706,13 +728,14 @@ fun OndaApp(player: PlayerState?) {
                                     onPreviewMenu = { remoteMenu = it; remoteMenuPlaylist = pl.id },
                                     emptyText = "This playlist is empty. Add songs with Add to playlist in any song's ⋮ menu.",
                                     onBack = { pop() }, onMenu = { menuFor = MenuFor(it, pl.id, false) }, onQueue = ::queue,
-                                    more = listOf(
+                                    more = getMissing(owned) + listOf(
                                         MenuAction("Edit details", Icons.Rounded.Edit) { editing = pl },
                                         MenuAction(if (pl.id in pinned) "Unpin" else "Pin to the top", Icons.Rounded.PushPin) { togglePin(pl.id) },
                                         MenuAction("Duplicate", Icons.Rounded.ContentCopy) {
                                             PlaylistStore.duplicate(pl.id)?.let { id -> toast("Made “${pl.name} (copy)”"); push(PlaylistRoute(id)) }
                                         },
                                         MenuAction("Save as playlist file", Icons.Rounded.Save) { exporting = pl; exportFile.launch("${pl.name}.m3u") },
+                                        MenuAction(if (pl.folder == null) "Move to a folder" else "Move to another folder", Icons.Rounded.Folder) { movingToFolder = pl },
                                         MenuAction("Delete playlist", Icons.Rounded.Delete) { confirmDelete = pl },
                                     ),
                                     onAddTo = { addTracks = it }, onEdit = { editMany = it },
@@ -802,6 +825,7 @@ fun OndaApp(player: PlayerState?) {
                                 playlists = orderedPlaylists, playlistArt = playlistArt,
                                 pinned = pinned.toSet(), order = order, onOrder = { order = it; Prefs.setPlaylistOrder(ctx, it) },
                                 onImport = { importFile.launch(arrayOf("*/*")) },
+                                playlistFolders = playlistFolders, onOpenPlaylistFolder = { push(FolderRoute(it)) }, onNewPlaylistFolder = { newFolder = true },
                                 likedCount = likedShown.size, wantCount = want.size,
                                 albums = albums, artists = artists, folders = folderGroups, songs = songs,
                                 savedAlbums = savedAlbums, followed = followed,
@@ -891,7 +915,11 @@ fun OndaApp(player: PlayerState?) {
         val missing = LinkSync.isMissing(t.id)
         val actions = buildList {
             if (missing) {
-                // Only on your PC: find it here, or tidy the list; nothing that would need the file.
+                // Only on your PC: play it from there, copy it here, find it, or tidy the list.
+                linkedPc?.let { pc ->
+                    add(MenuAction("Play from ${pc.name}", Icons.Rounded.PlayArrow) { player?.playItems(listOf(LinkDataSource.item(t)), 0, "Your PC", pc.name, shuffled = false) })
+                    add(MenuAction("Get it from ${pc.name}", Icons.Rounded.Download) { Downloads.forMissing(t)?.let { download(listOf(it)) } })
+                }
                 add(MenuAction("Search for it", Icons.Rounded.Search) { menuFor = null; stack.clear(); tab = 1; query = "${t.artist} ${t.title}" })
                 add(MenuAction("Start radio", Icons.Rounded.Radio) { startRadio(null, t.artist, t.id, "${t.title} Radio") })
                 add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
@@ -1028,6 +1056,26 @@ fun OndaApp(player: PlayerState?) {
             PlaylistStore.setDetails(pl.id, name, about, cover)
             editing = null
         }
+    }
+
+    movingToFolder?.let { pl ->
+        MoveToFolderDialog(pl, playlistFolders, onDismiss = { movingToFolder = null }, onNew = { newFolder = true }) { fid ->
+            PlaylistStore.moveToFolder(pl.id, fid); movingToFolder = null
+            toast(if (fid == null) "Moved out of its folder" else "Moved to “${playlistFolders.firstOrNull { it.id == fid }?.name}”")
+        }
+    }
+    if (newFolder) CreatePlaylistDialog(
+        onDismiss = { newFolder = false },
+        onCreate = { name ->
+            val id = PlaylistStore.createFolder(name)
+            movingToFolder?.let { PlaylistStore.moveToFolder(it.id, id); movingToFolder = null }
+            newFolder = false
+        },
+        heading = "New folder", initial = "", confirm = "Create",
+    )
+    folderEdit?.let { f ->
+        CreatePlaylistDialog(onDismiss = { folderEdit = null }, onCreate = { PlaylistStore.renameFolder(f.id, it); folderEdit = null },
+            heading = "Rename folder", initial = f.name, confirm = "Rename")
     }
 
     if (savingQueue) {
@@ -1210,6 +1258,9 @@ internal fun LibraryScreen(
     order: String = "Custom",
     onOrder: (String) -> Unit = {},
     onImport: () -> Unit = {},
+    playlistFolders: List<PlaylistStore.Folder> = emptyList(),
+    onOpenPlaylistFolder: (String) -> Unit = {},
+    onNewPlaylistFolder: () -> Unit = {},
 ) {
     var chip by rememberSaveable { mutableIntStateOf(0) }
     var ordering by remember { mutableStateOf(false) }
@@ -1299,7 +1350,13 @@ internal fun LibraryScreen(
                                 }
                             }
                         }
-                        items(playlists, key = { it.id }) { pl ->
+                        // Folders first (like Spotify), then the playlists that aren't in one.
+                        items(playlistFolders, key = { "f" + it.id }) { f ->
+                            val n = playlists.count { it.folder == f.id }
+                            GroupRow(f.name, "Folder · $n playlist${if (n == 1) "" else "s"}", { onOpenPlaylistFolder(f.id) }) { IconTile(Icons.Rounded.Folder, 52.dp, CardBg, TextDim) }
+                        }
+                        val folderIds = playlistFolders.map { it.id }.toSet()
+                        items(playlists.filter { it.folder == null || it.folder !in folderIds }, key = { it.id }) { pl ->
                             GroupRow(pl.name, (if (pl.id in pinned) "Pinned · " else "") + "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) }) {
                                 Art(playlistArt(pl), 52.dp)
                             }
@@ -1312,6 +1369,7 @@ internal fun LibraryScreen(
                         if (playlists.isEmpty()) item {
                             Text("Tap + to create your first playlist.", color = TextDim, modifier = Modifier.padding(24.dp))
                         }
+                        item { GroupRow("New folder", "Group playlists, e.g. by mood or year", onNewPlaylistFolder) { IconTile(Icons.Rounded.CreateNewFolder, 52.dp, CardBg, TextDim) } }
                         item { GroupRow("Import a playlist file", ".m3u or .m3u8, e.g. saved by Onda on your PC", onImport) { IconTile(Icons.Rounded.FileOpen, 52.dp, CardBg, TextDim) } }
                     }
                     1 -> {
@@ -1715,6 +1773,7 @@ internal fun SettingsScreen(
                 Switch(checked = mobileDl, onCheckedChange = { mobileDl = it; Prefs.setMobileDownloads(ctx, it) })
             }
             SectionLabel("Equalizer", Modifier.padding(0.dp))
+            CrossfadeSetting(ctx)
             EqualizerSettings(ctx)
             SectionLabel("Your PC", Modifier.padding(0.dp))
             PcSettings(onMessage)

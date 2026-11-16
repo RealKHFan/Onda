@@ -57,7 +57,7 @@ class ScreenshotTest {
             savedAlbums = listOf(release), followed = listOf(RemoteArtist(7, "Coastline Kids", null)),
             serverPlaylists = listOf(Subsonic.Playlist("s1", "Gym", listOf("a", "b"))), onOpenServerPlaylist = {},
             onOpenRemoteAlbum = {}, onOpenRemoteArtist = {}, onPlaySongs = { _, _ -> }, onMenu = {}, onQueue = {},
-            pinned = setOf(playlists[0].id))
+            pinned = setOf(playlists[0].id), playlistFolders = listOf(PlaylistStore.Folder("f1", "Workouts")))
     }
 
     @Test fun stats() = shot("stats") {
@@ -105,5 +105,13 @@ class ScreenshotTest {
         SettingsScreen(listOf("content://com.android.externalstorage.documents/tree/primary%3AMusic"), scanning = false, appleOn = true,
             onAppleChange = {}, freeOn = true, onFreeChange = {}, jamendoId = "", onJamendoChange = {}, matchRunning = false,
             onMatch = {}, onViewMatch = {}, onRename = {}, onImport = {}, onBack = {})
+    }
+
+    @Test fun history() = shot("history") {
+        val now = System.currentTimeMillis()
+        HistoryScreen(listOf(
+            io.github.realkhfan.onda.core.Discovery.Play(tracks[0].id, tracks[0].artist, tracks[0].title, now - 3_600_000),
+            io.github.realkhfan.onda.core.Discovery.Play("", "Coastline Kids", "Only on the PC", now - 600_000),
+        ), { id -> tracks.firstOrNull { it.id == id } }, null) {}
     }
 }

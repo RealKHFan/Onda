@@ -150,7 +150,7 @@ object Link {
         val req = LinkCrypto.open(key, body, path)?.let { JSONObject(String(it)) } ?: return ex.sendResponseHeaders(401, -1)
         if (kotlin.math.abs(System.currentTimeMillis() - req.optLong("t")) > LinkCrypto.MAX_SKEW_MS) return ex.sendResponseHeaders(408, -1)
         runBlocking(Dispatchers.Swing) { seen = seen + (phone.id to System.currentTimeMillis()) }
-        val res: JSONObject = when (path) {
+        val res: Any = when (path) {
             "/v1/hello" -> JSONObject().put("name", name).put("pc", pcId)
             "/v1/sync/get" -> runBlocking(Dispatchers.Swing) {
                 val snap = LinkSync.toJson(state.linkSnapshot(foreignEdits, known))
@@ -160,6 +160,7 @@ object Link {
                 // Changed here since the phone looked: it merges again.
                 if (req.optString("version") != version(LinkSync.toJson(state.linkSnapshot(foreignEdits, known)))) return@runBlocking null
                 foreignEdits = state.applyLink(LinkSync.fromJson(req.getJSONObject("snapshot")), known)
+                told = state.linkFingerprint() // what came from the phone isn't news for it
                 lastSync = System.currentTimeMillis()
                 save()
                 JSONObject().put("ok", true)
@@ -175,10 +176,37 @@ object Link {
                 player?.pause()
                 JSONObject().apply { q?.let { put("queue", LinkSync.queueToJson(it)) } }
             }
+            "/v1/player/add" -> runBlocking(Dispatchers.Swing) {
+                val q = LinkSync.queueFromJson(req.getJSONObject("queue"))
+                val items = resolveHere(q).filterNotNull()
+                player?.let { p -> if (req.optBoolean("next")) items.reversed().forEach(p::playNext) else items.forEach(p::enqueue) }
+                JSONObject().put("added", items.size)
+            }
             "/v1/inbox" -> inbox.getOrPut(phone.id) { LinkedBlockingQueue() }.poll(20, TimeUnit.SECONDS) ?: JSONObject()
+            // Songs and covers: only files of your library (found by the song), never a path the phone names.
+            "/v1/file/stat" -> runBlocking(Dispatchers.Swing) { fileOf(LinkSync.songFromJson(req.getJSONObject("song"))) }
+                .let { f -> JSONObject().put("found", f != null).put("size", f?.length() ?: 0).put("ext", f?.extension?.lowercase() ?: "") }
+            "/v1/file/read" -> {
+                val f = runBlocking(Dispatchers.Swing) { fileOf(LinkSync.songFromJson(req.getJSONObject("song"))) } ?: return ex.sendResponseHeaders(404, -1)
+                val offset = req.optLong("offset").coerceAtLeast(0)
+                val length = req.optInt("length").coerceIn(0, 4 * 1024 * 1024)
+                java.io.RandomAccessFile(f, "r").use { r ->
+                    if (offset >= r.length()) ByteArray(0)
+                    else ByteArray(minOf(length.toLong(), r.length() - offset).toInt()).also { r.seek(offset); r.readFully(it) }
+                }
+            }
+            "/v1/file/put" -> receive(phone, req) ?: return ex.sendResponseHeaders(409, -1)
+            "/v1/cover/get" -> runBlocking(Dispatchers.Swing) { state.coverFiles()[req.optString("hash")] }
+                ?.let { runCatching { File(it).readBytes() }.getOrNull() } ?: return ex.sendResponseHeaders(404, -1)
+            "/v1/cover/put" -> {
+                val bytes = java.util.Base64.getDecoder().decode(req.optString("data"))
+                if (bytes.size > 20 * 1024 * 1024 || !runBlocking(Dispatchers.Swing) { state.saveCover(req.optString("hash"), bytes) }) return ex.sendResponseHeaders(400, -1)
+                JSONObject().put("ok", true)
+            }
             else -> return ex.sendResponseHeaders(404, -1)
         }
-        val out = LinkCrypto.seal(key, res.put("t", System.currentTimeMillis()).toString().toByteArray(), "$path#r")
+        val plain = if (res is ByteArray) res else (res as JSONObject).put("t", System.currentTimeMillis()).toString().toByteArray()
+        val out = LinkCrypto.seal(key, plain, "$path#r")
         ex.sendResponseHeaders(200, out.size.toLong())
         ex.responseBody.use { it.write(out) }
     }
@@ -202,8 +230,12 @@ object Link {
     private fun playerState(): JSONObject {
         val p = player ?: return JSONObject().put("has", false)
         val cur = p.current ?: return JSONObject().put("has", false).put("volume", p.volume)
-        return JSONObject().put("has", true).put("playing", p.playing).put("title", cur.title).put("artist", cur.artist).put("album", cur.album)
-            .put("art", cur.art?.takeIf { it.startsWith("http") }).put("pos", p.positionMs).put("dur", p.durationMs).put("volume", p.volume)
+        // What's next too, for the phone's queue screen while it's the remote.
+        val next = JSONArray(p.upcoming().take(20).map { (_, i) ->
+            JSONObject().put("key", i.id).put("title", i.title).put("artist", i.artist).put("album", i.album).put("art", i.art?.takeIf { it.startsWith("http") }).put("dur", i.durationMs)
+        })
+        return JSONObject().put("has", true).put("playing", p.playing).put("key", cur.id).put("title", cur.title).put("artist", cur.artist).put("album", cur.album)
+            .put("art", cur.art?.takeIf { it.startsWith("http") }).put("pos", p.positionMs).put("dur", p.durationMs).put("volume", p.volume).put("next", next)
     }
 
     private fun command(req: JSONObject) {
@@ -228,14 +260,65 @@ object Link {
         return LinkSync.Queue(songs, catalog, p.positionMs)
     }
 
+    /** Songs from the phone as player items here (null: not on this PC). */
+    private fun resolveHere(q: LinkSync.Queue): List<Player.Item?> {
+        val lib = LinkSync.Library(state.library, state.rawTracks, state.collection.remote.associateBy { it.key })
+        val catalog = q.catalog.associateBy { it.key }
+        return q.songs.map { s -> if (s.key != null) catalog[s.key]?.let(state::item) else state.byId[lib.id(s)]?.let(state::item) }
+    }
+
+    /** A song's file on this PC (your music folders only; server songs aren't files here). */
+    private fun fileOf(song: LinkSync.Song): File? {
+        val lib = LinkSync.Library(state.library, state.rawTracks, emptyMap())
+        val t = state.byId[lib.id(song)] ?: return null
+        return t.id.takeIf { it.startsWith("file:") }?.let { runCatching { File(java.net.URI(it)) }.getOrNull() }?.takeIf { it.isFile }
+    }
+
+    /** A song the phone sends ("Get from your phone"), piece by piece, into "Onda from phone" in your first music folder. */
+    private fun receive(phone: Phone, req: JSONObject): JSONObject? {
+        val song = LinkSync.songFromJson(req.getJSONObject("song"))
+        val size = req.optLong("size")
+        val ext = req.optString("ext").lowercase().filter { it.isLetterOrDigit() }.take(5).ifEmpty { "mp3" }
+        if (size <= 0 || size > 2L * 1024 * 1024 * 1024) return null
+        val dir = runBlocking(Dispatchers.Swing) { Downloads.target(state) }?.let { File(it, "Onda from phone") } ?: return null
+        val name = io.github.realkhfan.onda.core.FileNames.forSong(song.title, song.artist, ext) ?: return null
+        dir.mkdirs()
+        val part = File(dir, "$name.part")
+        val offset = req.optLong("offset")
+        if (offset != (if (offset == 0L) 0L else part.length())) return null // out of order: the phone starts again
+        val bytes = java.util.Base64.getDecoder().decode(req.optString("data"))
+        java.io.FileOutputStream(part, offset > 0).use { it.write(bytes) }
+        receiving = receiving + (phone.id to "${song.title} · ${(part.length() * 100 / size).coerceAtMost(100)}%")
+        if (part.length() < size) return JSONObject().put("done", false)
+        val final = File(dir, name).takeIf { !it.exists() } ?: File(dir, "${name.substringBeforeLast('.')} (2).$ext")
+        part.renameTo(final)
+        receiving = receiving - phone.id
+        runBlocking(Dispatchers.Swing) { state.rescan() } // the greyed-out song becomes the file once it's scanned
+        return JSONObject().put("done", true)
+    }
+
+    /** Songs coming from the phone right now (for Settings). */
+    var receiving by mutableStateOf<Map<String, String>>(emptyMap()); private set
+
+    /** Asks the phone for its copy of a song that's greyed out here ("Get from your phone"); it sends it while Onda runs there. */
+    fun getFromPhone(songs: List<LinkSync.Song>): Boolean {
+        val p = phones.firstOrNull { connected(it) } ?: return false
+        songs.forEach { s -> inbox.getOrPut(p.id) { LinkedBlockingQueue() }.offer(JSONObject().put("send", LinkSync.songToJson(s))) }
+        return true
+    }
+
+    /** Your phones hear when something changed here (a few seconds later), so they sync while both are open. */
+    private var told = 0
+    fun changed(fingerprint: Int) {
+        if (fingerprint == told) return
+        told = fingerprint
+        phones.filter(::connected).forEach { inbox.getOrPut(it.id) { LinkedBlockingQueue() }.offer(JSONObject().put("sync", true)) }
+    }
+
     /** Plays songs from the phone here; returns how many aren't on this PC (left out). */
     private fun playHere(q: LinkSync.Queue): Int {
         val p = player ?: return q.songs.size
-        val lib = LinkSync.Library(state.library, state.rawTracks, state.collection.remote.associateBy { it.key })
-        val catalog = q.catalog.associateBy { it.key }
-        val items = q.songs.map { s ->
-            if (s.key != null) catalog[s.key]?.let(state::item) else state.byId[lib.id(s)]?.let(state::item)
-        }
+        val items = resolveHere(q)
         val found = items.filterNotNull()
         if (found.isEmpty()) return q.songs.size
         p.play(found, 0)

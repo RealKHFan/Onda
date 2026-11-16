@@ -15,7 +15,48 @@ import java.util.UUID
 object PlaylistStore {
 
     /** [cover]: an image of yours, copied into Onda's files; null = made from the album covers. */
-    data class Playlist(val id: String, val name: String, val trackIds: List<String>, val description: String = "", val cover: String? = null)
+    data class Playlist(
+        val id: String, val name: String, val trackIds: List<String>, val description: String = "", val cover: String? = null,
+        /** The folder it's in (a [Folder] id), or null. */
+        val folder: String? = null,
+    )
+
+    /** A folder of playlists, like Spotify's. */
+    data class Folder(val id: String, val name: String)
+
+    private val _folders = MutableStateFlow<List<Folder>>(emptyList())
+    val folders: StateFlow<List<Folder>> = _folders.asStateFlow()
+
+    fun createFolder(name: String): String {
+        val id = UUID.randomUUID().toString()
+        _folders.value = _folders.value + Folder(id, name.trim().ifBlank { "New folder" })
+        write()
+        return id
+    }
+
+    fun renameFolder(id: String, name: String) {
+        _folders.value = _folders.value.map { if (it.id == id) it.copy(name = name.trim().ifBlank { it.name }) else it }
+        write()
+    }
+
+    /** The folder goes; its playlists stay, outside any folder. */
+    fun deleteFolder(id: String) {
+        _folders.value = _folders.value.filterNot { it.id == id }
+        _playlists.value = _playlists.value.map { if (it.folder == id) it.copy(folder = null) else it }
+        write()
+    }
+
+    fun moveToFolder(playlistId: String, folderId: String?) {
+        _playlists.value = _playlists.value.map { if (it.id == playlistId) it.copy(folder = folderId) else it }
+        write()
+    }
+
+    /** Undo for a deleted folder. */
+    fun restoreFolder(f: Folder, playlistIds: List<String>) {
+        _folders.value = _folders.value + f
+        _playlists.value = _playlists.value.map { if (it.id in playlistIds) it.copy(folder = f.id) else it }
+        write()
+    }
 
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
@@ -69,6 +110,9 @@ object PlaylistStore {
     fun load(context: Context) {
         file = File(context.filesDir, "playlists.json")
         read()
+        // Cover photos no playlist uses any more (deleted playlists, replaced photos), once per start so Undo still works.
+        val used = _playlists.value.mapNotNull { it.cover }.toSet()
+        File(context.filesDir, "covers").listFiles()?.filter { it.path !in used }?.forEach { it.delete() }
     }
 
     fun createPlaylist(name: String): String {
@@ -100,10 +144,10 @@ object PlaylistStore {
         write()
     }
 
-    /** After syncing with your PC (each playlist keeps its own cover here). */
-    fun fromSync(playlists: List<Playlist>, liked: List<String>, want: List<RemoteTrack>, catalog: List<RemoteTrack>) {
-        val covers = _playlists.value.associate { it.id to it.cover }
-        _playlists.value = playlists.map { it.copy(cover = covers[it.id]) }
+    /** After syncing with your PC (covers already point at files here). */
+    fun fromSync(playlists: List<Playlist>, folders: List<Folder>, liked: List<String>, want: List<RemoteTrack>, catalog: List<RemoteTrack>) {
+        _playlists.value = playlists
+        _folders.value = folders
         _liked.value = liked
         _want.value = want
         _remote.value = _remote.value + catalog.associateBy { it.key }
@@ -183,8 +227,11 @@ object PlaylistStore {
                     trackIds = (0 until tracks.length()).map { tracks.getString(it) },
                     description = o.optString("desc"),
                     cover = o.optString("cover").ifBlank { null },
+                    folder = o.optString("folder").ifBlank { null },
                 )
             }
+            val fs = root.optJSONArray("folders") ?: JSONArray()
+            _folders.value = (0 until fs.length()).map { fs.getJSONObject(it).let { o -> Folder(o.getString("id"), o.optString("name")) } }
             val liked = root.optJSONArray("liked") ?: JSONArray()
             _liked.value = (0 until liked.length()).map { liked.getString(it) }
             val want = root.optJSONArray("want") ?: JSONArray()
@@ -209,10 +256,12 @@ object PlaylistStore {
                         .put("name", pl.name)
                         .put("tracks", JSONArray(pl.trackIds))
                         .put("desc", pl.description.ifBlank { null })
-                        .put("cover", pl.cover),
+                        .put("cover", pl.cover)
+                        .put("folder", pl.folder),
                 )
             }
             root.put("playlists", pls)
+            root.put("folders", JSONArray(_folders.value.map { JSONObject().put("id", it.id).put("name", it.name) }))
             root.put("liked", JSONArray(_liked.value))
             root.put("want", JSONArray(_want.value.map { it.toJson() }))
             // Only songs a playlist still holds (deleted playlists and removed songs drop out).

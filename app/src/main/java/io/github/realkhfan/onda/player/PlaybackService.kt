@@ -20,6 +20,7 @@ import androidx.media3.session.MediaSession
 import io.github.realkhfan.onda.data.AppData
 import io.github.realkhfan.onda.data.Loudness
 import io.github.realkhfan.onda.data.Resume
+import io.github.realkhfan.onda.data.Link
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -45,18 +46,20 @@ class PlaybackService : MediaLibraryService() {
             .setUpstreamDataSourceFactory(DefaultHttpDataSource.Factory())
             .setCacheKeyFactory { spec -> PlaybackCache.key(spec.uri.toString()) }
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-        val sources = ResolvingDataSource.Factory(DefaultDataSource.Factory(this, cached), PreviewResolver)
+        // Songs from your PC ("ondalink:") are read over the link.
+        val sources = ResolvingDataSource.Factory(RoutingDataSource.Factory(DefaultDataSource.Factory(this, cached)), PreviewResolver)
+        val music = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(sources))
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(C.USAGE_MEDIA)
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .build(),
-                true,
-            )
+            .setAudioAttributes(music, true)
             .setHandleAudioBecomingNoisy(true)
             .build()
+        exo = player
+        // Crossfade's second player: the next song's first seconds (audio focus stays with the main player).
+        val helper = ExoPlayer.Builder(this).setMediaSourceFactory(DefaultMediaSourceFactory(sources)).setAudioAttributes(music, false).build()
+        crossfade = Crossfade(player, helper, scope, { Prefs.crossfade(this) }) { item ->
+            if (!Prefs.normalize(this)) 1f else Math.pow(10.0, Loudness.gainDb(item.mediaId, emptyList()) / 20).coerceAtMost(1.0).toFloat()
+        }.also { it.start() }
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 // Leaving a long song: remember where (a song that ended by itself starts over next time).
@@ -74,11 +77,39 @@ class PlaybackService : MediaLibraryService() {
         Effects.apply(io.github.realkhfan.onda.data.Prefs.eq(this))
         Effects.attach(player.audioSessionId)
         session = MediaLibrarySession.Builder(this, player, AutoLibrary(this, scope)).build()
+        // Playing on your PC: the session (player bar, notification, lock screen) controls the PC instead.
+        val remote = RemotePlayer(mainLooper, scope).also { remotePlayer = it }
+        scope.launch {
+            Remote.on.collect { on ->
+                val s = session ?: return@collect
+                if (on && s.player !== remote) { crossfade?.cancel(); player.pause(); s.player = remote; remote.startPolling() }
+                else if (!on && s.player !== player) { remote.stopPolling(); s.player = player }
+            }
+        }
+        // What the PC sends ("Play on… your phone", a sync, a song it wants), while this service runs.
+        Link.onPlay = { q ->
+            Remote.stop()
+            val lib = AppData.library(MusicLibrary.tracks.value, AppData.serverTracks(), Overrides.meta.value)
+            val (items, missing) = Link.resolve(q, lib)
+            if (items.isNotEmpty()) {
+                player.setMediaItems(items, 0, if (q.positionMs > 3000) q.positionMs else 0)
+                player.prepare(); player.play()
+            }
+            android.widget.Toast.makeText(this, when {
+                items.isEmpty() -> "None of those songs are on this phone"
+                missing > 0 -> "Playing from your PC here · $missing not on this phone"
+                else -> "Playing here (from your PC)"
+            }, android.widget.Toast.LENGTH_SHORT).show()
+        }
+        scope.launch { Link.listen(this@PlaybackService) }
         Effects.refresh = { levelFor(player.currentMediaItem?.mediaId) }
         // Where a long song is, every 10 s, so it's known even if Onda is closed while playing.
         scope.launch { while (true) { kotlinx.coroutines.delay(10_000); if (player.isPlaying) remember(player) } }
     }
 
+    private var exo: ExoPlayer? = null
+    private var crossfade: Crossfade? = null
+    private var remotePlayer: RemotePlayer? = null
     private var lastId: String? = null
     private var lastPos = 0L
     private var lastDur = 0L
@@ -132,10 +163,11 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         Effects.release()
-        session?.run {
-            player.release()
-            release()
-        }
+        Link.onPlay = null
+        crossfade?.release()
+        remotePlayer?.release()
+        exo?.release()
+        session?.release()
         session = null
         scope.cancel()
         super.onDestroy()

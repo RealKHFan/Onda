@@ -94,3 +94,28 @@ class LinkSyncLibraryTest {
         assertEquals(first.learned, LinkSync.songsFromJson(org.json.JSONObject(json.toString())))
     }
 }
+
+class LinkSyncFoldersTest {
+    @Test fun foldersAndCoversMergeLikeNames() {
+        val base = LinkSync.Snapshot(
+            playlists = listOf(LinkSync.Playlist("p1", "One", "", emptyList(), cover = "aaa", folder = "f1"), LinkSync.Playlist("p2", "Two", "", emptyList(), folder = "f2")),
+            folders = listOf(LinkSync.Folder("f1", "Chill"), LinkSync.Folder("f2", "Old")),
+        )
+        // Phone: new cover on p1, folder renamed. PC: moved p1 out of its folder, deleted folder f2.
+        val phone = base.copy(playlists = listOf(base.playlists[0].copy(cover = "bbb"), base.playlists[1]), folders = listOf(LinkSync.Folder("f1", "Calm"), base.folders[1]))
+        val pc = base.copy(playlists = listOf(base.playlists[0].copy(folder = null), base.playlists[1]), folders = listOf(base.folders[0]))
+        val m = LinkSync.merge(base, phone, pc)
+        assertEquals(listOf(LinkSync.Folder("f1", "Calm")), m.folders)
+        assertEquals("bbb" to null, m.playlists[0].let { it.cover to it.folder })
+        assertEquals(null, m.playlists[1].folder) // its folder is gone
+        assertEquals(m, LinkSync.fromJson(org.json.JSONObject(LinkSync.toJson(m).toString())))
+    }
+}
+
+class LinkSyncHealTest {
+    @Test fun placeholdersBecomeTheSongOnceItIsHere() {
+        val file = Track("content://9", "content://9", "Glass", "Other Band", "B", "Other Band", 1, 200_000, "M", null, "glass.mp3")
+        val id = "~song:Other Band\u001FGlass"
+        assertEquals(mapOf(id to "content://9"), LinkSync.heal(listOf(id, "~song:Nobody\u001FNothing"), listOf(file)))
+    }
+}

@@ -54,6 +54,7 @@ import io.github.realkhfan.onda.core.Source
 import io.github.realkhfan.onda.core.Track
 import io.github.realkhfan.onda.data.Link
 import io.github.realkhfan.onda.player.PlayerState
+import io.github.realkhfan.onda.player.Remote
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -90,12 +91,15 @@ internal fun PlayOnSheet(player: PlayerState?, library: List<Track>, byId: Map<S
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("Play on", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            val remote by Remote.on.collectAsState()
             val pcPlaying = there?.optBoolean("has") == true && there?.optBoolean("playing") == true
-            DeviceRow(Icons.Rounded.PhoneAndroid, "This phone", if (pcPlaying) "Tap to take over what plays on the PC" else "Playing here", !pcPlaying) {
+            DeviceRow(Icons.Rounded.PhoneAndroid, "This phone", if (pcPlaying || remote) "Tap to take over what plays on the PC" else "Playing here", !pcPlaying && !remote) {
                 val p = player ?: return@DeviceRow
-                if (!pcPlaying || busy) return@DeviceRow
+                if ((!pcPlaying && !remote) || busy) return@DeviceRow
                 busy = true
                 scope.launch {
+                    Remote.stop()
+                    delay(300) // the phone's own player is back before it gets the songs
                     val q = Link.take()
                     onMessage(if (q == null) "Couldn't reach your PC" else playFromPc(p, q, library, pc?.name ?: "Your PC"))
                     busy = false; onDismiss()
@@ -108,16 +112,18 @@ internal fun PlayOnSheet(player: PlayerState?, library: List<Track>, byId: Map<S
             } else {
                 DeviceRow(Icons.Rounded.Computer, c.name, when {
                     there == null -> "Not reachable · is Onda open on it, with the link on?"
-                    pcPlaying -> "Playing there"
+                    remote -> "Playing there · this phone is the remote (player bar, lock screen)"
+                    pcPlaying -> "Playing there · tap to control it from this phone"
                     else -> "Tap to play what plays here on the PC"
-                }, pcPlaying) {
+                }, pcPlaying || remote) {
+                    if (busy || remote || there == null) return@DeviceRow
+                    if (pcPlaying) { Remote.start(); onDismiss(); return@DeviceRow }
                     val p = player ?: return@DeviceRow
                     val q = queueHere(p, byId) ?: return@DeviceRow onMessage("Nothing is playing here")
-                    if (busy || pcPlaying) return@DeviceRow
                     busy = true
                     scope.launch {
                         val missing = Link.playThere(q)
-                        if (missing != null && missing < q.songs.size) p.controller.pause()
+                        if (missing != null && missing < q.songs.size) { p.controller.pause(); Remote.start() }
                         onMessage(when (missing) {
                             null -> "Couldn't reach ${c.name}"
                             q.songs.size -> "None of those songs are on ${c.name}"
@@ -129,6 +135,7 @@ internal fun PlayOnSheet(player: PlayerState?, library: List<Track>, byId: Map<S
                 }
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Accent, trackColor = Raised)
                 there?.takeIf { it.optBoolean("has") }?.let { s -> RemoteControls(s) { cmd, extra -> scope.launch { Link.command(cmd, extra)?.let { there = it } } } }
+                if (remote) TextButton(onClick = { Remote.stop() }) { Text("Stop using this phone as the remote", color = TextDim) }
             }
         }
     }

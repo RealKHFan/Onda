@@ -14,13 +14,18 @@ object LinkSync {
         val id: String get() = key ?: idOf(artist, title)
     }
 
-    data class Playlist(val id: String, val name: String, val description: String, val songs: List<Song>)
+    /** [cover]: the hash of your own cover photo (null: made from the songs' covers); [folder]: the folder's id, or null. */
+    data class Playlist(val id: String, val name: String, val description: String, val songs: List<Song>, val cover: String? = null, val folder: String? = null)
+
+    /** A folder of playlists. */
+    data class Folder(val id: String, val name: String)
 
     /** Details you edited for one of your songs; found on the other side by the file's own artist and title. */
     data class Edit(val title: String, val artist: String, val album: String, val cover: String?, val deezerId: Long)
 
     data class Snapshot(
         val playlists: List<Playlist> = emptyList(),
+        val folders: List<Folder> = emptyList(),
         val liked: List<Song> = emptyList(),
         val want: List<RemoteTrack> = emptyList(),
         /** Catalog songs that playlists and Liked Songs hold, so the other side can show and play them. */
@@ -37,6 +42,17 @@ object LinkSync {
     )
 
     fun idOf(artist: String, title: String) = "~" + Match.norm(artist) + "|" + Match.norm(title)
+
+    /** Placeholders ([isMissing] ids) whose song is in [library] now, mapped to its id. */
+    fun heal(ids: Collection<String>, library: List<Track>): Map<String, String> {
+        if (ids.isEmpty()) return emptyMap()
+        val byName = library.groupBy { idOf(it.artist, it.title) }
+        return ids.mapNotNull { id -> missingTrack(id)?.let { m -> byName[idOf(m.artist, m.title)]?.first()?.let { id to it.id } } }.toMap()
+    }
+
+    /** A cover photo's id across devices: the start of its SHA-256. */
+    fun hashOf(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(bytes).take(12).joinToString("") { "%02x".format(it) }
 
     /** A song that's in a list but not on this device (it came from the other one): shown greyed out, kept, not played. */
     fun isMissing(id: String) = id.startsWith(Library.PLACEHOLDER)
@@ -61,13 +77,25 @@ object LinkSync {
                 if (x.name != o?.name) x.name else y.name,
                 if (x.description != o?.description) x.description else y.description,
                 list(o?.songs, x.songs, y.songs) { it.id },
+                if (x.cover != o?.cover) x.cover else y.cover,
+                if (x.folder != o?.folder) x.folder else y.folder,
             )
         }
+        val fBase = base?.folders?.associateBy { it.id }
+        val fa = a.folders.associateBy { it.id }
+        val fb = b.folders.associateBy { it.id }
+        val folders = list(base?.folders, a.folders, b.folders) { it.id }.map { f ->
+            val x = fa[f.id]; val y = fb[f.id]
+            if (x != null && (y == null || x.name != fBase?.get(f.id)?.name)) x else y ?: f
+        }
+        val folderIds = folders.map { it.id }.toSet()
         val liked = list(base?.liked, a.liked, b.liked, newFirst = true) { it.id }
         val used = (playlists.flatMap { it.songs } + liked).mapNotNull { it.key }.toSet()
         val editKeys = list(base?.edits?.keys?.toList(), a.edits.keys.toList(), b.edits.keys.toList()) { it }
         return Snapshot(
-            playlists = playlists,
+            // A playlist in a folder that was deleted on the other side moves out of it.
+            playlists = playlists.map { if (it.folder != null && it.folder !in folderIds) it.copy(folder = null) else it },
+            folders = folders,
             liked = liked,
             want = list(base?.want, a.want, b.want, newFirst = true) { it.key },
             catalog = (a.catalog + b.catalog).filter { it.key in used }.distinctBy { it.key },
@@ -120,7 +148,9 @@ object LinkSync {
         .put("v", 1)
         .put("playlists", JSONArray(s.playlists.map { p ->
             JSONObject().put("id", p.id).put("name", p.name).put("desc", p.description).put("songs", JSONArray(p.songs.map(::song)))
+                .put("cover", p.cover).put("folder", p.folder)
         }))
+        .put("folders", JSONArray(s.folders.map { JSONObject().put("id", it.id).put("name", it.name) }))
         .put("liked", JSONArray(s.liked.map(::song)))
         .put("want", JSONArray(s.want.map(::track)))
         .put("catalog", JSONArray(s.catalog.map(::track)))
@@ -134,8 +164,10 @@ object LinkSync {
 
     fun fromJson(o: JSONObject): Snapshot = Snapshot(
         playlists = objects(o.optJSONArray("playlists")).map { p ->
-            Playlist(p.getString("id"), p.optString("name"), p.optString("desc"), objects(p.optJSONArray("songs")).map(::song))
+            Playlist(p.getString("id"), p.optString("name"), p.optString("desc"), objects(p.optJSONArray("songs")).map(::song),
+                p.optString("cover").ifBlank { null }, p.optString("folder").ifBlank { null })
         },
+        folders = objects(o.optJSONArray("folders")).map { Folder(it.getString("id"), it.optString("name")) },
         liked = objects(o.optJSONArray("liked")).map(::song),
         want = objects(o.optJSONArray("want")).map(::track),
         catalog = objects(o.optJSONArray("catalog")).map(::track),
@@ -149,6 +181,9 @@ object LinkSync {
             }
         }.orEmpty(),
     )
+
+    fun songToJson(s: Song) = song(s)
+    fun songFromJson(o: JSONObject) = song(o)
 
     fun songsToJson(m: Map<String, Song>) = JSONObject().apply { m.forEach { (k, v) -> put(k, song(v)) } }
     fun songsFromJson(o: JSONObject?): Map<String, Song> = o?.let { j -> j.keys().asSequence().associateWith { song(j.getJSONObject(it)) } }.orEmpty()

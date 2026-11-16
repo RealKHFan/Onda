@@ -41,6 +41,10 @@ object Prefs {
     fun playlistOrder(ctx: Context): String = p(ctx).getString("playlist_order", "Custom") ?: "Custom"
     fun setPlaylistOrder(ctx: Context, order: String) = p(ctx).edit().putString("playlist_order", order).apply()
 
+    /** Crossfade between songs, in seconds (0 = off). */
+    fun crossfade(ctx: Context): Int = p(ctx).getInt("crossfade", 0)
+    fun setCrossfade(ctx: Context, s: Int) = p(ctx).edit().putInt("crossfade", s.coerceIn(0, 12)).apply()
+
     /** Even out loudness (measured on the phone), and keep an album's own dynamics when playing it. */
     fun normalize(ctx: Context): Boolean = p(ctx).getBoolean("normalize", false)
     fun setNormalize(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("normalize", on).apply()

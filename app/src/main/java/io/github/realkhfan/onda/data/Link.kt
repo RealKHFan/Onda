@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -56,6 +57,7 @@ object Link {
         val addr = prefs.getString("address", null)
         if (token != null && addr != null) _pc.value = Pc(addr, prefs.getString("pc", "")!!, prefs.getString("name", "Your PC")!!)
         status.value = prefs.getString("status", null)
+        watch()
     }
 
     /* ---------- finding and pairing ---------- */
@@ -105,18 +107,23 @@ object Link {
 
     /* ---------- requests ---------- */
 
-    private class Reply(val status: Int, val json: JSONObject?)
+    private class Reply(val status: Int, val bytes: ByteArray?) {
+        val json: JSONObject? get() = bytes?.let { runCatching { JSONObject(String(it)) }.getOrNull() }
+    }
 
     /** A request to the PC; if it moved to another address on the network, it's found again by its id. */
-    private suspend fun call(path: String, req: JSONObject = JSONObject(), timeoutMs: Int = 10_000): Reply? = withContext(Dispatchers.IO) {
-        val pc = _pc.value ?: return@withContext null
-        val key = LinkCrypto.linkKey(token ?: return@withContext null)
+    private suspend fun call(path: String, req: JSONObject = JSONObject(), timeoutMs: Int = 10_000): Reply? = withContext(Dispatchers.IO) { callNow(path, req, timeoutMs) }
+
+    /** The same, on the calling thread (the player's loading thread, a download). */
+    private fun callNow(path: String, req: JSONObject, timeoutMs: Int): Reply? {
+        val pc = _pc.value ?: return null
+        val key = LinkCrypto.linkKey(token ?: return null)
         val body = LinkCrypto.seal(key, req.put("t", System.currentTimeMillis()).toString().toByteArray(), path)
-        val r = post(pc.address, path, body, timeoutMs) ?: discover().firstOrNull { it.id == pc.id }?.let { moved ->
+        val r = post(pc.address, path, body, timeoutMs) ?: kotlinx.coroutines.runBlocking { discover() }.firstOrNull { it.id == pc.id }?.let { moved ->
             _pc.value = pc.copy(address = moved.address); prefs.edit().putString("address", moved.address).apply()
             post(moved.address, path, body, timeoutMs)
-        } ?: return@withContext null
-        Reply(r.first, r.second?.let { LinkCrypto.open(key, it, "$path#r") }?.let { JSONObject(String(it)) })
+        } ?: return null
+        return Reply(r.first, r.second?.let { LinkCrypto.open(key, it, "$path#r") })
     }
 
     private fun post(address: String, path: String, body: ByteArray, timeoutMs: Int): Pair<Int, ByteArray?>? = runCatching {
@@ -145,7 +152,9 @@ object Link {
                 val base = stored?.optJSONObject("base")?.let(LinkSync::fromJson)
                 val known = HashMap(LinkSync.songsFromJson(stored?.optJSONObject("known")))
                 val mine = snapshot(base, known)
-                val merged = withContext(Dispatchers.Default) { LinkSync.merge(base, mine, LinkSync.fromJson(got.getJSONObject("snapshot"))) }
+                val theirs = LinkSync.fromJson(got.getJSONObject("snapshot"))
+                val merged = withContext(Dispatchers.Default) { LinkSync.merge(base, mine, theirs) }
+                if (!swapCovers(merged, theirs)) return done("Couldn't send a playlist cover to ${_pc.value?.name ?: "your PC"}.")
                 val put = call("/v1/sync/put", JSONObject().put("version", got.getString("version")).put("snapshot", LinkSync.toJson(merged)), 30_000)
                     ?: return done("Couldn't reach ${_pc.value?.name ?: "your PC"}.")
                 if (put.status == 409) return@repeat // changed on the PC meanwhile: merge again
@@ -177,7 +186,10 @@ object Link {
         val lib = LinkSync.Library(shown, raw, PlaylistStore.remote.value, known)
         val here = raw.map { LinkSync.idOf(it.artist, it.title) }.toSet()
         return LinkSync.Snapshot(
-            playlists = PlaylistStore.playlists.value.map { p -> LinkSync.Playlist(p.id, p.name, p.description, p.trackIds.mapNotNull(lib::song)) },
+            playlists = PlaylistStore.playlists.value.map { p ->
+                LinkSync.Playlist(p.id, p.name, p.description, p.trackIds.mapNotNull(lib::song), p.cover?.let(::coverHash), p.folder)
+            },
+            folders = PlaylistStore.folders.value.map { LinkSync.Folder(it.id, it.name) },
             liked = PlaylistStore.liked.value.mapNotNull(lib::song),
             want = PlaylistStore.want.value, catalog = PlaylistStore.remote.value.values.toList(),
             followed = UserCollection.followed.value, albums = UserCollection.albums.value,
@@ -194,13 +206,141 @@ object Link {
         Overrides.fromSync(raw, s.edits)
         val shown = AppData.everyTrack(MusicLibrary.tracks.value, AppData.serverTracks(), Overrides.meta.value)
         val lib = LinkSync.Library(shown, raw, emptyMap())
+        val coverFiles = coverFiles()
         PlaylistStore.fromSync(
-            s.playlists.map { p -> PlaylistStore.Playlist(p.id, p.name, p.songs.map(lib::id).distinct(), p.description) },
+            s.playlists.map { p -> PlaylistStore.Playlist(p.id, p.name, p.songs.map(lib::id).distinct(), p.description, p.cover?.let { coverFiles[it] }, p.folder) },
+            s.folders.map { PlaylistStore.Folder(it.id, it.name) },
             s.liked.map(lib::id).distinct(), s.want, s.catalog,
         )
         UserCollection.fromSync(s.followed, s.albums, s.notInterested, s.blocked, s.ai)
         PlayLog.replace(s.plays.map { p -> p.copy(key = p.key.ifEmpty { lib.id(LinkSync.Song(null, p.title, p.artist)) }) })
         known += lib.learned
+        synced = fingerprint() // what just came from the PC isn't a change to send back
+    }
+
+    /* ---------- playlist covers ---------- */
+
+    private val hashes = HashMap<String, String>() // cover file -> its hash (the files never change; a new photo is a new file)
+
+    private fun coverHash(path: String): String? = hashes[path] ?: runCatching { LinkSync.hashOf(File(path).readBytes()) }.getOrNull()?.also { hashes[path] = it }
+
+    /** Every cover photo here by its hash. */
+    private fun coverFiles(): Map<String, String> =
+        File(dir, "covers").listFiles().orEmpty().mapNotNull { f -> coverHash(f.path)?.let { it to f.path } }.toMap()
+
+    /** Before the merged collection is kept: covers the PC doesn't have go to it, those this phone doesn't have come here. */
+    private suspend fun swapCovers(merged: LinkSync.Snapshot, theirs: LinkSync.Snapshot): Boolean = withContext(Dispatchers.IO) {
+        val here = coverFiles()
+        val there = theirs.playlists.mapNotNull { it.cover }.toSet()
+        for (p in merged.playlists) {
+            val h = p.cover ?: continue
+            if (h !in there) {
+                val bytes = here[h]?.let { runCatching { File(it).readBytes() }.getOrNull() } ?: continue
+                val r = callNow("/v1/cover/put", JSONObject().put("hash", h).put("data", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)), 30_000)
+                if (r?.status != 200) return@withContext false
+            }
+            if (h !in here) {
+                // Checked against its hash: only the photo that was asked for is kept.
+                val bytes = callNow("/v1/cover/get", JSONObject().put("hash", h), 30_000)?.takeIf { it.status == 200 }?.bytes
+                if (bytes != null && LinkSync.hashOf(bytes) == h) {
+                    File(dir, "covers").mkdirs()
+                    File(dir, "covers/${p.id}-$h.img").writeBytes(bytes)
+                }
+            }
+        }
+        true
+    }
+
+    /* ---------- sync as soon as something changes ---------- */
+
+    @Volatile private var synced = 0
+
+    /** What a sync carries, as one number (history aside: it waits for the next sync). */
+    private fun fingerprint(): Int = listOf<Any?>(
+        PlaylistStore.playlists.value, PlaylistStore.folders.value, PlaylistStore.liked.value, PlaylistStore.want.value,
+        UserCollection.followed.value, UserCollection.albums.value, UserCollection.hidden.value, UserCollection.blocked.value,
+        UserCollection.aiMarked.value, Overrides.meta.value,
+    ).hashCode()
+
+    /** Changes here reach the PC a few seconds later (while Onda runs). */
+    private fun watch() {
+        synced = fingerprint()
+        val flows = listOf<kotlinx.coroutines.flow.Flow<Any?>>(
+            PlaylistStore.playlists, PlaylistStore.folders, PlaylistStore.liked, PlaylistStore.want, UserCollection.followed, UserCollection.albums,
+            UserCollection.hidden, UserCollection.blocked, UserCollection.aiMarked, Overrides.meta,
+        )
+        scope.launch {
+            kotlinx.coroutines.flow.combine(flows) { fingerprint() }.collectLatest { f ->
+                kotlinx.coroutines.delay(4_000)
+                if (_pc.value != null && f != synced && !syncing.value) syncLater()
+            }
+        }
+    }
+
+    /* ---------- songs from the PC: copy or stream ---------- */
+
+    /** A song's file on the PC: its size and extension, or null when the PC doesn't have it as a file. */
+    fun stat(song: LinkSync.Song): Pair<Long, String>? =
+        callNow("/v1/file/stat", JSONObject().put("song", LinkSync.songToJson(song)), 10_000)?.json
+            ?.takeIf { it.optBoolean("found") }?.let { it.getLong("size") to it.optString("ext", "mp3") }
+
+    /** Up to [length] bytes of the song's file from [offset] (the player's loading thread and downloads call this). */
+    fun read(song: LinkSync.Song, offset: Long, length: Int): ByteArray? =
+        callNow("/v1/file/read", JSONObject().put("song", LinkSync.songToJson(song)).put("offset", offset).put("length", length), 30_000)
+            ?.takeIf { it.status == 200 }?.bytes
+
+    /** Sends one of this phone's songs to the PC (it asked: "Get from your phone"). */
+    private suspend fun send(context: Context, song: LinkSync.Song) = withContext(Dispatchers.IO) {
+        val lib = LinkSync.Library(AppData.everyTrack(MusicLibrary.tracks.value, AppData.serverTracks(), Overrides.meta.value), raw(), emptyMap())
+        val t = raw().firstOrNull { it.id == lib.id(song) }?.takeIf { it.uri.startsWith("content:") } ?: return@withContext
+        val uri = android.net.Uri.parse(t.uri)
+        val size = runCatching {
+            context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)?.use { c -> if (c.moveToFirst()) c.getLong(0) else -1L }
+        }.getOrNull() ?: -1L
+        if (size <= 0) return@withContext
+        val ext = t.fileName.substringAfterLast('.', "mp3").lowercase()
+        runCatching {
+            context.contentResolver.openInputStream(uri)!!.use { input ->
+                val buf = ByteArray(CHUNK)
+                var offset = 0L
+                while (offset < size) {
+                    var n = 0
+                    while (n < buf.size) { val k = input.read(buf, n, buf.size - n); if (k < 0) break; n += k }
+                    if (n <= 0) break
+                    val r = callNow("/v1/file/put", JSONObject().put("song", LinkSync.songToJson(song)).put("ext", ext).put("offset", offset).put("size", size)
+                        .put("data", android.util.Base64.encodeToString(buf, 0, n, android.util.Base64.NO_WRAP)), 60_000)
+                    if (r?.status != 200) break
+                    offset += n
+                }
+            }
+        }
+    }
+
+    const val CHUNK = 1024 * 1024
+
+    /* ---------- messages from the PC ---------- */
+
+    /** Play this here (the PC's "Play on… your phone"). */
+    var onPlay: ((LinkSync.Queue) -> Unit)? = null
+
+    /**
+     * Waits for the PC (up to 20 s per request) while the playback service runs: what to play, a sync, a song to send.
+     * Only on Wi-Fi, where the PC can be.
+     */
+    suspend fun listen(context: Context) {
+        while (true) {
+            val wifi = context.getSystemService(android.net.ConnectivityManager::class.java).let { cm ->
+                cm.getNetworkCapabilities(cm.activeNetwork)?.let {
+                    it.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) || it.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+                } == true
+            }
+            if (_pc.value == null || !wifi) { kotlinx.coroutines.delay(30_000); continue }
+            val r = call("/v1/inbox", timeoutMs = 30_000)?.takeIf { it.status == 200 }?.json
+            if (r == null) { kotlinx.coroutines.delay(20_000); continue } // the PC isn't reachable right now
+            r.optJSONObject("play")?.let(LinkSync::queueFromJson)?.let { q -> onPlay?.invoke(q) }
+            if (r.optBoolean("sync")) syncLater()
+            r.optJSONObject("send")?.let { send(context, LinkSync.songFromJson(it)) }
+        }
     }
 
     /* ---------- Play on… ---------- */
@@ -213,12 +353,17 @@ object Link {
     /** Plays these on the PC; returns how many songs the PC doesn't have, or null if it couldn't be reached. */
     suspend fun playThere(q: LinkSync.Queue): Int? = call("/v1/player/play", JSONObject().put("queue", LinkSync.queueToJson(q)), 15_000)?.json?.optInt("missing")
 
+    /** Adds songs to the PC's queue ([next]: right after the song playing). */
+    suspend fun addThere(q: LinkSync.Queue, next: Boolean): Boolean =
+        call("/v1/player/add", JSONObject().put("queue", LinkSync.queueToJson(q)).put("next", next), 10_000)?.status == 200
+
+    /** Asks the PC for one of its songs (for "Get it from your PC": Onda copies it into your music folder). */
+    fun linkUri(t: Track): String = io.github.realkhfan.onda.player.LinkDataSource.uriFor(LinkSync.Song(null, t.title, t.artist))
+
     /** Takes over what the PC plays (it pauses there). */
     suspend fun take(): LinkSync.Queue? = call("/v1/player/take", timeoutMs = 8_000)?.json?.optJSONObject("queue")?.let(LinkSync::queueFromJson)
 
-    /** Waits (up to 20 s) for the PC to send something to play here: null when the PC can't be reached, no songs when nothing came. */
-    suspend fun inbox(): LinkSync.Queue? = call("/v1/inbox", timeoutMs = 30_000)?.takeIf { it.status == 200 }
-        ?.let { r -> r.json?.optJSONObject("play")?.let(LinkSync::queueFromJson) ?: LinkSync.Queue(emptyList(), emptyList(), 0) }
+
 
     /** Songs to play here: yours where found, catalog songs as previews; returns those found and how many weren't. */
     fun resolve(q: LinkSync.Queue, library: List<Track>): Pair<List<androidx.media3.common.MediaItem>, Int> {
