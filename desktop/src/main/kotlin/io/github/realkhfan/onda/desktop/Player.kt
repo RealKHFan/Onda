@@ -76,6 +76,11 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     /** Sleep timer: stop when the current song ends. */
     var sleepAfterSong by mutableStateOf(false)
 
+    /** Told when a song has played long enough to count as a play ([PlayRule]: 30 s or most of a short one; each loop again). */
+    var onPlayed: ((Item) -> Unit)? = null
+    private val rule = io.github.realkhfan.onda.core.PlayRule()
+    private fun now() = System.nanoTime() / 1_000_000
+
     /** Called when the last song starts (repeat off): "similar songs when the queue ends" adds more. */
     var onLastSong: (() -> Unit)? = null
     private var loadToken = 0
@@ -132,6 +137,8 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
                 if (index < 0) continue
                 val d = bin.queryDuration(TimeUnit.MILLISECONDS)
                 if (d > 0) durationMs = d
+                rule.playing(playing, now())
+                playingItem?.let { if (rule.due(now(), durationMs)) onPlayed?.invoke(it) }
                 if (pendingSeek >= 0 && d > 0) { seek(pendingSeek); pendingSeek = -1 } // a resumed song, once it's ready
                 else positionMs = bin.queryPosition(TimeUnit.MILLISECONDS).coerceAtLeast(0)
             }
@@ -305,9 +312,11 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     private fun load(seekTo: Long = -1) {
         val item = current ?: return
+        val goingOn = seekTo >= 0 && item === playingItem // another output: the same song goes on
         cancelCrossfade()
         leaving()
         playingItem = item
+        if (!goingOn) rule.start(playing, now())
         @Suppress("NAME_SHADOWING") val seekTo = if (seekTo >= 0) seekTo else resumeAt(item).takeIf { it > 0 } ?: -1
         val token = ++loadToken
         gaplessNext = -1
@@ -367,6 +376,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         if (at != index) went()
         index = at
         playingItem = current
+        rule.start(playing, now())
         gaplessNext = -1; gaplessItem = null
         val item = current ?: return
         error = null; fullFrom = null
@@ -376,7 +386,12 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         upcoming().firstOrNull()?.second?.let { prefetch?.invoke(it) }
     }
 
-    private fun leaving() { playingItem?.let { onLeave?.invoke(it, positionMs, durationMs) } }
+    private fun leaving() {
+        playingItem?.let {
+            onLeave?.invoke(it, positionMs, durationMs)
+            if (rule.due(now(), durationMs)) onPlayed?.invoke(it) // ended (or looped) before the next tick saw it
+        }
+    }
 
     /** Plays through another output (headphones, HDMI…; a PulseAudio/PipeWire sink name), or the system's default (null). */
     fun setOutput(device: String?) {
@@ -452,6 +467,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         went()
         index = c.target
         playingItem = current
+        rule.start(playing, now())
         gaplessNext = -1; gaplessItem = null
         error = null; fullFrom = null
         durationMs = c.item.durationMs

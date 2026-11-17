@@ -1,5 +1,7 @@
 package io.github.realkhfan.onda.core
 
+import org.json.JSONObject
+
 /** A playable local track. [id] is stable (the document URI string). */
 data class Track(
     val id: String,
@@ -17,6 +19,16 @@ data class Track(
 ) {
     val albumKey: String get() = "${albumArtist.lowercase()}|${album.lowercase()}"
     val artistKey: String get() = artist.lowercase()
+
+    /** As saved in the phone's and the PC's library.json, so a start shows your songs without waiting for a scan. */
+    fun toJson(): JSONObject = JSONObject().put("id", id).put("uri", uri).put("title", title).put("artist", artist)
+        .put("album", album).put("albumArtist", albumArtist).put("trackNo", trackNo).put("durationMs", durationMs)
+        .put("folder", folderName).put("art", artUri).put("file", fileName)
+
+    companion object {
+        fun fromJson(o: JSONObject) = Track(o.getString("id"), o.getString("uri"), o.optString("title"), o.optString("artist"), o.optString("album"),
+            o.optString("albumArtist"), o.optInt("trackNo"), o.optLong("durationMs"), o.optString("folder"), o.optString("art").ifBlank { null }, o.optString("file"))
+    }
 }
 
 data class Album(

@@ -177,7 +177,8 @@ fun main(args: Array<String>) {
                 // Back where you left off: same queue and song, paused at the same moment.
                 if (files.isNotEmpty()) openFiles(files)
                 else withContext(Dispatchers.IO) { Store.session() }?.let { player.restore(it.items, it.index, it.positionMs, it.shuffle, it.repeat) }
-                scope.launch { snapshotFlow { player.current }.collect { it?.let(state::played) } } // for Home and the mixes
+                scope.launch { snapshotFlow { player.current }.collect { it?.let(state::started) } } // Home's Recently played
+                player.onPlayed = state::played // history: plays, mixes, stats
                 scope.launch {
                     var restored = true // the song from last time isn't news
                     snapshotFlow { player.current }.collect { cur ->

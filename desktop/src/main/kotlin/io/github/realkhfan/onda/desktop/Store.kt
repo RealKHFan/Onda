@@ -121,12 +121,9 @@ object Store {
             .put("track", it.track).put("duration", it.durationSec).put("cover", it.coverArt)
     }).toString())
 
-    fun json(t: Track): JSONObject = JSONObject().put("id", t.id).put("uri", t.uri).put("title", t.title).put("artist", t.artist)
-        .put("album", t.album).put("albumArtist", t.albumArtist).put("trackNo", t.trackNo).put("durationMs", t.durationMs)
-        .put("folder", t.folderName).put("art", t.artUri).put("file", t.fileName)
+    fun json(t: Track): JSONObject = t.toJson()
 
-    fun track(o: JSONObject) = Track(o.getString("id"), o.getString("uri"), o.optString("title"), o.optString("artist"), o.optString("album"),
-        o.optString("albumArtist"), o.optInt("trackNo"), o.optLong("durationMs"), o.optString("folder"), o.optString("art").ifBlank { null }, o.optString("file"))
+    fun track(o: JSONObject) = Track.fromJson(o)
 
     /** [cover]: an image file of yours, copied into Onda's data folder; null = made from the album covers. */
     /** [folder]: the playlist folder it's in, or null. */

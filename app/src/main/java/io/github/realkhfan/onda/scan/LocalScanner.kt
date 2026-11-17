@@ -25,8 +25,13 @@ object LocalScanner {
 
     private val AUDIO_EXT = setOf("mp3", "m4a", "aac", "flac", "ogg", "oga", "opus", "wav")
 
-    /** [modified]: each file's last change (ms), for "Recently added". */
-    suspend fun scan(context: Context, trees: List<Uri>, modified: MutableMap<String, Long> = HashMap()): List<Track> =
+    /**
+     * [modified]: each file's last change (ms), for "Recently added". [known]: the last scan (uri → date, song); an unchanged
+     * file is taken from it instead of reading its tags again.
+     */
+    suspend fun scan(
+        context: Context, trees: List<Uri>, modified: MutableMap<String, Long> = HashMap(), known: Map<String, Pair<Long, Track>> = emptyMap(),
+    ): List<Track> =
         withContext(Dispatchers.IO) {
             val artDir = File(context.cacheDir, "art").apply { mkdirs() }
             val out = ArrayList<Track>()
@@ -37,7 +42,7 @@ object LocalScanner {
                     continue
                 }
                 val rootName = documentName(context, tree, rootId) ?: "Folder"
-                traverse(context, tree, rootId, rootName, artDir, out, modified)
+                traverse(context, tree, rootId, rootName, artDir, out, modified, known)
             }
             out
         }
@@ -50,6 +55,7 @@ object LocalScanner {
         artDir: File,
         out: MutableList<Track>,
         modified: MutableMap<String, Long>,
+        known: Map<String, Pair<Long, Track>>,
     ) {
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentDocId)
         val cursor = try {
@@ -73,11 +79,13 @@ object LocalScanner {
                 val name = c.getString(1) ?: continue
                 val mime = c.getString(2) ?: ""
                 if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                    traverse(context, tree, docId, name, artDir, out, modified)
+                    traverse(context, tree, docId, name, artDir, out, modified, known)
                 } else if (isAudio(name, mime)) {
                     val fileUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
-                    out += readTrack(context, fileUri, name, folderName, artDir)
-                    if (!c.isNull(3)) modified[fileUri.toString()] = c.getLong(3)
+                    val date = if (c.isNull(3)) 0L else c.getLong(3)
+                    val same = known[fileUri.toString()]?.takeIf { (d, t) -> date > 0 && d == date && artStillThere(t.artUri) }?.second
+                    out += same ?: readTrack(context, fileUri, name, folderName, artDir)
+                    if (date > 0) modified[fileUri.toString()] = date
                 }
             }
         }
@@ -190,6 +198,9 @@ object LocalScanner {
         val i = base.indexOf(" - ")
         return if (i > 0) base.substring(0, i).trim() to base.substring(i + 3).trim() else null to base
     }
+
+    /** Android may clear the cached covers; then the file is read again. */
+    private fun artStillThere(artUri: String?) = artUri == null || Uri.parse(artUri).path?.let { File(it).exists() } == true
 
     private fun cacheArt(bytes: ByteArray, albumArtist: String, album: String, artDir: File): String? {
         val key = sha1("${albumArtist.lowercase()}|${album.lowercase()}")

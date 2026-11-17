@@ -27,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -93,7 +94,7 @@ internal fun PlayOnSheet(player: PlayerState?, library: List<Track>, byId: Map<S
     var busy by remember { mutableStateOf(false) }
     // The PC's player, every 1.5 s while this is open.
     LaunchedEffect(pc) { while (pc != null) { there = Link.state(); delay(1500) } }
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("Play on", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             val remote by Remote.on.collectAsState()

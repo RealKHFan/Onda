@@ -47,6 +47,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AddCircleOutline
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -409,6 +410,8 @@ internal fun RemoteArtistScreen(
     onPlayList: (List<RemoteTrack>, Int, String) -> Unit,
     onOpenAlbum: (RemoteAlbum) -> Unit,
     onRadio: () -> Unit = {},
+    /** Your own songs by this artist: how many, a cover, and opening them. */
+    yours: Triple<Int, String?, () -> Unit>? = null,
 ) {
     var picture by remember(artist.id) { mutableStateOf(artist.picture) }
     var top by remember(artist.id) { mutableStateOf<List<RemoteTrack>?>(null) }
@@ -466,6 +469,18 @@ internal fun RemoteArtistScreen(
                     if (ai) {
                         Text("AI-generated: hidden from search, mixes and new releases.", color = TextDim, fontSize = 12.sp,
                             textAlign = TextAlign.Center)
+                    }
+                }
+            }
+            yours?.let { (count, art, open) ->
+                item {
+                    Row(Modifier.fillMaxWidth().clickable(onClick = open).padding(16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Art(art, 52.dp)
+                        Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                            Text("Your songs", color = TextMain)
+                            Text("${songCount(count)} by ${artist.name} on this phone", color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = TextDim)
                     }
                 }
             }

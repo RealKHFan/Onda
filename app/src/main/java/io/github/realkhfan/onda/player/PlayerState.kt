@@ -2,8 +2,6 @@ package io.github.realkhfan.onda.player
 
 import android.net.Uri
 import android.os.Bundle
-import android.os.SystemClock
-import io.github.realkhfan.onda.data.PlayLog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -132,55 +130,16 @@ class PlayerState(val controller: MediaController) {
 
     private var lastIndex = 0
 
-    // Play log for the mixes: a song counts once it has played 30 s, or most of a short one (like a preview).
-    private var logKey: String? = null
-    private var logArtist = ""
-    private var logTitle = ""
-    private var playedMs = 0L
-    private var since = -1L
-    private var logged = false
-
-    private fun tally() {
-        if (since >= 0) {
-            val now = SystemClock.elapsedRealtime()
-            playedMs += now - since
-            since = now
-        }
-    }
-
-    private fun maybeLog() {
-        val key = logKey ?: return
-        if (logged || Remote.on.value) return // the PC keeps its own history of what plays there
-        val need = if (durationMs > 0) minOf(30_000L, durationMs * 8 / 10) else 30_000L
-        if (playedMs >= need) {
-            PlayLog.add(key, logArtist, logTitle)
-            logged = true
-        }
-    }
-
-    private fun startTally(item: MediaItem?) {
-        logKey = item?.mediaId
-        logArtist = item?.mediaMetadata?.artist?.toString().orEmpty()
-        logTitle = item?.mediaMetadata?.title?.toString().orEmpty()
-        playedMs = 0
-        logged = false
-        since = if (controller.isPlaying) SystemClock.elapsedRealtime() else -1
-    }
-
     init {
         if (!Remote.on.value) controller.shuffleModeEnabled = false // Onda shuffles the list itself
         remoteShuffle = controller.shuffleModeEnabled
         controller.addListener(object : Player.Listener {
             override fun onShuffleModeEnabledChanged(enabled: Boolean) { remoteShuffle = enabled }
             override fun onIsPlayingChanged(playing: Boolean) {
-                tally()
-                since = if (playing) SystemClock.elapsedRealtime() else -1
-                maybeLog()
                 isPlaying = playing
             }
             override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) { refresh() }
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                tally(); maybeLog() // durationMs still belongs to the song that just ended here
                 val now = controller.currentMediaItemIndex
                 val prev = lastIndex
                 val auto = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO
@@ -194,7 +153,6 @@ class PlayerState(val controller: MediaController) {
                 }
                 if (auto && now < prev && shuffle && !Remote.on.value) Shuffle.rebuildUpcoming(controller) // reshuffle after each full loop
                 refresh()
-                startTally(mediaItem)
             }
             override fun onTimelineChanged(timeline: Timeline, reason: Int) {
                 refresh(); queueVersion++
@@ -212,7 +170,6 @@ class PlayerState(val controller: MediaController) {
         refresh()
         isPlaying = controller.isPlaying
         repeatMode = controller.repeatMode
-        startTally(controller.currentMediaItem)
     }
 
     private fun refresh() {

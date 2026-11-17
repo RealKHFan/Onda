@@ -106,7 +106,8 @@ object LinkSync {
             notInterested = list(base?.notInterested, a.notInterested, b.notInterested) { it },
             blocked = list(base?.blocked, a.blocked, b.blocked) { it },
             ai = list(base?.ai, a.ai, b.ai) { it },
-            plays = (a.plays + b.plays).distinctBy { Triple(Match.norm(it.artist), Match.norm(it.title), it.atMs / 60_000) }
+            // The same play from both sides carries the same moment; loops of a short song a few seconds apart all stay.
+            plays = (a.plays + b.plays).distinctBy { Triple(Match.norm(it.artist), Match.norm(it.title), it.atMs) }
                 .sortedBy { it.atMs }.takeLast(MAX_PLAYS),
             edits = editKeys.associateWith { k -> a.edits[k]?.takeIf { it != base?.edits?.get(k) || b.edits[k] == null } ?: b.edits[k] ?: a.edits.getValue(k) },
             // The side that changed it since last time ([a] when both did).

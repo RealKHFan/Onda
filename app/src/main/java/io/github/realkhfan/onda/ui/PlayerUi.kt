@@ -242,7 +242,8 @@ internal fun FullPlayer(
                     Text(player.title, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 22.sp,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(artistLine(player), color = Dim, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    badge?.let { Text(it, color = Dim, fontSize = 11.sp, letterSpacing = 0.5.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp)) }
+                    // Always takes its line, so cover and names don't move when the quality is read a moment later.
+                    Text(badge.orEmpty(), color = Dim, fontSize = 11.sp, letterSpacing = 0.5.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
                 }
                 IconButton(onClick = onSave) {
                     if (player.catalog != null) { // catalog songs go to Want to listen; Liked Songs holds your own

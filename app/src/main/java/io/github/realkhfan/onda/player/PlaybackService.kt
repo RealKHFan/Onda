@@ -9,6 +9,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.MediaItem
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
+import io.github.realkhfan.onda.data.PlayLog
 import io.github.realkhfan.onda.data.Prefs
 import androidx.media3.common.C
 import androidx.media3.datasource.DefaultDataSource
@@ -72,6 +73,9 @@ class PlaybackService : MediaLibraryService() {
             }
             override fun onAudioSessionIdChanged(audioSessionId: Int) = Effects.attach(audioSessionId)
             override fun onIsPlayingChanged(isPlaying: Boolean) { if (!isPlaying) remember(player) }
+        })
+        player.addListener(PlayCounter(player) { item -> // counts with the screen closed too
+            PlayLog.add(item.mediaId, item.mediaMetadata.artist?.toString().orEmpty(), item.mediaMetadata.title?.toString().orEmpty())
         })
         Effects.setVolume = { v -> player.volume = v }
         Effects.normalize = Prefs.normalize(this)

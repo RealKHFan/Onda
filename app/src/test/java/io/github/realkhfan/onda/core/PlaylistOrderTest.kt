@@ -34,3 +34,11 @@ class PlaylistOrderTest {
         assertEquals(listOf("b", "c", "a"), LinkSync.merge(base, snap("b", "c", "a"), snap("a", "b", "c")).playlists.map { it.id })
     }
 }
+
+class TrackJsonTest {
+    @Test fun aSavedSongComesBackTheSame() {
+        val t = Track("content://x/1", "content://x/1", "Paper Moon", "Lumen Trio", "Night", "Lumen Trio", 3, 181_000, "Music", null, "paper.m4a")
+        assertEquals(t, Track.fromJson(t.toJson()))
+        assertEquals(t.copy(artUri = "file:///art/a.jpg"), Track.fromJson(t.copy(artUri = "file:///art/a.jpg").toJson()))
+    }
+}

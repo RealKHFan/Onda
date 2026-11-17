@@ -52,7 +52,7 @@ class AppState(private val scope: CoroutineScope) {
     var mixes by mutableStateOf(Store.mixes()); private set
     var building by mutableStateOf(setOf<Discovery.Kind>()); private set
     var releases by mutableStateOf(Store.releases()); private set
-    /** Your listening history (this PC only): for mixes, Most played and Your stats. */
+    /** Your listening history (a linked phone's plays come in with sync): for mixes, Most played and Your stats. */
     var plays by mutableStateOf(Store.plays()); private set
 
     /** Community list of AI-generated "artists" (CennoxX/spotify-ai-blocker, MIT), shipped with the app. */
@@ -90,10 +90,15 @@ class AppState(private val scope: CoroutineScope) {
         Grouping.albums(Overrides.apply(local, meta)).sortedByDescending { a -> a.tracks.maxOf { added[it.id] ?: 0L } }.take(14)
     }
 
-    fun played(i: Player.Item) {
+    /** A song starts: Home's "Recently played". */
+    fun started(i: Player.Item) {
         if (recent.firstOrNull()?.id == i.id) return
         recent = (listOf(i) + recent.filterNot { it.id == i.id }).take(20)
         Store.saveRecent(recent)
+    }
+
+    /** A song played long enough to count ([Player.onPlayed]), every time, loops included. */
+    fun played(i: Player.Item) {
         plays = (plays + Discovery.Play(i.id, i.artist, i.title, System.currentTimeMillis())).takeLast(LinkSync.MAX_PLAYS)
         Store.savePlays(plays)
     }
@@ -382,7 +387,7 @@ class AppState(private val scope: CoroutineScope) {
         runCatching { Discover.similar(listOf(artist), settings.listenBrainz, skip = { it.key == skipKey || notWanted(it) }, n = 25) }
             .getOrDefault(emptyList()).mapNotNull(::item)
 
-    /** How often each song was played (your own history, on this PC). */
+    /** How often each song was played (your history, a linked phone's plays included). */
     val playCounts by derivedStateOf { plays.groupingBy { it.key }.eachCount() }
 
     /** The mini player window is open. */

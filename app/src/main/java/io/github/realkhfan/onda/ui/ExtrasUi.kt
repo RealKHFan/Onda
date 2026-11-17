@@ -31,6 +31,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -67,10 +68,10 @@ import java.time.format.DateTimeFormatter
 
 /* The desktop's pages and settings, on the phone. */
 
-/** Top artists, songs and albums, minutes listened and when you listen (counted on this phone only). */
+/** Top artists, songs and albums, minutes listened and when you listen; [pc]: the linked PC, whose plays come in with sync. */
 @Composable
 internal fun StatsScreen(allPlays: List<Discovery.Play>, library: List<Track>, trackFor: (String) -> Track?, artistPic: (String) -> String?,
-                         player: PlayerState?, onBack: () -> Unit, onOpenAlbum: (List<Track>, String, String, String?) -> Unit) {
+                         player: PlayerState?, onBack: () -> Unit, onOpenAlbum: (List<Track>, String, String, String?) -> Unit, pc: String? = null) {
     var period by remember { mutableIntStateOf(0) }
     val periods = listOf("4 weeks" to 28L, "6 months" to 182L, "All time" to 0L)
     val plays = remember(allPlays, period) {
@@ -89,7 +90,8 @@ internal fun StatsScreen(allPlays: List<Discovery.Play>, library: List<Track>, t
         BackTopBar("Your stats", onBack)
         LazyColumn(Modifier.fillMaxSize()) {
             item {
-                Text("${plays.size} plays · about ${"%,d".format(minutes)} minutes (${minutes / 60} hours) · counted on this phone only",
+                Text("${plays.size} plays · about ${"%,d".format(minutes)} minutes (${minutes / 60} hours) · " +
+                    (pc?.let { "on this phone and $it" } ?: "on this phone"),
                     color = TextDim, fontSize = 13.sp, modifier = Modifier.padding(16.dp, 0.dp))
             }
             item {
@@ -235,7 +237,7 @@ internal fun SmartScreen(lists: Map<Smart.Kind, List<Track>>, onBack: () -> Unit
 @Composable
 internal fun SleepSheet(player: PlayerState, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.padding(bottom = 24.dp)) {
             Text("Sleep timer", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(16.dp, 0.dp, 16.dp, 4.dp))
             Text(when {

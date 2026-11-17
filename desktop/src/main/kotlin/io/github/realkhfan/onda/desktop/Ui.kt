@@ -143,6 +143,7 @@ import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Speaker
@@ -269,7 +270,15 @@ fun OndaDesktop(state: AppState, player: Player?) {
         var undo by remember { mutableStateOf<(() -> Unit)?>(null) }
         LaunchedEffect(toast) { if (toast != null) { delay(if (undo != null) 6000 else 3500); toast = null; undo = null } }
         val ctx = Ctx(state, player, ::push, { naming = it }, { toast = it; undo = null }, { m, u -> toast = m; undo = u }) { name ->
-            scope.launch { Deezer.searchArtists(name).firstOrNull { Match.norm(it.name) == Match.norm(name) }?.let { push(View.CatalogArtist(it)) } }
+            // The artist's full page; just your songs when the artist can't be found online.
+            scope.launch {
+                val found = runCatching { Deezer.searchArtists(name).firstOrNull { Match.norm(it.name) == Match.norm(name) } }.getOrNull()
+                when {
+                    found != null -> push(View.CatalogArtist(found))
+                    Grouping.artists(state.library).any { Match.norm(it.name) == Match.norm(name) } -> push(View.LibraryArtist(name))
+                    else -> { toast = "Couldn't find $name online"; undo = null }
+                }
+            }
         }
         // Folders dropped on the window (from Dolphin, say) become music folders.
         val drop = remember(state) {
@@ -622,9 +631,7 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
         add(ContextMenuItem("Go to album") {
             Grouping.albums(s.library).firstOrNull { it.key == t.albumKey }?.let { a -> ctx.push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }
         })
-        add(ContextMenuItem("Go to artist") {
-            Grouping.artists(s.library).firstOrNull { Match.norm(it.name) == Match.norm(t.artist) }?.let { a -> ctx.push(View.LibraryArtist(a.name)) }
-        })
+        add(ContextMenuItem("Go to artist") { ctx.openArtistByName(t.artist) })
         Downloads.forTrack(t, s.settings.server)?.let { d -> add(ContextMenuItem("Download") { ctx.download(listOf(d)) }) }
         val r = s.remoteFor(t)?.takeIf { it.source == io.github.realkhfan.onda.core.Source.DEEZER || it.source == io.github.realkhfan.onda.core.Source.ITUNES }
         add(ContextMenuItem(if (r != null) "Copy link" else "Copy song name") { ctx.copy(shareText(t.title, t.artist, r), if (r != null) "Link" else "Song name") })
@@ -1413,6 +1420,17 @@ private fun CatalogArtistPage(ctx: Ctx, artist: RemoteArtist, back: (() -> Unit)
                 if (popular.isNotEmpty()) Button(onClick = { ctx.playRemote(popular, 0) }) { Icon(Icons.Rounded.PlayArrow, null); Text("Play popular") }
             }
         }
+        val mine = ctx.state.library.count { Match.norm(it.artist) == Match.norm(artist.name) }
+        if (mine > 0) item {
+            Row(Modifier.fillMaxWidth().clickable { ctx.push(View.LibraryArtist(artist.name)) }.padding(24.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.LibraryMusic, null, tint = Accent, modifier = Modifier.size(32.dp))
+                Column(Modifier.padding(start = 16.dp).weight(1f)) {
+                    Text("Your songs", color = TextMain)
+                    Text("$mine song${if (mine == 1) "" else "s"} by ${artist.name} in your library", color = TextDim, fontSize = 12.sp)
+                }
+                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = TextDim)
+            }
+        }
         if (top == null) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(24.dp), color = Accent, trackColor = Raised) }
         if (popular.isNotEmpty()) item { Section("Popular") }
         items(popular.size) { i -> RemoteRow(ctx, popular, i, numbered = true) }
@@ -2094,7 +2112,7 @@ private fun PlayerBar(ctx: Ctx, panel: Panel, toggle: (Panel) -> Unit) {
                     val src = when { player.fullFrom != null -> "${player.fullFrom} · "; cur.preview -> "Preview · "; else -> "" }
                     Text(src + cur.artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     player.error?.let { Text(it, color = ErrorRed, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                        ?: qualityOf(cur)?.let { Text(it, color = Accent.copy(alpha = 0.85f), fontSize = 10.sp, maxLines = 1) }
+                        ?: Text(qualityOf(cur).orEmpty(), color = Accent.copy(alpha = 0.85f), fontSize = 10.sp, maxLines = 1) // keeps its line: nothing jumps when it arrives
                 }
                 if (state.canSave(cur.id)) {
                     val liked = state.isLiked(cur.id)
@@ -2615,7 +2633,7 @@ internal fun EditDialog(state: AppState, t: Track, close: () -> Unit) {
         dismissButton = { TextButton(onClick = close) { Text("Cancel", color = TextDim) } })
 }
 
-/** Top artists and songs from your own listening history (kept on this PC only). */
+/** Top artists and songs from your listening history (with a linked phone, its plays too). */
 @Composable
 private fun StatsPage(ctx: Ctx) {
     val state = ctx.state
@@ -2634,7 +2652,9 @@ private fun StatsPage(ctx: Ctx) {
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             val minutes = plays.sumOf { p -> state.trackFor(p.key)?.durationMs?.takeIf { it > 0 } ?: 180_000L } / 60_000
-            Header("Your stats", "${plays.size} plays · about ${"%,d".format(minutes)} minutes (${minutes / 60} hours) of music · counted on this PC only")
+            val phones = Link.phones.joinToString(" and ") { it.name }.ifEmpty { null }
+            Header("Your stats", "${plays.size} plays · about ${"%,d".format(minutes)} minutes (${minutes / 60} hours) of music · " +
+                (phones?.let { "on this PC and $it" } ?: "on this PC"))
         }
         item {
             Row(Modifier.padding(horizontal = 24.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2677,7 +2697,7 @@ private fun StatsPage(ctx: Ctx) {
     }
 }
 
-/** What you played, newest first, by day (this PC only). */
+/** What you played, newest first, by day (with a linked phone, its plays too). */
 @Composable
 private fun HistoryPage(ctx: Ctx) {
     val state = ctx.state
@@ -2693,7 +2713,7 @@ private fun HistoryPage(ctx: Ctx) {
     val today = java.time.LocalDate.now()
     fun day(ms: Long) = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate()
     LazyColumn(Modifier.fillMaxSize()) {
-        item { Header("History", "The last ${rows.size} songs you played · kept on this PC only") }
+        item { Header("History", "The last ${rows.size} songs you played" + (Link.phones.firstOrNull()?.let { " · here and on ${it.name}" } ?: "")) }
         if (rows.isEmpty()) item { Note("Songs you play show up here.") }
         rows.indices.groupBy { day(rows[it].first.atMs) }.forEach { (d, idx) ->
             item { Section(when (d) { today -> "Today"; today.minusDays(1) -> "Yesterday"; else -> d.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, d MMMM")) }) }
@@ -2988,7 +3008,7 @@ private fun NowPlayingPage(ctx: Ctx, back: (() -> Unit)?) {
                 Art(cur.art, 380)
                 Spacer(Modifier.height(24.dp))
                 Text(cur.title, color = TextMain, fontSize = 32.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-                Text(cur.artist, color = TextMain.copy(alpha = 0.8f), fontSize = 18.sp, modifier = Modifier.clickable { ctx.push(View.LibraryArtist(cur.artist)) })
+                Text(cur.artist, color = TextMain.copy(alpha = 0.8f), fontSize = 18.sp, modifier = Modifier.clickable { ctx.openArtistByName(cur.artist) })
                 Text(cur.album, color = TextMain.copy(alpha = 0.6f), fontSize = 14.sp)
             }
             Column(Modifier.width(420.dp)) {

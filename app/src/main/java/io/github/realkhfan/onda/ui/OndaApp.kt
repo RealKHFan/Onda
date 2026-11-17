@@ -85,7 +85,6 @@ import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.rounded.Restore
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -94,6 +93,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBar
@@ -219,7 +219,8 @@ private data class TracksRoute(
     val title: String, val subtitle: String, val art: String?, val tracks: List<Track>, val kind: String,
     val round: Boolean = false,
 ) : Route
-private data object QueueRoute : Route
+/** [fromPlayer]: opened from the full player, so leaving it goes back there. */
+private data class QueueRoute(val fromPlayer: Boolean) : Route
 private data object SettingsRoute : Route
 private data object MatchRoute : Route
 private data object RenameRoute : Route
@@ -331,9 +332,10 @@ fun OndaApp(player: PlayerState?) {
     // Screens opened on top of the current tab; Back pops one (album -> artist -> search results).
     val stack = remember { mutableStateListOf<Route>() }
     val detail = stack.lastOrNull()
-    fun push(r: Route) { stack.add(r) }
-    fun pop() { if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
     var fullPlayer by remember { mutableStateOf(false) }
+    fun push(r: Route) { stack.add(r) }
+    fun pop() { if (stack.isNotEmpty() && (stack.removeAt(stack.lastIndex) as? QueueRoute)?.fromPlayer == true) fullPlayer = true }
+    fun openQueue() { push(QueueRoute(fromPlayer = fullPlayer)); fullPlayer = false }
     var menuFor by remember { mutableStateOf<MenuFor?>(null) }
     var remoteMenu by remember { mutableStateOf<RemoteTrack?>(null) }
     var remoteMenuPlaylist by remember { mutableStateOf<String?>(null) } // set when opened from a playlist row
@@ -410,6 +412,12 @@ fun OndaApp(player: PlayerState?) {
     fun albumRoute(a: Album) = TracksRoute(a.title, "Album · ${a.artist}", a.artUri, a.tracks, "Album")
     fun artistRoute(a: ArtistGroup) =
         TracksRoute(a.name, "Artist · ${songCount(a.tracks.size)}", a.artUri, a.tracks, "Artist", round = true)
+    /** The artist's full page (with a row to your songs); just your songs when the artist can't be found online. */
+    fun openArtist(a: ArtistGroup) {
+        fun go(id: Long) = push(if (id > 0) RemoteArtistRoute(RemoteArtist(id, a.name, null)) else artistRoute(a))
+        ArtistIds.cached(a.name)?.let { go(it); return }
+        scope.launch { go(runCatching { ArtistIds.resolve(a.name) }.getOrDefault(0L)) }
+    }
     fun playRemote(r: RemoteTrack, kind: String, label: String) {
         val p = player ?: return
         localFor(r)?.let { p.play(listOf(it), 0, kind, label); return } // you own it: play the full song
@@ -620,7 +628,7 @@ fun OndaApp(player: PlayerState?) {
                             onRetry = { Mixes.refresh(taste) },
                             onMenu = { remoteMenu = it },
                         )
-                        QueueRoute -> QueueScreen(
+                        is QueueRoute -> QueueScreen(
                             player,
                             recent = remember(plays, byId) { plays.asReversed().mapNotNull { byId[it.key] }.distinctBy { it.id }.take(10) },
                             onSave = { savingQueue = true },
@@ -665,7 +673,8 @@ fun OndaApp(player: PlayerState?) {
                                 onShowHidden = { UserCollection.showHiddenSongs() })
                         }
                         StatsRoute -> StatsScreen(plays, tracks, { byId[it] }, { name -> artists.firstOrNull { Match.norm(it.name) == Match.norm(name) }?.artUri }, player,
-                            onBack = { pop() }, onOpenAlbum = { list, title, artist, art -> push(TracksRoute(title, "Album · $artist", art, list, "Album")) })
+                            onBack = { pop() }, onOpenAlbum = { list, title, artist, art -> push(TracksRoute(title, "Album · $artist", art, list, "Album")) },
+                            pc = linkedPc?.name)
                         HistoryRoute -> HistoryScreen(plays, { byId[it] }, player, onMenu = { menuFor = MenuFor(it, null, false) }) { pop() }
                         SmartRoute -> {
                             val now = remember { System.currentTimeMillis() }
@@ -691,12 +700,16 @@ fun OndaApp(player: PlayerState?) {
                             },
                         )
                         WantRoute -> WantScreen(want, rowCtx, onBack = { pop() }, onPlay = { playRemote(it, "Playlist", "Want to listen") })
-                        is RemoteArtistRoute -> RemoteArtistScreen(
-                            d.artist, rowCtx, onBack = { pop() },
-                            onPlayList = { list, i, label -> playRemoteList(list, i, "Artist", label) },
-                            onRadio = { startRadio(null, d.artist.name, "", "${d.artist.name} Radio") },
-                            onOpenAlbum = { push(RemoteAlbumRoute(it)) },
-                        )
+                        is RemoteArtistRoute -> {
+                            val mine = remember(artists, d.artist.name) { artists.firstOrNull { Match.norm(it.name) == Match.norm(d.artist.name) } }
+                            RemoteArtistScreen(
+                                d.artist, rowCtx, onBack = { pop() },
+                                onPlayList = { list, i, label -> playRemoteList(list, i, "Artist", label) },
+                                onRadio = { startRadio(null, d.artist.name, "", "${d.artist.name} Radio") },
+                                onOpenAlbum = { push(RemoteAlbumRoute(it)) },
+                                yours = mine?.let { a -> Triple(a.tracks.size, a.artUri) { push(artistRoute(a)) } },
+                            )
+                        }
                         is RemoteAlbumRoute -> RemoteAlbumScreen(
                             d.album, rowCtx, onBack = { pop() },
                             onPlayList = { list, i, label -> playRemoteList(list, i, "Album", label) },
@@ -891,7 +904,7 @@ fun OndaApp(player: PlayerState?) {
                         if (remote != null) remoteMenu = remote
                         else p.currentId?.let { byId[it] }?.let { menuFor = MenuFor(it, p.sourceId, true) }
                     },
-                    onQueue = { fullPlayer = false; push(QueueRoute) },
+                    onQueue = { openQueue() },
                     onDevices = { showDevices = true },
                     badge = rememberQuality(p.currentId?.let { byId[it] }),
                 )
@@ -920,6 +933,7 @@ fun OndaApp(player: PlayerState?) {
         val t = m.track
         val pid = m.playlistId
         val isLiked = liked.contains(t.id)
+        val playingIt = m.fromPlayer && player?.currentId == t.id // once another song plays, its ♥ and Play next are in the menu again
         val album = albums.firstOrNull { it.key == t.albumKey }
         val artist = artists.firstOrNull { a -> a.tracks.firstOrNull()?.artistKey == t.artistKey }
         val inPlaylist = when (pid) {
@@ -939,11 +953,11 @@ fun OndaApp(player: PlayerState?) {
                 add(MenuAction("Start radio", Icons.Rounded.Radio) { startRadio(null, t.artist, t.id, "${t.title} Radio") })
                 add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
             }
-            if (!m.fromPlayer && !missing) {
+            if (!playingIt && !missing) {
                 add(MenuAction(if (isLiked) "Remove from Liked Songs" else "Add to Liked Songs",
                     if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) { PlaylistStore.toggleLike(t.id) })
             }
-            if (!missing) add(MenuAction("Share", Icons.Rounded.Share) { share(ctx, "${t.title} — ${t.artist}") })
+            if (!missing) add(MenuAction("Copy song name", Icons.Rounded.ContentCopy) { copyText(ctx, "Song name", "${t.title} — ${t.artist}") })
             if (!missing) add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
             if (!missing) Downloads.forTrack(t, serverCfg)?.let { item -> add(MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) }) }
             if (inPlaylist && pid != null) {
@@ -965,7 +979,7 @@ fun OndaApp(player: PlayerState?) {
                 }
             }
             if (missing) return@buildList
-            if (!m.fromPlayer) {
+            if (!playingIt) {
                 add(MenuAction("Play next", Icons.Rounded.QueuePlayNext) { player?.playNext(t.toMediaItem()); toast("Playing next") })
             }
             add(MenuAction("Add to queue", Icons.AutoMirrored.Rounded.PlaylistAdd) { queue(t) })
@@ -973,10 +987,10 @@ fun OndaApp(player: PlayerState?) {
                 startRadio(t.toMediaItem(), t.artist, t.id, "${t.title} Radio", keepCurrent = m.fromPlayer && player?.currentId == t.id)
             })
             if (m.fromPlayer) {
-                add(MenuAction("Go to queue", Icons.AutoMirrored.Rounded.QueueMusic) { fullPlayer = false; push(QueueRoute) })
+                add(MenuAction("Go to queue", Icons.AutoMirrored.Rounded.QueueMusic) { openQueue() })
             }
             if (album != null) add(MenuAction("Go to album", Icons.Rounded.Album) { fullPlayer = false; push(albumRoute(album)) })
-            if (artist != null) add(MenuAction("Go to artist", Icons.Rounded.Person) { fullPlayer = false; push(artistRoute(artist)) })
+            if (artist != null) add(MenuAction("Go to artist", Icons.Rounded.Person) { fullPlayer = false; openArtist(artist) })
             if (meta.containsKey(t.id)) {
                 add(MenuAction("Restore original tags", Icons.Rounded.Restore) { Overrides.restore(t.id); toast("Original tags restored") })
             }
@@ -995,7 +1009,9 @@ fun OndaApp(player: PlayerState?) {
         val link = if (r.source == Source.DEEZER) "\nhttps://www.deezer.com/track/${r.id}" else ""
         val inPlaylist = remoteMenuPlaylist
         val actions = listOfNotNull(
-            MenuAction("Share", Icons.Rounded.Share) { share(ctx, "${r.title} — ${r.artist}$link") },
+            MenuAction(if (link.isEmpty()) "Copy song name" else "Copy link", Icons.Rounded.ContentCopy) {
+                copyText(ctx, if (link.isEmpty()) "Song name" else "Link", "${r.title} — ${r.artist}$link")
+            },
             MenuAction(if (wanted) "Remove from Want to listen" else "Add to Want to listen",
                 if (wanted) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder) { PlaylistStore.toggleWant(r) },
             Downloads.forRemote(r)?.let { item -> MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) } },
@@ -1016,7 +1032,7 @@ fun OndaApp(player: PlayerState?) {
                 if (!playing) playRemote(r, "Radio", "${r.title} Radio")
                 startRadio(null, r.artist, r.key, "${r.title} Radio", keepCurrent = true)
             },
-            MenuAction("Go to queue", Icons.AutoMirrored.Rounded.QueueMusic) { fullPlayer = false; push(QueueRoute) },
+            MenuAction("Go to queue", Icons.AutoMirrored.Rounded.QueueMusic) { openQueue() },
         )
         SongMenu(r.title, r.artist, r.cover, actions) { remoteMenu = null; remoteMenuPlaylist = null }
     }
@@ -1398,6 +1414,7 @@ internal fun LibraryScreen(
                             GroupRow(pl.name, (if (pl.id in pinned) "Pinned · " else "") + "Playlist · ${songCount(pl.trackIds.size)}", { onOpenPlaylist(pl.id) },
                                 modifier = if (movable) Modifier.reorderRow(reorder, i, loose.size) else Modifier,
                                 trailing = if (!movable) null else { { DragHandle(reorder, i, loose.size, pl.name) { from, to -> onMovePlaylist(loose.map { it.id }, from, to) } } },
+                                gestures = if (movable) Modifier.holdToMove(reorder, i, loose.size) { from, to -> onMovePlaylist(loose.map { it.id }, from, to) } else Modifier,
                             ) {
                                 Art(playlistArt(pl), 52.dp)
                             }
@@ -2126,9 +2143,11 @@ private fun SwipeTrackRow(
 @Composable
 private fun GroupRow(
     title: String, subtitle: String, onClick: () -> Unit,
-    modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null, leading: @Composable () -> Unit,
+    modifier: Modifier = Modifier, trailing: (@Composable () -> Unit)? = null,
+    gestures: Modifier = Modifier, // inside the click, e.g. holdToMove
+    leading: @Composable () -> Unit,
 ) {
-    Row(modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp, 8.dp, if (trailing != null) 4.dp else 16.dp, 8.dp),
+    Row(modifier.fillMaxWidth().clickable(onClick = onClick).then(gestures).padding(16.dp, 8.dp, if (trailing != null) 4.dp else 16.dp, 8.dp),
         verticalAlignment = Alignment.CenterVertically) {
         leading()
         Spacer(Modifier.width(12.dp))
@@ -2164,7 +2183,7 @@ internal fun IconTile(icon: ImageVector, side: Dp, bg: Color = Accent, fg: Color
 
 @Composable
 private fun SongMenu(title: String, artist: String, art: String?, actions: List<MenuAction>, onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Art(art, 48.dp)
@@ -2196,7 +2215,7 @@ private fun AddToPlaylistSheet(
     onPick: (PlaylistStore.Playlist) -> Unit,
     onCreate: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
             Text("Add to playlist", color = TextMain, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
             MenuRow("New playlist", Icons.Rounded.Add, onCreate)
@@ -2235,7 +2254,8 @@ private fun openAppInfo(ctx: Context) {
     )
 }
 
-private fun share(ctx: Context, text: String) {
-    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
-    ctx.startActivity(Intent.createChooser(send, null))
+/** Android 13 and newer show their own "Copied" note; older ones get Onda's. */
+private fun copyText(ctx: Context, label: String, text: String) {
+    ctx.getSystemService(android.content.ClipboardManager::class.java)?.setPrimaryClip(android.content.ClipData.newPlainText(label, text))
+    if (android.os.Build.VERSION.SDK_INT < 33) android.widget.Toast.makeText(ctx, "$label copied", android.widget.Toast.LENGTH_SHORT).show()
 }

@@ -63,7 +63,12 @@ class ScreenshotTest {
     @Test fun stats() = shot("stats") {
         val now = System.currentTimeMillis()
         val plays = tracks.flatMapIndexed { i, t -> List(5 - i.coerceAtMost(4)) { k -> io.github.realkhfan.onda.core.Discovery.Play(t.id, t.artist, t.title, now - (i * 7 + k) * 3_600_000L) } }
-        StatsScreen(plays, tracks, { id -> tracks.firstOrNull { it.id == id } }, { null }, null, onBack = {}, onOpenAlbum = { _, _, _, _ -> })
+        StatsScreen(plays, tracks, { id -> tracks.firstOrNull { it.id == id } }, { null }, null, onBack = {}, onOpenAlbum = { _, _, _, _ -> }, pc = "Bazzite PC")
+    }
+
+    @Test fun artist() = shot("artist") {
+        RemoteArtistScreen(io.github.realkhfan.onda.core.RemoteArtist(0, "Velvet Hours", null), row, onBack = {}, onPlayList = { _, _, _ -> }, onOpenAlbum = {},
+            yours = Triple(2, null) {})
     }
 
     @Test fun playlist() = shot("playlist") {

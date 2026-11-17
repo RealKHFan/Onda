@@ -205,6 +205,14 @@ class CollectionRulesTest {
         s.deletePlaylist(pl)
     }
 
+    @Test fun playingTheSameSongAgainCountsAgain() = runBlocking {
+        val s = AppState(CoroutineScope(Dispatchers.Default))
+        val i = Player.Item("test:loop", "Loop Song", "Lumen Trio", "", null, "file:///nowhere/loop.mp3", durationMs = 180_000)
+        val before = s.playCounts[i.id] ?: 0
+        s.played(i); s.played(i) // a song on repeat-one: two loops
+        assertEquals(before + 2, s.playCounts[i.id] ?: 0)
+    }
+
     @Test fun draggingAPlaylistInTheSidebarMovesIt() = runBlocking {
         val s = AppState(CoroutineScope(Dispatchers.Default))
         val order = s.settings.playlistOrder

@@ -464,14 +464,16 @@ internal fun FolderScreen(
                 Text("No playlists here yet. In a playlist's ⋮ menu, choose Move to a folder.", color = TextDim, modifier = Modifier.padding(24.dp))
             }
             itemsIndexed(playlists, key = { _, pl -> pl.id }) { i, pl ->
+                val move: (Int, Int) -> Unit = { from, to -> onMove?.invoke(playlists.map { it.id }, from, to) }
                 Row((if (movable) Modifier.reorderRow(reorder, i, playlists.size) else Modifier).fillMaxWidth().clickable { onOpen(pl.id) }
+                    .then(if (movable) Modifier.holdToMove(reorder, i, playlists.size, move) else Modifier)
                     .padding(16.dp, 8.dp, if (movable) 4.dp else 16.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Art(playlistArt(pl), 52.dp)
                     Column(Modifier.padding(start = 12.dp).weight(1f)) {
                         Text(pl.name, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text((if (pl.id in pinned) "Pinned · " else "") + "Playlist · ${songCount(pl.trackIds.size)}", color = TextDim, fontSize = 12.sp)
                     }
-                    if (movable && onMove != null) DragHandle(reorder, i, playlists.size, pl.name) { from, to -> onMove(playlists.map { it.id }, from, to) }
+                    if (movable) DragHandle(reorder, i, playlists.size, pl.name, move)
                 }
             }
         }

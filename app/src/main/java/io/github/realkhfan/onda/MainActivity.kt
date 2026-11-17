@@ -114,9 +114,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun rescan() {
-        lifecycleScope.launch { MusicLibrary.rescan(this@MainActivity) }
-    }
+    private fun rescan() = MusicLibrary.rescanSoon(this)
 
     override fun onDestroy() {
         controller?.release()

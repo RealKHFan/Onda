@@ -1,6 +1,7 @@
 package io.github.realkhfan.onda.ui
 
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -15,8 +16,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -32,6 +35,17 @@ class ReorderState {
 
     fun target(count: Int): Int =
         if (rowPx <= 0f) dragging else (dragging + (offset / rowPx).roundToInt()).coerceIn(0, count - 1)
+
+    internal fun start(index: Int) { dragging = index; offset = 0f }
+
+    internal fun finish(count: Int, move: (from: Int, to: Int) -> Unit) {
+        val from = dragging
+        val to = target(count)
+        dragging = -1; offset = 0f
+        if (from >= 0 && to != from) move(from, to)
+    }
+
+    internal fun cancel() { dragging = -1; offset = 0f }
 }
 
 @Composable
@@ -71,16 +85,29 @@ fun DragHandle(s: ReorderState, index: Int, count: Int, label: String, onMove: (
             }
             .pointerInput(index, count) {
                 detectDragGestures(
-                    onDragStart = { s.dragging = index; s.offset = 0f },
+                    onDragStart = { s.start(index) },
                     onDrag = { change, d -> change.consume(); s.offset += d.y },
-                    onDragEnd = {
-                        val from = s.dragging
-                        val to = s.target(count)
-                        s.dragging = -1; s.offset = 0f
-                        if (from >= 0 && to != from) move(from, to)
-                    },
-                    onDragCancel = { s.dragging = -1; s.offset = 0f },
+                    onDragEnd = { s.finish(count, move) },
+                    onDragCancel = { s.cancel() },
                 )
             },
     )
+}
+
+/**
+ * The whole row: hold it, then drag (it lifts with a tick). Put it after the row's clickable (nearer the content): it
+ * then sees the finger lift first and takes it, so holding without moving doesn't also open the row.
+ */
+@Composable
+fun Modifier.holdToMove(s: ReorderState, index: Int, count: Int, onMove: (from: Int, to: Int) -> Unit): Modifier {
+    val move by rememberUpdatedState(onMove)
+    val haptic = LocalHapticFeedback.current
+    return pointerInput(index, count) {
+        detectDragGesturesAfterLongPress(
+            onDragStart = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); s.start(index) },
+            onDrag = { change, d -> change.consume(); s.offset += d.y },
+            onDragEnd = { s.finish(count, move) },
+            onDragCancel = { s.cancel() },
+        )
+    }
 }
