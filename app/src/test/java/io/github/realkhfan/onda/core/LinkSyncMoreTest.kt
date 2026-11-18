@@ -58,6 +58,25 @@ class LinkSyncMoreTest {
         assertEquals(listOf(pc), LinkSync.merge(Snapshot(mixes = listOf(phone)), Snapshot(mixes = listOf(phone)), Snapshot(mixes = listOf(pc))).mixes)
     }
 
+    @Test fun theNewerLastPlayWinsAndSurvivesJson() {
+        fun last(title: String, at: Long) = LinkSync.LastPlay(LinkSync.Queue(listOf(LinkSync.Song(null, title, "Lumen Trio")), emptyList(), 61_000, 0, true, 2), at)
+        val m = LinkSync.merge(null, Snapshot(last = last("Tides", 100)), Snapshot(last = last("Glass", 200)))
+        assertEquals("Glass", m.last!!.queue.songs.single().title)
+        val r = round(m).last!!
+        assertEquals(200L, r.at); assertEquals(61_000L, r.queue.positionMs); assertEquals(true, r.queue.shuffle); assertEquals(2, r.queue.repeat)
+        assertNull(LinkSync.merge(null, Snapshot(), Snapshot()).last)
+    }
+
+    @Test fun aLongQueueIsSentAroundItsSong() {
+        val songs = (0 until 2000).map { LinkSync.Song(null, "S$it", "A") }
+        val (part, start) = LinkSync.around(songs, 1000)
+        assertEquals(500, part.size); assertEquals("S950", part.first().title); assertEquals("S1000", part[start].title)
+        val (end, s2) = LinkSync.around(songs, 1990)
+        assertEquals("S1990", end[s2].title); assertEquals("S1999", end.last().title); assertEquals(500, end.size)
+        val (short, s3) = LinkSync.around(songs.take(10), 3)
+        assertEquals(10, short.size); assertEquals(3, s3)
+    }
+
     @Test fun anOlderOndaLeavesThemAsTheyAre() {
         val phone = Snapshot(pins = listOf("p1"), settings = mapOf("crossfade" to "4"), searches = listOf("x"))
         val old = round(Snapshot()) // an Onda that doesn't send these

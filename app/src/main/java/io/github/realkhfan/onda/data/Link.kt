@@ -218,6 +218,12 @@ object Link {
             lyrics = Prefs.lyricsPicks(app).mapNotNull { (id, v) -> lib.songId(id)?.let { it to LinkSync.Lyric(v.first, v.second) } }.toMap(),
             added = MusicLibrary.addedAt.value.mapNotNull { (id, t) -> lib.songId(id)?.let { it to t } }.toMap(),
             mixes = Mixes.mixes.value.values.map { LinkSync.Mix(it.kind.name, it.period, it.tracks, it.basedOn) },
+            last = io.github.realkhfan.onda.player.LastSession.current?.takeIf { it.at > 0 }?.let { s ->
+                val q = io.github.realkhfan.onda.player.RemotePlayer.queueOf(s.items, s.positionMs)
+                val (songs, start) = LinkSync.around(q.songs, s.index)
+                val keys = songs.mapNotNull { it.key }.toSet()
+                LinkSync.LastPlay(q.copy(songs = songs, catalog = q.catalog.filter { it.key in keys }, start = start, shuffle = s.shuffle, repeat = s.repeat), s.at)
+            },
         ).also { known += lib.learned }
     }
 
@@ -249,9 +255,22 @@ object Link {
         }
         s.added?.let { m -> MusicLibrary.adoptAdded(app, m.mapNotNull { (k, t) -> lib.local(k)?.let { it to t } }.toMap()) }
         s.mixes?.let(Mixes::fromSync)
+        s.last?.let(::takeLast)
         PlayLog.replace(s.plays.map { p -> p.copy(key = p.key.ifEmpty { lib.id(LinkSync.Song(null, p.title, p.artist)) }) })
         known += lib.learned
         synced = fingerprint() // what just came from the PC isn't a change to send back
+    }
+
+    /** What played last on your PC, when that's newer than here: back in this phone's player (paused), if nothing plays here. */
+    private fun takeLast(l: LinkSync.LastPlay) {
+        val last = io.github.realkhfan.onda.player.LastSession
+        if (l.at <= (last.current?.at ?: 0L) + 1_000) return
+        val r = resolve(l.queue, AppData.library(MusicLibrary.tracks.value, AppData.serverTracks(), Overrides.meta.value))
+        if (r.items.isEmpty()) return
+        val s = io.github.realkhfan.onda.player.LastSession.Saved(r.items, r.start, l.queue.positionMs, l.queue.repeat, l.queue.shuffle, r.items,
+            io.github.realkhfan.onda.player.LastSession.Source("Device", _pc.value?.name ?: "Your PC", null), l.at)
+        // Onda's player isn't running: it starts from this next time.
+        if (last.adopt?.invoke(s) == null) { last.current = s; last.save(File(app.filesDir, "session.json"), s) }
     }
 
     /* ---------- playlist covers ---------- */
@@ -314,6 +333,7 @@ object Link {
         UserCollection.followed.value, UserCollection.albums.value, UserCollection.hidden.value, UserCollection.blocked.value,
         UserCollection.aiMarked.value, Overrides.meta.value, Profile.picture?.path,
         Prefs.shared(app), Prefs.pinned(app), Prefs.searches(app), Prefs.lyricsPicks(app), Mixes.mixes.value,
+        io.github.realkhfan.onda.player.LastSession.state.value,
     ).hashCode()
 
     /** Changes here reach the PC a few seconds later (while Onda runs). */
@@ -322,7 +342,7 @@ object Link {
         val flows = listOf<kotlinx.coroutines.flow.Flow<Any?>>(
             PlaylistStore.playlists, PlaylistStore.folders, PlaylistStore.liked, PlaylistStore.want, UserCollection.followed, UserCollection.albums,
             UserCollection.hidden, UserCollection.blocked, UserCollection.aiMarked, Overrides.meta,
-            androidx.compose.runtime.snapshotFlow { Profile.picture }, Prefs.changed, Mixes.mixes,
+            androidx.compose.runtime.snapshotFlow { Profile.picture }, Prefs.changed, Mixes.mixes, io.github.realkhfan.onda.player.LastSession.state,
         )
         scope.launch {
             kotlinx.coroutines.flow.combine(flows) { fingerprint() }.collectLatest { f ->
@@ -440,7 +460,9 @@ object Link {
         val catalog = q.catalog.associateBy { it.key }
         val byId = library.associateBy { it.id }
         val all = q.songs.map { s ->
-            if (s.key != null) catalog[s.key]?.let { r -> library.firstOrNull { Match.same(it.title, it.artist, r.title, r.artist) }?.toMediaItem() ?: r.toPreviewItem() }
+            // Preview links don't travel (they expire): a Deezer song gets a fresh one right before it plays.
+            if (s.key != null) catalog[s.key]?.let { r -> library.firstOrNull { Match.same(it.title, it.artist, r.title, r.artist) }?.toMediaItem() ?: r.toPreviewItem()
+                ?: r.takeIf { it.source == Source.DEEZER }?.let { d -> d.toMediaItem(io.github.realkhfan.onda.player.PreviewResolver.uriFor(d.id)) } }
             else byId[lib.id(s)]?.toMediaItem()
         }
         val items = all.filterNotNull()

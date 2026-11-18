@@ -235,7 +235,8 @@ object Link {
             "/v1/sync/get" -> runBlocking(Dispatchers.Swing) {
                 if (state.scanning) return@runBlocking null
                 val snap = LinkSync.toJson(state.linkSnapshot(foreignEdits, known))
-                JSONObject().put("version", version(snap)).put("snapshot", snap)
+                // What played last goes along, but not into the version: while music plays it changes all the time.
+                JSONObject().put("version", version(snap)).put("snapshot", snap.apply { lastPlay()?.let { put("last", LinkSync.toJson(LinkSync.Snapshot(last = it)).get("last")) } })
             } ?: return ex.sendResponseHeaders(423, -1)
             "/v1/sync/put" -> {
                 val status = runBlocking(Dispatchers.Swing) {
@@ -244,6 +245,7 @@ object Link {
                     if (req.optString("version") != version(LinkSync.toJson(state.linkSnapshot(foreignEdits, known)))) return@runBlocking 409
                     val merged = LinkSync.fromJson(req.getJSONObject("snapshot"))
                     state.applyLink(merged, known)
+                    merged.last?.let(::takeLast)
                     // All edits agreed now (not only those for songs this PC doesn't have): one missing here later keeps it.
                     foreignEdits = merged.edits
                     Overrides.synced()
@@ -424,6 +426,28 @@ object Link {
         if (fingerprint == told) return
         told = fingerprint
         phones.filter(::connected).forEach { inbox.getOrPut(it.id) { LinkedBlockingQueue() }.offer(JSONObject().put("sync", true)) }
+    }
+
+    /** What played last here: the queue in play order around the song it's on, and when this PC last played. */
+    private fun lastPlay(): LinkSync.LastPlay? {
+        val p = player ?: return null
+        if (p.playedAt <= 0 || p.current == null) return null
+        val ordered = p.playOrder.map { p.queue[it] }
+        val q = queueOf(ordered, p.playOrder.indexOf(p.index).coerceAtLeast(0), p.positionMs)
+        val (songs, start) = LinkSync.around(q.songs, q.start)
+        val keys = songs.mapNotNull { it.key }.toSet()
+        return LinkSync.LastPlay(q.copy(songs = songs, catalog = q.catalog.filter { it.key in keys }, start = start, shuffle = p.shuffle, repeat = p.repeat), p.playedAt)
+    }
+
+    /** What played last on your phone, when that's newer than here and nothing plays here: in this PC's player, paused. */
+    private fun takeLast(l: LinkSync.LastPlay) {
+        val p = player ?: return
+        if (p.playing || l.at <= p.playedAt + 1_000) return
+        val found = resolveHere(l.queue)
+        val items = found.filterNotNull().ifEmpty { return }
+        val start = found.take(l.queue.start.coerceIn(0, found.size)).count { it != null }.coerceAtMost(items.lastIndex)
+        p.restore(items, start, l.queue.positionMs, l.queue.shuffle, l.queue.repeat, items.indices.toList()) // already in play order
+        p.playedAt = l.at
     }
 
     /** Plays songs from the phone here; returns how many aren't on this PC (left out). */

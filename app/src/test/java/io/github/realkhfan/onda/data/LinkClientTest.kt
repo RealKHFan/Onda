@@ -33,7 +33,10 @@ class LinkClientTest {
         val songFile = ByteArray(1_300_000) { (it * 31 % 256).toByte() }
         var pcSnapshot = LinkSync.Snapshot(playlists = listOf(LinkSync.Playlist("pc-pl", "On the PC", "", listOf(LinkSync.Song("dz:2", "Tides", "Lumen Trio")), cover = pcCoverHash, folder = "pc-f")),
             folders = listOf(LinkSync.Folder("pc-f", "From the PC")),
-            catalog = listOf(RemoteTrack(2, "Tides", "Lumen Trio", "Sea", null, null, 200)), blocked = listOf("someone"))
+            catalog = listOf(RemoteTrack(2, "Tides", "Lumen Trio", "Sea", null, null, 200)), blocked = listOf("someone"),
+            // What played last on the PC, later than anything here: this phone picks it up (paused) at the same moment.
+            last = LinkSync.LastPlay(LinkSync.Queue(listOf(LinkSync.Song("dz:2", "Tides", "Lumen Trio")),
+                listOf(RemoteTrack(2, "Tides", "Lumen Trio", "Sea", null, "https://example.invalid/p.mp3", 200)), 42_000, 0, false, 1), System.currentTimeMillis()))
         // A bare HTTP server (the JDK's isn't on Android's test classpath): one request per connection.
         fun handle(path: String, body: ByteArray): Pair<Int, ByteArray?> {
             val (key, aad) = if (path == "/v1/pair") LinkCrypto.pairKey("123456") to "/v1/pair" else LinkCrypto.linkKey(token) to path
@@ -81,6 +84,11 @@ class LinkClientTest {
             assertEquals(setOf("phone-pl", "pc-pl"), pcSnapshot.playlists.map { it.id }.toSet())
             assertEquals(listOf("dz:2"), PlaylistStore.playlists.value.first { it.id == "pc-pl" }.trackIds)
             assertTrue(UserCollection.isBlocked("someone"))
+            io.github.realkhfan.onda.player.LastSession.current!!.let { last ->
+                assertEquals(listOf("dz:2"), last.items.map { it.mediaId })
+                assertEquals(42_000L, last.positionMs); assertEquals(1, last.repeat)
+            }
+            assertTrue(java.io.File(ctx.filesDir, "session.json").exists()) // Onda's player wasn't running: it starts from it
             // Covers went both ways (checked by their hash), and the PC's folder came here.
             assertTrue(LinkSync.hashOf(phoneCover.readBytes()) in covers)
             val fromPc = PlaylistStore.playlists.value.first { it.id == "pc-pl" }

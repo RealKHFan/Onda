@@ -42,6 +42,18 @@ object LinkSync {
 
     const val MAX_SEARCHES = 10
 
+    /**
+     * What played last on a device (its queue in play order around the song it was on) and when it last played. The newer
+     * one wins a sync; a device that isn't playing takes it over, paused at the same moment, like Spotify's devices.
+     */
+    data class LastPlay(val queue: Queue, val at: Long)
+
+    /** At most [max] songs of a queue in play order, around [start] (50 before it at most). */
+    fun around(songs: List<Song>, start: Int, max: Int = 500): Pair<List<Song>, Int> {
+        val from = (start - 50).coerceIn(0, (songs.size - max).coerceAtLeast(0).coerceAtMost(start.coerceAtLeast(0)))
+        return songs.subList(from, (from + max).coerceAtMost(songs.size)) to (start - from)
+    }
+
     data class Snapshot(
         val playlists: List<Playlist> = emptyList(),
         val folders: List<Folder> = emptyList(),
@@ -74,6 +86,7 @@ object LinkSync {
         /** When each of your songs first turned up, by [Song.id] (the earliest of both): "Recently added". */
         val added: Map<String, Long>? = null,
         val mixes: List<Mix>? = null,
+        val last: LastPlay? = null,
     )
 
     fun idOf(artist: String, title: String) = "~" + Match.norm(artist) + "|" + Match.norm(title)
@@ -158,6 +171,7 @@ object LinkSync {
             // Songs on either device, each with the earliest date either saw it.
             added = both(base?.added, a.added, b.added) { _, x, y -> x + y.filter { (k, t) -> x[k]?.let { it <= t } != true } },
             mixes = both(base?.mixes, a.mixes, b.mixes) { o, x, y -> mixes(o, x, y) },
+            last = listOfNotNull(a.last, b.last).maxByOrNull { it.at },
         )
     }
 
@@ -259,6 +273,7 @@ object LinkSync {
         .apply { s.settings?.let { put("settings", JSONObject(it)) } }
         .apply { s.lyrics?.let { m -> put("lyrics", JSONObject().apply { m.forEach { (k, l) -> put(k, JSONArray().put(l.id).put(l.shiftMs)) } }) } }
         .apply { s.added?.let { put("added", JSONObject(it)) } }
+        .apply { s.last?.let { put("last", JSONObject().put("queue", queueToJson(it.queue)).put("at", it.at)) } }
         .apply {
             s.mixes?.let { m ->
                 put("mixes", JSONArray(m.map { JSONObject().put("kind", it.kind).put("period", it.period).put("tracks", JSONArray(it.tracks.map(::track))).put("basedOn", JSONArray(it.basedOn)) }))
@@ -292,6 +307,7 @@ object LinkSync {
             m.keys().asSequence().mapNotNull { k -> m.optJSONArray(k)?.let { k to Lyric(it.optLong(0), it.optLong(1)) } }.toMap()
         },
         added = o.optJSONObject("added")?.let { m -> m.keys().asSequence().associateWith { m.optLong(it) } },
+        last = o.optJSONObject("last")?.let { l -> l.optJSONObject("queue")?.let { LastPlay(queueFromJson(it), l.optLong("at")) } },
         mixes = if (!o.has("mixes")) null else objects(o.optJSONArray("mixes")).map {
             Mix(it.optString("kind"), it.optString("period"), objects(it.optJSONArray("tracks")).map(::track), strings(it.optJSONArray("basedOn")))
         },

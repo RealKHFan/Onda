@@ -16,6 +16,7 @@ import org.freedesktop.gstreamer.Bus
 import org.freedesktop.gstreamer.ElementFactory
 import org.freedesktop.gstreamer.Format
 import org.freedesktop.gstreamer.Gst
+import org.freedesktop.gstreamer.message.MessageType
 import org.freedesktop.gstreamer.Version
 import org.freedesktop.gstreamer.elements.PlayBin
 import org.freedesktop.gstreamer.event.SeekFlags
@@ -58,6 +59,10 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     var error by mutableStateOf<String?>(null)
 
     private var order by mutableStateOf<List<Int>>(emptyList())
+    /** The queue's play order (indexes into [queue]): kept with the session, so a shuffled queue comes back the same. */
+    val playOrder: List<Int> get() = order
+    /** When this PC last played (ms; 0: never): a sync with your phone picks the newer of the two. */
+    var playedAt = 0L
 
     /** Gapless: the next file starts with no pause between songs (not for previews, whose link is fetched first). */
     var gapless = true
@@ -110,6 +115,8 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         runCatching { ElementFactory.make("equalizer-10bands", "eq-$name") }.getOrNull()?.also { b.set("audio-filter", it); eqs[b] = it }
         b.bus.connect(Bus.EOS { _ -> scope.launch { if (b !== bin) return@launch; gaplessNext = -1; if (crossing != null) finishCrossfade() else next(auto = true) } })
         // Called on GStreamer's thread shortly before the end: the next file is handed over now, so there's no gap.
+        // A stream starting after the one just loaded is the next song handed over gaplessly (the same file twice too).
+        b.bus.connect(Bus.MESSAGE { _, m -> if (m.type == MessageType.STREAM_START) scope.launch { if (b === bin) streamStarted() } })
         b.connect(PlayBin.ABOUT_TO_FINISH { _ ->
             if (b === bin) gaplessTarget()?.let { i -> gaplessItem = queue[i]; gaplessNext = i; b.set("uri", queue[i].uri) }
         })
@@ -131,13 +138,13 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
             while (true) {
                 delay(if (gaplessNext >= 0 || crossing != null || nearCrossfade()) 50 else 400)
                 tickCrossfade()
-                if (gaplessNext >= 0 && bin.get("current-uri") == gaplessItem?.uri) switchGapless()
                 if (sleepAt in 1..System.currentTimeMillis()) { sleepAt = 0; pause(); applyVolume() } // back to full for next time
                 else if (sleepAt > 0 && sleepAt - System.currentTimeMillis() < 30_000) applyVolume()
                 if (index < 0) continue
                 val d = bin.queryDuration(TimeUnit.MILLISECONDS)
                 if (d > 0) durationMs = d
                 rule.playing(playing, now())
+                if (playing) playedAt = System.currentTimeMillis()
                 playingItem?.let { if (rule.due(now(), durationMs)) onPlayed?.invoke(it) }
                 if (pendingSeek >= 0 && d > 0) { seek(pendingSeek); pendingSeek = -1 } // a resumed song, once it's ready
                 else positionMs = bin.queryPosition(TimeUnit.MILLISECONDS).coerceAtLeast(0)
@@ -165,10 +172,11 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
     }
 
     /** Last session, paused at [positionMs]. */
-    fun restore(items: List<Item>, at: Int, positionMs: Long, shuffle: Boolean, repeat: Int) {
+    /** [playOrder]: the order it played in (shuffled or not); a new one is made when it doesn't fit. */
+    fun restore(items: List<Item>, at: Int, positionMs: Long, shuffle: Boolean, repeat: Int, playOrder: List<Int>? = null) {
         if (items.isEmpty()) return
         queue = items; index = at.coerceIn(items.indices); this.shuffle = shuffle; this.repeat = repeat
-        order = makeOrder()
+        order = playOrder?.takeIf { it.sorted() == items.indices.toList() } ?: makeOrder()
         playing = false
         load(seekTo = positionMs)
     }
@@ -319,6 +327,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         if (!goingOn) rule.start(playing, now())
         @Suppress("NAME_SHADOWING") val seekTo = if (seekTo >= 0) seekTo else resumeAt(item).takeIf { it > 0 } ?: -1
         val token = ++loadToken
+        started = false
         gaplessNext = -1
         error = null; fullFrom = null
         bin.stop()
@@ -365,6 +374,14 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         val pos = order.indexOf(index)
         val next = order.getOrNull(pos + 1) ?: return null // a new round (repeat all) reshuffles first
         return next.takeIf { queue.getOrNull(it)?.let { i -> !i.preview && i.deezerId <= 0 && i.uri.isNotEmpty() } == true }
+    }
+
+    /** Whether the song loaded last has started; a start after that is the gapless hand-over. */
+    private var started = false
+
+    private fun streamStarted() {
+        if (!started) { started = true; return }
+        if (gaplessNext >= 0) switchGapless()
     }
 
     /** The handed-over song is playing now: show it, and do what starting a song does. */
@@ -464,6 +481,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         leaving()
         bin.stop()
         val old = bin; bin = spare; spare = old
+        started = true // its stream started while it faded in
         went()
         index = c.target
         playingItem = current

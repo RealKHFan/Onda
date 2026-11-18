@@ -3,6 +3,7 @@ package io.github.realkhfan.onda.player
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -21,7 +22,18 @@ object LastSession {
         val items: List<MediaItem>, val index: Int, val positionMs: Long, val repeat: Int,
         /** Shuffle on, and the list in its own order (to go back to when it's turned off). */
         val shuffle: Boolean, val context: List<MediaItem>, val source: Source,
+        /** When this phone last played it (ms); 0: never. */
+        val at: Long = 0,
     )
+
+    /** The session as last kept (what a sync with your PC sends). */
+    @Volatile var current: Saved? = null
+
+    /** "playing", or the song it's paused on: a sync tells your PC when it pauses or stops (not on every song). */
+    val state = MutableStateFlow("")
+
+    /** Set by the playback service: takes over a session from your PC, paused; false when something plays here. */
+    @Volatile var adopt: ((Saved) -> Boolean)? = null
 
     private fun item(m: MediaItem): JSONObject = m.mediaMetadata.let { md ->
         JSONObject().put("id", m.mediaId).put("uri", m.localConfiguration?.uri?.toString()).put("title", md.title?.toString())
@@ -41,7 +53,7 @@ object LastSession {
 
     fun toJson(s: Saved): JSONObject = JSONObject().put("items", JSONArray(s.items.map(::item))).put("index", s.index)
         .put("pos", s.positionMs).put("repeat", s.repeat).put("shuffle", s.shuffle).put("context", JSONArray(s.context.map(::item)))
-        .put("kind", s.source.kind).put("label", s.source.label).put("source", s.source.id)
+        .put("kind", s.source.kind).put("label", s.source.label).put("source", s.source.id).put("at", s.at)
 
     /** Null when there's nothing to put back. */
     fun fromJson(o: JSONObject): Saved? {
@@ -51,6 +63,7 @@ object LastSession {
             items, o.optInt("index").coerceIn(0, items.lastIndex), o.optLong("pos").coerceAtLeast(0), o.optInt("repeat").coerceIn(0, 2),
             o.optBoolean("shuffle"), list("context"),
             Source(o.optString("kind", "Library"), o.optString("label", "Your library"), o.optString("source").ifBlank { null }),
+            o.optLong("at"),
         )
     }
 

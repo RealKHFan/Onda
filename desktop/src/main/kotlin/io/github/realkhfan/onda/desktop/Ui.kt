@@ -99,6 +99,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberUpdatedState
@@ -249,9 +250,12 @@ fun OndaDesktop(state: AppState, player: Player?) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Raised, onPrimary = Color.Black)) {
       CompositionLocalProvider(LocalContextMenuRepresentation provides DefaultContextMenuRepresentation(Raised, TextMain, Color(0xFF2E2E38))) {
         val stack = remember { mutableStateListOf<View>(View.Home) }
-        fun go(v: View) { stack.clear(); stack.add(v) }
+        // Each page keeps its scroll while others are open on top of it; a page that's closed starts fresh next time.
+        val pages = rememberSaveableStateHolder()
+        fun go(v: View) { stack.indices.forEach { pages.removeState("page$it") }; stack.clear(); stack.add(v) }
         fun push(v: View) { stack.add(v) }
-        val back: (() -> Unit)? = if (stack.size > 1) ({ stack.removeAt(stack.lastIndex) }) else null
+        fun pop() { if (stack.size > 1) { pages.removeState("page${stack.lastIndex}"); stack.removeAt(stack.lastIndex) } }
+        val back: (() -> Unit)? = if (stack.size > 1) ({ pop() }) else null
         var quick by remember { mutableStateOf(false) } // Ctrl+K
         var shortcuts by remember { mutableStateOf(false) } // F1
         LaunchedEffect(state.navRequest) {
@@ -260,7 +264,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                 "settings" -> go(View.Settings)
                 "quick" -> quick = true
                 "keys" -> shortcuts = true
-                "back" -> if (stack.size > 1) stack.removeAt(stack.lastIndex)
+                "back" -> pop()
             }
             state.navRequest = null
         }
@@ -311,7 +315,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                     if (player == null) Note("Onda needs GStreamer to play music. On Bazzite it's already there; on other systems install gstreamer1 and its plugins.")
                     if (player != null && panel == Panel.LYRICS && lyricsBig) {
                         LyricsFull(state, player, onCollapse = { lyricsBig = false }) { panel = Panel.NONE; lyricsBig = false }
-                    } else when (val v = stack.last()) {
+                    } else pages.SaveableStateProvider("page${stack.lastIndex}") { when (val v = stack.last()) {
                         View.Home -> HomePage(ctx, ::push)
                         View.Songs -> Songs(ctx)
                         View.Albums -> Albums(state, { a -> push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }) { push(View.CatalogAlbum(it)) }
@@ -360,7 +364,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         }
                         is View.CatalogArtist -> CatalogArtistPage(ctx, v.a, back)
                         is View.CatalogAlbum -> CatalogAlbumPage(ctx, v.a, back)
-                    }
+                    } }
                 }
                 val phone = Link.activePhone()
                 if (phone != null && panel == Panel.QUEUE) PhoneQueuePanel(phone) { panel = Panel.NONE }

@@ -136,13 +136,9 @@ class PlaybackService : MediaLibraryService() {
         })
         scope.launch { androidx.compose.runtime.snapshotFlow { Shuffle.on }.collect { saveSoon() } }
         scope.launch { while (true) { kotlinx.coroutines.delay(10_000); if (player.isPlaying) saveSoon() } }
-        if (player.mediaItemCount == 0) LastSession.load(sessionFile)?.let { s ->
-            LastSession.source = s.source
-            Shuffle.restore(s.context, s.shuffle)
-            player.repeatMode = RemotePlayer.exoRepeat(s.repeat)
-            player.setMediaItems(s.items, s.index, s.positionMs)
-            player.prepare() // paused: it plays when you press play
-        }
+        if (player.mediaItemCount == 0) LastSession.load(sessionFile)?.let(::putBack)
+        // What played last on your PC, when it's newer and nothing plays here (a sync brings it).
+        LastSession.adopt = { s -> if (player.isPlaying || player.playWhenReady) false else { putBack(s); saveSoon(); true } }
     }
 
     private var exo: ExoPlayer? = null
@@ -236,16 +232,30 @@ class PlaybackService : MediaLibraryService() {
         saving = scope.launch { kotlinx.coroutines.delay(1_000); saveNow() }
     }
 
-    /** What plays now, to keep; null when nothing is queued. */
+    /** A kept session in the player, paused: it plays when you press play. */
+    private fun putBack(s: LastSession.Saved) {
+        val p = exo ?: return
+        LastSession.source = s.source
+        LastSession.current = s
+        Shuffle.restore(s.context, s.shuffle)
+        p.repeatMode = RemotePlayer.exoRepeat(s.repeat)
+        p.setMediaItems(s.items, s.index, s.positionMs)
+        p.prepare()
+    }
+
+    /** What plays now, to keep; null when nothing is queued. While it plays, "last played" is now. */
     private fun session(): LastSession.Saved? = exo?.takeIf { it.mediaItemCount > 0 }?.let { p ->
         LastSession.Saved(
             (0 until p.mediaItemCount).map(p::getMediaItemAt), p.currentMediaItemIndex, p.currentPosition.coerceAtLeast(0),
             RemotePlayer.pcRepeat(p.repeatMode), Shuffle.on, Shuffle.context, LastSession.source,
+            if (p.isPlaying) System.currentTimeMillis() else LastSession.current?.at ?: 0L,
         )
     }
 
     private fun saveNow() {
         val s = session()
+        LastSession.current = s
+        LastSession.state.value = when { s == null -> ""; exo?.isPlaying == true -> "playing"; else -> "paused:" + s.items[s.index].mediaId }
         scope.launch(kotlinx.coroutines.Dispatchers.IO) { if (s == null) sessionFile.delete() else LastSession.save(sessionFile, s) }
     }
 
@@ -301,6 +311,7 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         saving?.cancel()
+        LastSession.adopt = null
         session()?.let { LastSession.save(sessionFile, it) } // right away: the scope ends below
         Effects.release()
         Link.onPlay = null

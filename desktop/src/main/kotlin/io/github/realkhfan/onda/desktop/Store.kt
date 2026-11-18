@@ -225,22 +225,26 @@ object Store {
         o.optString("cover").ifBlank { null }, null, o.optInt("duration"),
         Source.entries.firstOrNull { it.name == o.optString("src") } ?: Source.DEEZER, ref = o.optString("ref"), canDownload = o.optBoolean("dl"))
 
-    data class Session(val items: List<Player.Item>, val index: Int, val positionMs: Long, val shuffle: Boolean, val repeat: Int)
+    /** [order]: the play order (a shuffled queue comes back the same); [at]: when it last played. */
+    data class Session(val items: List<Player.Item>, val index: Int, val positionMs: Long, val shuffle: Boolean, val repeat: Int,
+                       val order: List<Int> = emptyList(), val at: Long = 0)
 
     fun session(): Session? = runCatching {
         val o = JSONObject(File(data, "session.json").readText())
         Session(o.getJSONArray("items").objects().map {
             Player.Item(it.getString("id"), it.optString("title"), it.optString("artist"), it.optString("album"), it.optString("art").ifBlank { null },
                 it.optString("uri"), it.optBoolean("preview"), it.optLong("dz"), it.optLong("dur"))
-        }, o.getInt("index"), o.optLong("pos"), o.optBoolean("shuffle"), o.optInt("repeat"))
+        }, o.getInt("index"), o.optLong("pos"), o.optBoolean("shuffle"), o.optInt("repeat"),
+            o.optJSONArray("order")?.let { a -> (0 until a.length()).map { a.getInt(it) } }.orEmpty(), o.optLong("at"))
     }.getOrNull()
 
     fun saveSession(s: Session) = write("session.json", JSONObject()
-        .put("items", JSONArray(s.items.take(2000).map {
+        .put("items", JSONArray(s.items.map {
             JSONObject().put("id", it.id).put("title", it.title).put("artist", it.artist).put("album", it.album).put("art", it.art)
                 .put("uri", it.uri).put("preview", it.preview).put("dz", it.deezerId).put("dur", it.durationMs)
         }))
         .put("index", s.index).put("pos", s.positionMs).put("shuffle", s.shuffle).put("repeat", s.repeat)
+        .put("order", JSONArray(s.order)).put("at", s.at)
         .toString())
 
     fun serverPlaylists(): List<Subsonic.Playlist> = runCatching {

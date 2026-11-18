@@ -86,6 +86,17 @@ class FeaturesTest {
         onUi { p.close() }
     }
 
+    @Test fun theSameFileTwiceInARowMovesOnOnlyWhenTheFirstEnds() {
+        val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
+        val u = wav(1.5)
+        onUi { p.play(listOf(Player.Item("a", "One", "A", "B", null, u), Player.Item("b", "One again", "A", "B", null, u)), 0) }
+        Thread.sleep(600)
+        assertEquals(0, onUi { p.index }) // the next song was lined up early, but this one still plays
+        Thread.sleep(1700)
+        assertEquals(1, onUi { p.index })
+        onUi { p.close() }
+    }
+
     @Test fun wantedSongsLeaveTheListOnceInTheLibraryAndPicksAreKept() {
         val s = onUi { AppState(CoroutineScope(ui)) }
         val mine = t("file:/tmp/onda-test/paper.mp3", "Paper Moon", "Velvet Hours")

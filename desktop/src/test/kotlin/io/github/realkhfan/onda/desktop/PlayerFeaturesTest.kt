@@ -68,6 +68,29 @@ class PlayerFeaturesTest {
         onUi { p.close() }
     }
 
+    @Test fun aShuffledQueueComesBackInTheSameOrder() {
+        val p = player()
+        val u = wav(1.0)
+        val items = (1..6).map { item(it, u) }
+        val order = listOf(3, 0, 5, 1, 4, 2)
+        onUi { p.restore(items, 5, 0, shuffle = true, repeat = 0, playOrder = order) }
+        assertEquals(order, onUi { p.playOrder })
+        assertEquals(listOf(1, 4, 2), onUi { p.upcoming().map { it.first } }) // after index 5 in that order
+        onUi { p.restore(items, 0, 0, shuffle = true, repeat = 0, playOrder = listOf(0, 1)) } // doesn't fit: a new order
+        assertEquals((0..5).toList(), onUi { p.playOrder.sorted() })
+        onUi { p.close() }
+        // The session file keeps the order and when it last played.
+        val file = File(Store.data, "session.json")
+        val before = file.takeIf { it.exists() }?.readBytes()
+        try {
+            Store.saveSession(Store.Session(items, 5, 700, true, 2, order, 1234))
+            val back = Store.session()!!
+            assertEquals(order, back.order); assertEquals(1234L, back.at); assertEquals(5, back.index); assertEquals(700L, back.positionMs)
+        } finally {
+            if (before != null) file.writeBytes(before) else file.delete()
+        }
+    }
+
     @Test fun pauseAndResumeCarryOn() {
         val p = player()
         onUi { p.restore(listOf(item(1, wav(5.0))), 0, 1200, shuffle = false, repeat = 0) }

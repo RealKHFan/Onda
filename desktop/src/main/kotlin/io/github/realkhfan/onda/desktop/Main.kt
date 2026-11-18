@@ -76,7 +76,9 @@ fun main(args: Array<String>) {
         }
         // Changes here reach a linked phone a few seconds later (it syncs while Onda is open on it).
         LaunchedEffect(Unit) {
-            androidx.compose.runtime.snapshotFlow { state.linkFingerprint() }.collectLatest { f -> delay(3000); if (Link.on) Link.changed(f) }
+            // A pause (or a stop) here too: your phone then picks up where this PC left off.
+            androidx.compose.runtime.snapshotFlow { listOf(state.linkFingerprint(), player?.let { p -> if (p.playing) "playing" else "paused:" + p.current?.id }).hashCode() }
+                .collectLatest { f -> delay(3000); if (Link.on) Link.changed(f) }
         }
         // Greyed-out songs (only on your phone) that are here now become the songs themselves.
         LaunchedEffect(state.library) { state.healMissing() }
@@ -88,7 +90,7 @@ fun main(args: Array<String>) {
         // Started with your desktop session: no window until you open Onda (from the app menu, or the media widget).
         var visible by remember { mutableStateOf("--background" !in args) }
         fun saveSession() {
-            player?.takeIf { it.queue.isNotEmpty() }?.let { Store.saveSession(Store.Session(it.queue, it.index, it.positionMs, it.shuffle, it.repeat)) }
+            player?.takeIf { it.queue.isNotEmpty() }?.let { Store.saveSession(Store.Session(it.queue, it.index, it.positionMs, it.shuffle, it.repeat, it.playOrder, it.playedAt)) }
         }
         fun quit() {
             saveSession()
@@ -178,7 +180,9 @@ fun main(args: Array<String>) {
                 scope.launch { snapshotFlow { state.settings.crossfade }.collect { player.crossfade = it } }
                 // Back where you left off: same queue and song, paused at the same moment.
                 if (files.isNotEmpty()) openFiles(files)
-                else withContext(Dispatchers.IO) { Store.session() }?.let { player.restore(it.items, it.index, it.positionMs, it.shuffle, it.repeat) }
+                else withContext(Dispatchers.IO) { Store.session() }?.let {
+                    player.restore(it.items, it.index, it.positionMs, it.shuffle, it.repeat, it.order); player.playedAt = it.at
+                }
                 scope.launch { snapshotFlow { player.current }.collect { it?.let(state::started) } } // Home's Recently played
                 player.onPlayed = state::played // history: plays, mixes, stats
                 scope.launch {

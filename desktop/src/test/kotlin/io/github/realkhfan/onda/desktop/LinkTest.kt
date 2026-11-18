@@ -12,7 +12,6 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.InetAddress
-import java.net.URL
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -21,7 +20,7 @@ import kotlin.test.assertTrue
 /** The phone's side of the link, spoken by hand against the PC's server. */
 class LinkTest {
     private fun post(path: String, body: ByteArray, phone: String? = null): Pair<Int, ByteArray?> {
-        val c = URL("http://127.0.0.1:${LinkCrypto.PORT}$path").openConnection() as HttpURLConnection
+        val c = java.net.URI("http://127.0.0.1:${LinkCrypto.PORT}$path").toURL().openConnection() as HttpURLConnection
         c.requestMethod = "POST"; c.doOutput = true
         phone?.let { c.setRequestProperty("X-Onda-Phone", it) }
         c.outputStream.use { it.write(body) }
