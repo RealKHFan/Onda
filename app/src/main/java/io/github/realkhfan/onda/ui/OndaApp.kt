@@ -130,6 +130,11 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -2198,22 +2203,41 @@ internal fun IconTile(icon: ImageVector, side: Dp, bg: Color = Accent, fg: Color
 /* ---------------- sheets / dialogs ---------------- */
 
 @Composable
-private fun SongMenu(title: String, artist: String, art: String?, actions: List<MenuAction>, onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        // No stretch at the ends: in a sheet it looks like the whole menu jumping up and down.
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState(), overscrollEffect = null).padding(bottom = 24.dp)) {
-            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Art(art, 48.dp)
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text(title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            HorizontalDivider(color = Raised)
-            actions.forEach { a -> MenuRow(a.label, a.icon) { onDismiss(); a.run() } }
+internal fun SongMenu(title: String, artist: String, art: String?, actions: List<MenuAction>, onDismiss: () -> Unit) = MenuSheet(onDismiss) {
+    Row(Modifier.padding(16.dp, 0.dp, 16.dp, 16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Art(art, 48.dp)
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(artist, color = TextDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
+    HorizontalDivider(color = Raised)
+    actions.forEach { a -> MenuRow(a.label, a.icon) { onDismiss(); a.run() } }
+}
+
+/**
+ * A menu sheet. Material's sheet springs past its top and back when a swipe up is let go on it (the whole menu jumps), so
+ * its handle is drawn in the list here, and a swipe up that's left over at the end of the list stops there. Swipes down
+ * still reach the sheet, to close it.
+ */
+@Composable
+private fun MenuSheet(onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), dragHandle = null) {
+        Column(Modifier.fillMaxWidth().nestedScroll(KeepUpFlings).verticalScroll(rememberScrollState(), overscrollEffect = null).padding(bottom = 24.dp)) {
+            Box(Modifier.align(Alignment.CenterHorizontally).padding(vertical = 22.dp).size(32.dp, 4.dp).clip(RoundedCornerShape(2.dp))
+                .background(TextDim.copy(alpha = 0.4f)).testTag("sheet-handle"))
+            content()
+        }
+    }
+}
+
+/**
+ * A swipe up that's left over at the end of a sheet's list stops here. Given to Material's sheet, it springs to where it
+ * already is, overshoots upward and settles back: the whole menu jumps. Swipes down still reach it (to close it).
+ */
+private val KeepUpFlings = object : NestedScrollConnection {
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity = if (available.y < 0) available else Velocity.Zero
 }
 
 @Composable
@@ -2232,14 +2256,11 @@ private fun AddToPlaylistSheet(
     onPick: (PlaylistStore.Playlist) -> Unit,
     onCreate: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        // No stretch at the ends: in a sheet it looks like the whole menu jumping up and down.
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState(), overscrollEffect = null).padding(bottom = 24.dp)) {
-            Text("Add to playlist", color = TextMain, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
-            MenuRow("New playlist", Icons.Rounded.Add, onCreate)
-            HorizontalDivider(color = Raised)
-            playlists.forEach { pl -> MenuRow(pl.name, Icons.Rounded.MusicNote) { onPick(pl) } }
-        }
+    MenuSheet(onDismiss) {
+        Text("Add to playlist", color = TextMain, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp, 0.dp, 16.dp, 16.dp))
+        MenuRow("New playlist", Icons.Rounded.Add, onCreate)
+        HorizontalDivider(color = Raised)
+        playlists.forEach { pl -> MenuRow(pl.name, Icons.Rounded.MusicNote) { onPick(pl) } }
     }
 }
 
