@@ -15,7 +15,11 @@ object Shuffle {
         private set
 
     /** The playing context in its original order, without queued songs. */
-    private var context: List<MediaItem> = emptyList()
+    var context: List<MediaItem> = emptyList()
+        private set
+
+    /** Shuffle as it was when Onda closed (the list itself is already in play order). */
+    fun restore(context: List<MediaItem>, shuffled: Boolean) { this.context = context; on = shuffled }
 
     /** A new list from [start]: when [shuffled], the tapped song first and the rest mixed; [keepOrder]: it's already in play order. */
     fun play(p: Player, items: List<MediaItem>, start: Int, shuffled: Boolean, positionMs: Long = 0, keepOrder: Boolean = false) {

@@ -127,6 +127,22 @@ class PlaybackService : MediaLibraryService() {
         Effects.refresh = { levelFor(player.currentMediaItem?.mediaId) }
         // Where a long song is, every 10 s, so it's known even if Onda is closed while playing.
         scope.launch { while (true) { kotlinx.coroutines.delay(10_000); if (player.isPlaying) remember(player) } }
+        // What plays is kept, so it's back (paused) when Onda starts again.
+        player.addListener(object : Player.Listener {
+            override fun onEvents(p: Player, events: Player.Events) {
+                if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_TIMELINE_CHANGED, Player.EVENT_IS_PLAYING_CHANGED,
+                        Player.EVENT_REPEAT_MODE_CHANGED, Player.EVENT_POSITION_DISCONTINUITY)) saveSoon()
+            }
+        })
+        scope.launch { androidx.compose.runtime.snapshotFlow { Shuffle.on }.collect { saveSoon() } }
+        scope.launch { while (true) { kotlinx.coroutines.delay(10_000); if (player.isPlaying) saveSoon() } }
+        if (player.mediaItemCount == 0) LastSession.load(sessionFile)?.let { s ->
+            LastSession.source = s.source
+            Shuffle.restore(s.context, s.shuffle)
+            player.repeatMode = RemotePlayer.exoRepeat(s.repeat)
+            player.setMediaItems(s.items, s.index, s.positionMs)
+            player.prepare() // paused: it plays when you press play
+        }
     }
 
     private var exo: ExoPlayer? = null
@@ -212,6 +228,27 @@ class PlaybackService : MediaLibraryService() {
     private var lastPos = 0L
     private var lastDur = 0L
 
+    private val sessionFile by lazy { java.io.File(filesDir, "session.json") }
+    private var saving: kotlinx.coroutines.Job? = null
+
+    private fun saveSoon() {
+        saving?.cancel()
+        saving = scope.launch { kotlinx.coroutines.delay(1_000); saveNow() }
+    }
+
+    /** What plays now, to keep; null when nothing is queued. */
+    private fun session(): LastSession.Saved? = exo?.takeIf { it.mediaItemCount > 0 }?.let { p ->
+        LastSession.Saved(
+            (0 until p.mediaItemCount).map(p::getMediaItemAt), p.currentMediaItemIndex, p.currentPosition.coerceAtLeast(0),
+            RemotePlayer.pcRepeat(p.repeatMode), Shuffle.on, Shuffle.context, LastSession.source,
+        )
+    }
+
+    private fun saveNow() {
+        val s = session()
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) { if (s == null) sessionFile.delete() else LastSession.save(sessionFile, s) }
+    }
+
     private fun remember(p: Player) {
         if (p.duration < 20 * 60_000) return
         lastPos = p.currentPosition; lastDur = p.duration
@@ -258,10 +295,13 @@ class PlaybackService : MediaLibraryService() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         // As your PC's remote: closing Onda here stops being the remote, and the PC keeps playing.
         if (!Prefs.keepPlaying(this) && Remote.on.value) { remotePlayer?.stopPolling(); back?.let { session?.player = it }; Remote.stop() }
+        saving?.cancel(); saveNow()
         if (Prefs.keepPlaying(this)) super.onTaskRemoved(rootIntent) else pauseAllPlayersAndStopSelf()
     }
 
     override fun onDestroy() {
+        saving?.cancel()
+        session()?.let { LastSession.save(sessionFile, it) } // right away: the scope ends below
         Effects.release()
         Link.onPlay = null
         Link.onMessage = null

@@ -104,12 +104,12 @@ class PlayerState(val controller: MediaController) {
     val shuffle: Boolean get() = if (Remote.on.value) remoteShuffle else Shuffle.on
     private var remoteShuffle by mutableStateOf(false)
 
-    /** "Playing from <kind>" / <label>, and the playlist id when playing from one. */
-    var sourceKind by mutableStateOf("Library")
+    /** "Playing from <kind>" / <label>, and the playlist id when playing from one (as it was when Onda closed, at first). */
+    var sourceKind by mutableStateOf(LastSession.source.kind)
         private set
-    var sourceLabel by mutableStateOf("Your library")
+    var sourceLabel by mutableStateOf(LastSession.source.label)
         private set
-    var sourceId by mutableStateOf<String?>(null)
+    var sourceId by mutableStateOf(LastSession.source.id)
         private set
 
     /** A short reason when a song can't play; the UI shows it once, then calls [clearError]. */
@@ -198,6 +198,7 @@ class PlayerState(val controller: MediaController) {
     ) {
         if (items.isEmpty()) return
         sourceKind = kind; sourceLabel = label; sourceId = id
+        LastSession.source = LastSession.Source(kind, label, id)
         if (Remote.on.value) { // plays on the PC, with the PC's own shuffle
             controller.setMediaItems(items, start.coerceIn(0, items.lastIndex), 0L)
             controller.prepare(); controller.play()
