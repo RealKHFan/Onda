@@ -1,11 +1,63 @@
 package io.github.realkhfan.onda.data
 
 import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 
 /** Small user settings, in the same "onda" prefs file the library uses for its folders. */
 object Prefs {
     private fun p(ctx: Context) = ctx.getSharedPreferences("onda", Context.MODE_PRIVATE)
+
+    private val _changed = MutableStateFlow(0)
+    /** Goes up whenever a setting changes (here or by a sync), so open screens read them again. */
+    val changed: StateFlow<Int> = _changed.asStateFlow()
+    private var listener: SharedPreferences.OnSharedPreferenceChangeListener? = null // kept here: preferences hold it weakly
+
+    fun watch(ctx: Context) {
+        if (listener != null) return
+        listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> _changed.value++ }.also { p(ctx).registerOnSharedPreferenceChangeListener(it) }
+    }
+
+    /** The settings both apps share ([io.github.realkhfan.onda.core.LinkSync.SETTINGS]) as text; "server" only when logged in. */
+    fun shared(ctx: Context): Map<String, String> = mapOfNotNull(
+        "accent" to accent(ctx).toString(), "crossfade" to crossfade(ctx).toString(),
+        "normalize" to normalize(ctx).toString(), "albumGain" to albumGain(ctx).toString(),
+        "eq" to eq(ctx).joinToString(","), "eqPreset" to eqPreset(ctx), "lyricsScale" to lyricsScale(ctx).toString(),
+        "playlistOrder" to playlistOrder(ctx), "autoplay" to autoplay(ctx).toString(), "releaseAlerts" to releaseAlerts(ctx).toString(),
+        "apple" to appleSearch(ctx).toString(), "listenBrainz" to listenBrainz(ctx).toString(), "kbps" to streamKbps(ctx).toString(),
+        server(ctx)?.let { "server" to JSONObject().put("url", it.url).put("user", it.user).put("salt", it.salt).put("token", it.token).toString() },
+    )
+
+    private fun mapOfNotNull(vararg pairs: Pair<String, String>?) = pairs.filterNotNull().toMap()
+
+    /** Settings from a sync (anything unreadable stays as it is; no "server": logged out). Returns the keys that changed. */
+    fun applyShared(ctx: Context, m: Map<String, String>): Set<String> {
+        val before = shared(ctx)
+        val e = p(ctx).edit()
+        fun bool(k: String, key: String) = m[k]?.toBooleanStrictOrNull()?.let { e.putBoolean(key, it) }
+        m["accent"]?.toLongOrNull()?.let { e.putLong("accent", it) }
+        m["crossfade"]?.toIntOrNull()?.let { e.putInt("crossfade", it.coerceIn(0, 12)) }
+        bool("normalize", "normalize"); bool("albumGain", "album_gain"); bool("autoplay", "autoplay")
+        bool("releaseAlerts", "release_alerts"); bool("apple", "apple_search"); bool("listenBrainz", "listenbrainz")
+        m["eq"]?.split(',')?.mapNotNull { it.toDoubleOrNull() }?.takeIf { it.size == 10 }?.let { e.putString("eq", it.joinToString(",")) }
+        m["eqPreset"]?.takeIf { it.isNotBlank() }?.let { e.putString("eq_preset", it) }
+        m["lyricsScale"]?.toFloatOrNull()?.let { e.putFloat("lyrics_scale", it.coerceIn(0.6f, 1.8f)) }
+        m["playlistOrder"]?.takeIf { it.isNotBlank() }?.let { e.putString("playlist_order", it) }
+        m["kbps"]?.toIntOrNull()?.let { e.putInt("stream_kbps", it.coerceAtLeast(0)) }
+        m["server"].orEmpty().let { v ->
+            if (v.isBlank()) e.remove("srv_url").remove("srv_user").remove("srv_salt").remove("srv_token")
+            else runCatching { JSONObject(v) }.getOrNull()?.takeIf { it.optString("url").isNotBlank() && it.optString("token").isNotBlank() }?.let {
+                e.putString("srv_url", it.optString("url")).putString("srv_user", it.optString("user"))
+                    .putString("srv_salt", it.optString("salt")).putString("srv_token", it.optString("token"))
+            }
+        }
+        e.commit()
+        val after = shared(ctx)
+        return after.keys.filterTo(HashSet()) { after[it] != before[it] }
+    }
 
     fun appleSearch(ctx: Context): Boolean = p(ctx).getBoolean("apple_search", true)
     fun setAppleSearch(ctx: Context, on: Boolean) = p(ctx).edit().putBoolean("apple_search", on).apply()
@@ -59,11 +111,19 @@ object Prefs {
         if (lrclibId == 0L && shiftMs == 0L) o.remove(id) else o.put(id, org.json.JSONArray().put(lrclibId).put(shiftMs))
         p(ctx).edit().putString("lyrics_picks", o.toString()).apply()
     }
+    /** Every pick, by song id. */
+    fun lyricsPicks(ctx: Context): Map<String, Pair<Long, Long>> = runCatching {
+        val o = org.json.JSONObject(p(ctx).getString("lyrics_picks", "{}")!!)
+        o.keys().asSequence().mapNotNull { k -> o.optJSONArray(k)?.let { k to (it.getLong(0) to it.getLong(1)) } }.toMap()
+    }.getOrDefault(emptyMap())
+    fun setLyricsPicks(ctx: Context, picks: Map<String, Pair<Long, Long>>) = p(ctx).edit().putString("lyrics_picks",
+        org.json.JSONObject().apply { picks.forEach { (k, v) -> put(k, org.json.JSONArray().put(v.first).put(v.second)) } }.toString()).apply()
     fun lyricsScale(ctx: Context): Float = p(ctx).getFloat("lyrics_scale", 1f)
     fun setLyricsScale(ctx: Context, scale: Float) = p(ctx).edit().putFloat("lyrics_scale", (Math.round(scale * 10) / 10f).coerceIn(0.6f, 1.8f)).apply()
 
-    /** Your last 10 searches, newest first (on this phone only). */
+    /** Your last 10 searches, newest first (synced with a linked PC). */
     fun searches(ctx: Context): List<String> = p(ctx).getString("searches", "")!!.split('\n').filter { it.isNotBlank() }
+    fun setSearches(ctx: Context, list: List<String>) = p(ctx).edit().putString("searches", list.filter { it.isNotBlank() }.take(10).joinToString("\n")).apply()
     fun rememberSearch(ctx: Context, q: String) {
         val t = q.trim().takeIf { it.length >= 2 } ?: return
         p(ctx).edit().putString("searches", (listOf(t) + searches(ctx).filterNot { it.equals(t, true) }).take(10).joinToString("\n")).apply()

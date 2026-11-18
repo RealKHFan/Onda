@@ -56,6 +56,14 @@ object Mixes {
         read()
     }
 
+    /** The mixes agreed with your PC: the same Daily 10 and Weekly 30 on both. */
+    fun fromSync(list: List<io.github.realkhfan.onda.core.LinkSync.Mix>) {
+        val got = list.mapNotNull { m -> Discovery.Kind.entries.firstOrNull { it.name == m.kind }?.let { it to Mix(it, m.period, m.tracks, m.basedOn) } }.toMap()
+        if (got.isEmpty() || got.all { (k, m) -> _mixes.value[k] == m }) return
+        _mixes.update { it + got }
+        write()
+    }
+
     /** Builds each mix whose day / week has changed (or all, with [force]). Cheap to call often. */
     fun refresh(taste: Taste, today: LocalDate = LocalDate.now(), force: Boolean = false) {
         if (job?.isActive == true || taste.seeds.isEmpty()) return

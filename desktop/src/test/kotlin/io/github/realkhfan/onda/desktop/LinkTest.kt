@@ -109,13 +109,21 @@ class LinkTest {
             // The phone plays: this PC shows it, and its buttons reach the phone through its inbox.
             fun next(key: String): JSONObject { repeat(5) { call("/v1/inbox").second!!.let { if (it.has(key)) return it } }; error("no $key") }
             assertEquals(200, call("/v1/phone/now", JSONObject().put("has", true).put("playing", true).put("title", "Tides").put("artist", "Lumen Trio")
-                .put("pos", 5000).put("dur", 200_000).put("shuffle", true).put("repeat", 1)).first)
+                .put("pos", 5000).put("dur", 200_000).put("shuffle", true).put("repeat", 1)
+                .put("next", org.json.JSONArray(listOf("A", "B", "C").map { JSONObject().put("title", it).put("artist", "Lumen Trio") }))).first)
             val now = runBlocking(Dispatchers.Swing) { Link.activePhone() }
             assertEquals("Tides", now?.s?.optString("title"))
             assertEquals("Test phone", now?.name)
             runBlocking(Dispatchers.Swing) { Link.phoneCommand("toggle"); Link.phoneCommand("shuffle") { put("on", false) } }
             assertEquals("toggle", next("cmd").getString("cmd"))
             assertEquals(false, next("cmd").getBoolean("on"))
+            // Its queue: shown here, changed there (here at once; the phone's next report confirms it).
+            runBlocking(Dispatchers.Swing) { Link.phoneCommand("move") { put("from", 0); put("to", 2) }; Link.phoneCommand("remove") { put("i", 0) } }
+            assertEquals(0, next("cmd").let { assertEquals("move", it.getString("cmd")); it.getInt("from") })
+            assertEquals(0, next("cmd").let { assertEquals("remove", it.getString("cmd")); it.getInt("i") })
+            runBlocking(Dispatchers.Swing) {
+                assertEquals(listOf("C", "A"), Link.phoneNow!!.s.getJSONArray("next").let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("title") } })
+            }
             // Shown at once: paused, shuffle off; still the place to play (it played a moment ago).
             runBlocking(Dispatchers.Swing) {
                 assertEquals(false, Link.phoneNow?.playing)

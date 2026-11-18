@@ -140,7 +140,8 @@ internal fun MiniPlayer(player: PlayerState, tint: Color, onOpen: () -> Unit) {
         pos = player.position()
         while (player.isPlaying) { delay(500); pos = player.position() }
     }
-    val frac = (pos.toFloat() / player.durationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
+    // Right after a skip the next song's length isn't known yet: start, not "full".
+    val frac = if (player.durationMs > 0) (pos.toFloat() / player.durationMs).coerceIn(0f, 1f) else 0f
     Column(
         Modifier.fillMaxWidth().padding(8.dp, 4.dp).clip(RoundedCornerShape(8.dp))
             .background(tint).clickable(onClick = onOpen),
@@ -258,14 +259,14 @@ internal fun FullPlayer(
                 }
             }
             SeekBar(
-                frac = shown.toFloat() / dur,
+                frac = if (player.durationMs > 0) shown.toFloat() / dur else 0f, // length not known yet (just skipped): at the start
                 onSeeking = { seeking = (it * dur).toLong() },
                 onSeekDone = { val ms = (it * dur).toLong(); player.seekTo(ms); pos = ms; seeking = null },
             )
             Row(Modifier.fillMaxWidth()) {
                 Text(fmt(shown), color = Dim, fontSize = 11.sp)
                 Spacer(Modifier.weight(1f))
-                Text(fmt(dur), color = Dim, fontSize = 11.sp)
+                Text(if (player.durationMs > 0) fmt(dur) else "–:––", color = Dim, fontSize = 11.sp)
             }
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {

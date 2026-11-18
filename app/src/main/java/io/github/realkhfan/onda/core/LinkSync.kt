@@ -23,6 +23,25 @@ object LinkSync {
     /** Details you edited for one of your songs; found on the other side by the file's own artist and title. */
     data class Edit(val title: String, val artist: String, val album: String, val cover: String?, val deezerId: Long)
 
+    /** Lyrics you chose for a song: the LRCLIB id (0 = the one found) and a timing shift in ms (+ = shown earlier). */
+    data class Lyric(val id: Long, val shiftMs: Long)
+
+    /** A Daily 10 / Weekly 30 ([Discovery.Kind] name) for its day or week, so both devices play the same one. */
+    data class Mix(val kind: String, val period: String, val tracks: List<RemoteTrack>, val basedOn: List<String> = emptyList())
+
+    /**
+     * Settings both apps have, kept the same on both: the highlight colour, crossfade, even loudness (and by album), the
+     * equalizer, lyrics size, how playlists are sorted, similar songs when the queue ends, release alerts, Apple's catalog in
+     * search, ListenBrainz, streaming quality and the music server login. Folders, window, speakers, volume and the like stay
+     * per device.
+     */
+    val SETTINGS = listOf(
+        "accent", "crossfade", "normalize", "albumGain", "eq", "eqPreset", "lyricsScale", "playlistOrder",
+        "autoplay", "releaseAlerts", "apple", "listenBrainz", "kbps", "server",
+    )
+
+    const val MAX_SEARCHES = 10
+
     data class Snapshot(
         val playlists: List<Playlist> = emptyList(),
         val folders: List<Folder> = emptyList(),
@@ -41,6 +60,20 @@ object LinkSync {
         val edits: Map<String, Edit> = emptyMap(),
         /** Your profile picture's [hashOf]; "" for none; null from an Onda that doesn't sync it (then it stays as it is). */
         val picture: String? = null,
+        // Each of these is null from an older Onda that doesn't sync it; then it stays as it is.
+        /** Pinned playlists (ids, in pin order). */
+        val pins: List<String>? = null,
+        /** Your own songs hidden from the library. */
+        val hidden: List<Song>? = null,
+        /** Last searches, newest first. */
+        val searches: List<String>? = null,
+        /** [SETTINGS] as text. */
+        val settings: Map<String, String>? = null,
+        /** Lyrics you picked or re-timed, by [Song.id]. */
+        val lyrics: Map<String, Lyric>? = null,
+        /** When each of your songs first turned up, by [Song.id] (the earliest of both): "Recently added". */
+        val added: Map<String, Long>? = null,
+        val mixes: List<Mix>? = null,
     )
 
     fun idOf(artist: String, title: String) = "~" + Match.norm(artist) + "|" + Match.norm(title)
@@ -117,7 +150,46 @@ object LinkSync {
                 a.picture != base?.picture -> a.picture
                 else -> b.picture
             },
+            pins = both(base?.pins, a.pins, b.pins) { o, x, y -> list(o, x, y) { it } },
+            hidden = both(base?.hidden, a.hidden, b.hidden) { o, x, y -> list(o, x, y) { it.id } },
+            searches = both(base?.searches, a.searches, b.searches) { o, x, y -> list(o, x, y, newFirst = true) { Match.norm(it) }.take(MAX_SEARCHES) },
+            settings = both(base?.settings, a.settings, b.settings, ::keyed),
+            lyrics = both(base?.lyrics, a.lyrics, b.lyrics, ::keyed),
+            // Songs on either device, each with the earliest date either saw it.
+            added = both(base?.added, a.added, b.added) { _, x, y -> x + y.filter { (k, t) -> x[k]?.let { it <= t } != true } },
+            mixes = both(base?.mixes, a.mixes, b.mixes) { o, x, y -> mixes(o, x, y) },
         )
+    }
+
+    private fun <T> both(base: T?, a: T?, b: T?, merge: (T?, T, T) -> T): T? = if (a == null) b else if (b == null) a else merge(base, a, b)
+
+    /**
+     * Per key: the side that changed it since [base] ([a] when both did; gone when that side removed it). With no [base] (the
+     * first time), [b]'s (the PC's) values win.
+     */
+    fun <V> keyed(base: Map<String, V>?, a: Map<String, V>, b: Map<String, V>): Map<String, V> =
+        (a.keys + b.keys).mapNotNull { k ->
+            when {
+                base == null -> b[k] ?: a[k]
+                a[k] != base[k] -> a[k]
+                else -> b[k]
+            }?.let { k to it }
+        }.toMap()
+
+    /**
+     * Per kind, the newer day or week. For the same one: the side that built it anew since they last agreed (the phone's
+     * when both did), so both play the same mix.
+     */
+    private fun mixes(base: List<Mix>?, a: List<Mix>, b: List<Mix>): List<Mix> = (a + b).map { it.kind }.distinct().mapNotNull { k ->
+        val x = a.firstOrNull { it.kind == k }
+        val y = b.firstOrNull { it.kind == k }
+        when {
+            x == null -> y
+            y == null -> x
+            x.period != y.period -> if (x.period > y.period) x else y
+            x == base?.firstOrNull { it.kind == k } -> y
+            else -> x
+        }
     }
 
     /**
@@ -181,6 +253,17 @@ object LinkSync {
             s.edits.forEach { (k, e) -> put(k, JSONObject().put("t", e.title).put("a", e.artist).put("al", e.album).put("c", e.cover).put("dz", e.deezerId)) }
         })
         .apply { s.picture?.let { put("picture", it) } }
+        .apply { s.pins?.let { put("pins", JSONArray(it)) } }
+        .apply { s.hidden?.let { put("hidden", JSONArray(it.map(::song))) } }
+        .apply { s.searches?.let { put("searches", JSONArray(it)) } }
+        .apply { s.settings?.let { put("settings", JSONObject(it)) } }
+        .apply { s.lyrics?.let { m -> put("lyrics", JSONObject().apply { m.forEach { (k, l) -> put(k, JSONArray().put(l.id).put(l.shiftMs)) } }) } }
+        .apply { s.added?.let { put("added", JSONObject(it)) } }
+        .apply {
+            s.mixes?.let { m ->
+                put("mixes", JSONArray(m.map { JSONObject().put("kind", it.kind).put("period", it.period).put("tracks", JSONArray(it.tracks.map(::track))).put("basedOn", JSONArray(it.basedOn)) }))
+            }
+        }
 
     fun fromJson(o: JSONObject): Snapshot = Snapshot(
         playlists = objects(o.optJSONArray("playlists")).map { p ->
@@ -201,6 +284,17 @@ object LinkSync {
             }
         }.orEmpty(),
         picture = if (o.has("picture")) o.optString("picture") else null,
+        pins = if (o.has("pins")) strings(o.optJSONArray("pins")) else null,
+        hidden = if (o.has("hidden")) objects(o.optJSONArray("hidden")).map(::song) else null,
+        searches = if (o.has("searches")) strings(o.optJSONArray("searches")) else null,
+        settings = o.optJSONObject("settings")?.let { m -> m.keys().asSequence().associateWith { m.optString(it) } },
+        lyrics = o.optJSONObject("lyrics")?.let { m ->
+            m.keys().asSequence().mapNotNull { k -> m.optJSONArray(k)?.let { k to Lyric(it.optLong(0), it.optLong(1)) } }.toMap()
+        },
+        added = o.optJSONObject("added")?.let { m -> m.keys().asSequence().associateWith { m.optLong(it) } },
+        mixes = if (!o.has("mixes")) null else objects(o.optJSONArray("mixes")).map {
+            Mix(it.optString("kind"), it.optString("period"), objects(it.optJSONArray("tracks")).map(::track), strings(it.optJSONArray("basedOn")))
+        },
     )
 
     /** "gif", "png", "webp" or "jpg" for a picture's bytes; null when it's none of them. */
@@ -262,6 +356,12 @@ object LinkSync {
         }
 
         fun id(s: Song): String = s.key ?: byName[s.id]?.first()?.id?.also { learned[it] = s } ?: (PLACEHOLDER + s.artist + '\u001F' + s.title)
+
+        /** [song]'s [Song.id] without keeping it for next time: for things kept by song (dates, lyrics), not lists. */
+        fun songId(id: String): String? = if (Source.of(id) != null) id else byId[id]?.let { idOf(it.artist, it.title) }
+
+        /** The id here of a [Song.id] (a catalog key, or one of your songs by artist and title); null when it isn't here. */
+        fun local(songId: String): String? = if (Source.of(songId) != null) songId else byName[songId]?.first()?.id
 
         companion object { const val PLACEHOLDER = "~song:" }
     }

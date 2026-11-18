@@ -10,6 +10,7 @@ import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.UnstableApi
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
 import io.github.realkhfan.onda.core.LinkSync
 import io.github.realkhfan.onda.core.Source
 import io.github.realkhfan.onda.data.Link
@@ -67,7 +68,7 @@ class RemotePlayer(looper: Looper, private val scope: CoroutineScope) : SimpleBa
             COMMAND_PLAY_PAUSE, COMMAND_STOP, COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM, COMMAND_SEEK_TO_PREVIOUS, COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
             COMMAND_SEEK_TO_NEXT, COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, COMMAND_GET_CURRENT_MEDIA_ITEM, COMMAND_GET_TIMELINE, COMMAND_GET_METADATA,
             COMMAND_SET_MEDIA_ITEM, COMMAND_CHANGE_MEDIA_ITEMS, COMMAND_GET_VOLUME, COMMAND_SET_VOLUME,
-            COMMAND_SET_SHUFFLE_MODE, COMMAND_SET_REPEAT_MODE,
+            COMMAND_SET_SHUFFLE_MODE, COMMAND_SET_REPEAT_MODE, COMMAND_SEEK_TO_MEDIA_ITEM, COMMAND_SEEK_TO_DEFAULT_POSITION,
         ).build()
         val b = State.Builder().setAvailableCommands(commands).setVolume(st?.optDouble("volume", 1.0)?.toFloat() ?: 1f)
         if (st == null || !st.optBoolean("has")) return b.setPlaybackState(STATE_IDLE).build()
@@ -88,9 +89,11 @@ class RemotePlayer(looper: Looper, private val scope: CoroutineScope) : SimpleBa
             .build()
     }
 
+    // Done once the PC answers: until then the player shows what was asked (the next song from its start, not the old one again).
     private fun send(cmd: String, extra: JSONObject.() -> Unit = {}): ListenableFuture<*> {
-        scope.launch { Link.command(cmd, extra)?.let(::show) }
-        return Futures.immediateVoidFuture()
+        val done = SettableFuture.create<Any?>()
+        scope.launch { try { Link.command(cmd, extra)?.let(::show) } finally { done.set(null) } }
+        return done
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> =
@@ -101,7 +104,8 @@ class RemotePlayer(looper: Looper, private val scope: CoroutineScope) : SimpleBa
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> = when (seekCommand) {
         COMMAND_SEEK_TO_NEXT, COMMAND_SEEK_TO_NEXT_MEDIA_ITEM -> send("next")
         COMMAND_SEEK_TO_PREVIOUS, COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> send("prev")
-        else -> send("seek") { put("ms", positionMs.coerceAtLeast(0)) }
+        // A song further down the PC's queue (0 is the one playing).
+        else -> if (mediaItemIndex > 0) send("jump") { put("i", mediaItemIndex - 1) } else send("seek") { put("ms", positionMs.coerceAtLeast(0)) }
     }
 
     override fun handleSetVolume(volume: Float): ListenableFuture<*> = send("volume") { put("v", volume.toDouble()) }
@@ -135,9 +139,12 @@ class RemotePlayer(looper: Looper, private val scope: CoroutineScope) : SimpleBa
         return Futures.immediateVoidFuture()
     }
 
-    // The PC's queue is changed on the PC.
-    override fun handleRemoveMediaItems(fromIndex: Int, toIndex: Int): ListenableFuture<*> = Futures.immediateVoidFuture()
-    override fun handleMoveMediaItems(fromIndex: Int, toIndex: Int, newIndex: Int): ListenableFuture<*> = Futures.immediateVoidFuture()
+    // The PC's queue, from this phone's queue screen (never the song playing).
+    override fun handleRemoveMediaItems(fromIndex: Int, toIndex: Int): ListenableFuture<*> =
+        if (fromIndex < 1) Futures.immediateVoidFuture() else send("remove") { put("i", fromIndex - 1); put("n", toIndex - fromIndex) }
+    override fun handleMoveMediaItems(fromIndex: Int, toIndex: Int, newIndex: Int): ListenableFuture<*> =
+        if (fromIndex < 1 || newIndex < 1 || toIndex - fromIndex != 1) Futures.immediateVoidFuture()
+        else send("move") { put("from", fromIndex - 1); put("to", newIndex - 1) }
     override fun handleReplaceMediaItems(fromIndex: Int, toIndex: Int, mediaItems: MutableList<MediaItem>): ListenableFuture<*> = Futures.immediateVoidFuture()
     override fun handlePrepare(): ListenableFuture<*> = Futures.immediateVoidFuture()
     override fun handleRelease(): ListenableFuture<*> { stopPolling(); return Futures.immediateVoidFuture() }

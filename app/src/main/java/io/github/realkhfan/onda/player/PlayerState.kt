@@ -154,6 +154,7 @@ class PlayerState(val controller: MediaController) {
                 if (auto && now < prev && shuffle && !Remote.on.value) Shuffle.rebuildUpcoming(controller) // reshuffle after each full loop
                 refresh()
             }
+            override fun onPlaybackStateChanged(state: Int) { if (state == Player.STATE_READY) refresh() } // the length is known now
             override fun onTimelineChanged(timeline: Timeline, reason: Int) {
                 refresh(); queueVersion++
             }

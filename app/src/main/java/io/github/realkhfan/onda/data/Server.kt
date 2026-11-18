@@ -83,8 +83,23 @@ object Server {
     }
 
     fun disconnect(ctx: Context) {
-        job?.cancel()
         Prefs.clearServer(ctx)
+        forget()
+    }
+
+    /** The login (or streaming quality) came from your PC: list that server's songs, or forget them when it was removed. */
+    fun reload(ctx: Context) {
+        _kbps.value = Prefs.streamKbps(ctx)
+        val cfg = Prefs.server(ctx)
+        if (cfg == _config.value) return
+        if (cfg == null) return forget()
+        job?.cancel()
+        _config.value = cfg
+        sync()
+    }
+
+    private fun forget() {
+        job?.cancel()
         _config.value = null
         _songs.value = emptyList()
         _playlists.value = emptyList()

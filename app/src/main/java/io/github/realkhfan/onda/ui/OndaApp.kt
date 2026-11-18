@@ -126,6 +126,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -333,8 +334,14 @@ fun OndaApp(player: PlayerState?) {
     val stack = remember { mutableStateListOf<Route>() }
     val detail = stack.lastOrNull()
     var fullPlayer by remember { mutableStateOf(false) }
+    val roots = rememberSaveableStateHolder()
     fun push(r: Route) { stack.add(r) }
-    fun pop() { if (stack.isNotEmpty() && (stack.removeAt(stack.lastIndex) as? QueueRoute)?.fromPlayer == true) fullPlayer = true }
+    fun pop() {
+        if (stack.isEmpty()) return
+        roots.removeState("page${stack.lastIndex}") // a page opened here later starts fresh
+        if ((stack.removeAt(stack.lastIndex) as? QueueRoute)?.fromPlayer == true) fullPlayer = true
+    }
+    fun closePages() { stack.indices.forEach { roots.removeState("page$it") }; stack.clear() }
     fun openQueue() { push(QueueRoute(fromPlayer = fullPlayer)); fullPlayer = false }
     var menuFor by remember { mutableStateOf<MenuFor?>(null) }
     var remoteMenu by remember { mutableStateOf<RemoteTrack?>(null) }
@@ -350,6 +357,12 @@ fun OndaApp(player: PlayerState?) {
     var query by rememberSaveable { mutableStateOf("") }
     var results by remember { mutableStateOf(RemoteResults()) }
     var appleOn by remember { mutableStateOf(Prefs.appleSearch(ctx)) }
+    // Settings can change under us (a sync with your PC): read them again.
+    val prefsChanged by Prefs.changed.collectAsState()
+    LaunchedEffect(prefsChanged) {
+        pinned = Prefs.pinned(ctx); order = Prefs.playlistOrder(ctx); searches = Prefs.searches(ctx); appleOn = Prefs.appleSearch(ctx)
+        accentState.value = androidx.compose.ui.graphics.Color(Prefs.accent(ctx).toInt())
+    }
     var freeOn by remember { mutableStateOf(Prefs.freeSearch(ctx)) }
     var jamendoId by remember { mutableStateOf(Prefs.jamendoId(ctx)) }
     var searchState by remember { mutableStateOf(SearchState.Idle) }
@@ -592,11 +605,13 @@ fun OndaApp(player: PlayerState?) {
                 bottomBar = {
                     Column {
                         if (player?.hasItem == true) MiniPlayer(player, tint) { fullPlayer = true }
-                        NavBar(tab) { tab = it; stack.clear() }
+                        NavBar(tab) { tab = it; closePages() }
                     }
                 },
             ) { pad ->
                 Box(Modifier.padding(pad).fillMaxSize()) {
+                    // Each screen keeps its state (Library tab, scroll) while pages are open on top of it.
+                    roots.SaveableStateProvider(if (detail == null) "tab$tab" else "page${stack.lastIndex}") {
                     when (val d = detail) {
                         SettingsRoute -> SettingsScreen(
                             folders, scanning, appleOn,
@@ -880,6 +895,7 @@ fun OndaApp(player: PlayerState?) {
                             )
                         }
                     }
+                    }
                 }
             }
         }
@@ -949,7 +965,7 @@ fun OndaApp(player: PlayerState?) {
                     add(MenuAction("Play from ${pc.name}", Icons.Rounded.PlayArrow) { player?.playItems(listOf(LinkDataSource.item(t)), 0, "Your PC", pc.name, shuffled = false) })
                     add(MenuAction("Get it from ${pc.name}", Icons.Rounded.Download) { Downloads.forMissing(t)?.let { download(listOf(it)) } })
                 }
-                add(MenuAction("Search for it", Icons.Rounded.Search) { menuFor = null; stack.clear(); tab = 1; query = "${t.artist} ${t.title}" })
+                add(MenuAction("Search for it", Icons.Rounded.Search) { menuFor = null; closePages(); tab = 1; query = "${t.artist} ${t.title}" })
                 add(MenuAction("Start radio", Icons.Rounded.Radio) { startRadio(null, t.artist, t.id, "${t.title} Radio") })
                 add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
             }

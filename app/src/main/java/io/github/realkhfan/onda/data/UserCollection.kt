@@ -40,7 +40,8 @@ object UserCollection {
         write()
     }
     /** Library songs you hid (files and server songs; catalog songs you marked "not interested" stay hidden). */
-    fun isLibraryKey(key: String) = key.startsWith("content:") || key.startsWith("file:") || key.startsWith(Server.PREFIX)
+    fun isLibraryKey(key: String) = key.startsWith("content:") || key.startsWith("file:") || key.startsWith(Server.PREFIX) ||
+        io.github.realkhfan.onda.core.LinkSync.isMissing(key) // hidden on your PC, not on this phone
     fun showHiddenSongs() { _hidden.value = _hidden.value.filterNot(::isLibraryKey).toSet(); write() }
 
     fun isBlocked(name: String) = Match.norm(name) in _blocked.value
@@ -86,10 +87,14 @@ object UserCollection {
     }
 
     /** After syncing with your PC; songs hidden from your library here stay as they are. */
-    fun fromSync(followed: List<RemoteArtist>, albums: List<RemoteAlbum>, notInterested: List<String>, blocked: List<String>, ai: List<String>) {
+    /** [hiddenSongs]: your own songs hidden from the library (ids here); null keeps them as they are. */
+    fun fromSync(
+        followed: List<RemoteArtist>, albums: List<RemoteAlbum>, notInterested: List<String>, blocked: List<String>, ai: List<String>,
+        hiddenSongs: List<String>? = null,
+    ) {
         _followed.value = followed
         _albums.value = albums
-        _hidden.value = _hidden.value.filter(::isLibraryKey).toSet() + notInterested
+        _hidden.value = (hiddenSongs ?: _hidden.value.filter(::isLibraryKey)).toSet() + notInterested
         _blocked.value = blocked.toSet()
         _aiMarked.value = ai.toSet()
         write()

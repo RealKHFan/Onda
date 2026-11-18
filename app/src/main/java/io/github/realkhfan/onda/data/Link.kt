@@ -211,6 +211,13 @@ object Link {
             // Agreed last time plus yours; only a restore here removes one (a song missing its edit for a moment keeps it).
             edits = Overrides.forSync(raw, base?.edits.orEmpty()),
             picture = Profile.hash(),
+            pins = Prefs.pinned(app),
+            hidden = UserCollection.hidden.value.filter(UserCollection::isLibraryKey).mapNotNull(lib::song),
+            searches = Prefs.searches(app),
+            settings = Prefs.shared(app),
+            lyrics = Prefs.lyricsPicks(app).mapNotNull { (id, v) -> lib.songId(id)?.let { it to LinkSync.Lyric(v.first, v.second) } }.toMap(),
+            added = MusicLibrary.addedAt.value.mapNotNull { (id, t) -> lib.songId(id)?.let { it to t } }.toMap(),
+            mixes = Mixes.mixes.value.values.map { LinkSync.Mix(it.kind.name, it.period, it.tracks, it.basedOn) },
         ).also { known += lib.learned }
     }
 
@@ -225,7 +232,23 @@ object Link {
             s.folders.map { PlaylistStore.Folder(it.id, it.name) },
             s.liked.map(lib::id).distinct(), s.want, s.catalog,
         )
-        UserCollection.fromSync(s.followed, s.albums, s.notInterested, s.blocked, s.ai)
+        UserCollection.fromSync(s.followed, s.albums, s.notInterested, s.blocked, s.ai, s.hidden?.map(lib::id))
+        s.pins?.let { Prefs.setPinned(app, it) }
+        s.searches?.let { Prefs.setSearches(app, it) }
+        s.settings?.let { m ->
+            val changed = Prefs.applyShared(app, m)
+            if ("eq" in changed) io.github.realkhfan.onda.player.Effects.apply(Prefs.eq(app))
+            if ("normalize" in changed) io.github.realkhfan.onda.player.Effects.normalize = Prefs.normalize(app)
+            if ("server" in changed || "kbps" in changed) Server.reload(app)
+            if ("releaseAlerts" in changed) if (Prefs.releaseAlerts(app)) ReleaseJob.schedule(app) else ReleaseJob.cancel(app)
+        }
+        // Picks for songs that aren't here stay; the rest are as agreed (a pick put back on either side is gone).
+        s.lyrics?.let { m ->
+            Prefs.setLyricsPicks(app, Prefs.lyricsPicks(app).filterKeys { lib.songId(it) == null } +
+                m.mapNotNull { (k, l) -> lib.local(k)?.let { it to (l.id to l.shiftMs) } })
+        }
+        s.added?.let { m -> MusicLibrary.adoptAdded(app, m.mapNotNull { (k, t) -> lib.local(k)?.let { it to t } }.toMap()) }
+        s.mixes?.let(Mixes::fromSync)
         PlayLog.replace(s.plays.map { p -> p.copy(key = p.key.ifEmpty { lib.id(LinkSync.Song(null, p.title, p.artist)) }) })
         known += lib.learned
         synced = fingerprint() // what just came from the PC isn't a change to send back
@@ -290,6 +313,7 @@ object Link {
         PlaylistStore.playlists.value, PlaylistStore.folders.value, PlaylistStore.liked.value, PlaylistStore.want.value,
         UserCollection.followed.value, UserCollection.albums.value, UserCollection.hidden.value, UserCollection.blocked.value,
         UserCollection.aiMarked.value, Overrides.meta.value, Profile.picture?.path,
+        Prefs.shared(app), Prefs.pinned(app), Prefs.searches(app), Prefs.lyricsPicks(app), Mixes.mixes.value,
     ).hashCode()
 
     /** Changes here reach the PC a few seconds later (while Onda runs). */
@@ -298,7 +322,7 @@ object Link {
         val flows = listOf<kotlinx.coroutines.flow.Flow<Any?>>(
             PlaylistStore.playlists, PlaylistStore.folders, PlaylistStore.liked, PlaylistStore.want, UserCollection.followed, UserCollection.albums,
             UserCollection.hidden, UserCollection.blocked, UserCollection.aiMarked, Overrides.meta,
-            androidx.compose.runtime.snapshotFlow { Profile.picture },
+            androidx.compose.runtime.snapshotFlow { Profile.picture }, Prefs.changed, Mixes.mixes,
         )
         scope.launch {
             kotlinx.coroutines.flow.combine(flows) { fingerprint() }.collectLatest { f ->

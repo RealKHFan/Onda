@@ -61,6 +61,16 @@ object MusicLibrary {
         if (_tracks.value.isEmpty()) _tracks.value = known.values.map { it.second }.filter { t -> folders.any { t.uri.startsWith(prefixOf(it)) } }
     }
 
+    /** First-seen dates from your PC (by song id here): the earlier date wins, so both show the same "Recently added". */
+    fun adoptAdded(context: Context, dates: Map<String, Long>) {
+        val now = _addedAt.value
+        val earlier = dates.filter { (id, t) -> t > 0 && now[id]?.let { t < it } == true }
+        if (earlier.isEmpty()) return
+        _addedAt.value = now + earlier
+        val text = org.json.JSONObject(_addedAt.value).toString()
+        scope.launch(Dispatchers.IO) { save(context.applicationContext, "added.json", text) }
+    }
+
     /** A scan that leaving the app doesn't cancel. */
     fun rescanSoon(context: Context) {
         val c = context.applicationContext

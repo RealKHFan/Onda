@@ -51,6 +51,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
@@ -360,7 +362,9 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         is View.CatalogAlbum -> CatalogAlbumPage(ctx, v.a, back)
                     }
                 }
-                if (player != null && panel == Panel.QUEUE) QueuePanel(player, recent = state.recent.filter { r -> r.id != player.current?.id }.take(5), onClear = {
+                val phone = Link.activePhone()
+                if (phone != null && panel == Panel.QUEUE) PhoneQueuePanel(phone) { panel = Panel.NONE }
+                else if (player != null && panel == Panel.QUEUE) QueuePanel(player, recent = state.recent.filter { r -> r.id != player.current?.id }.take(5), onClear = {
                     val gone = player.upcoming().map { it.second }
                     player.clearUpcoming()
                     ctx.undoable("Queue cleared") { player.append(gone) }
@@ -1346,7 +1350,7 @@ private fun Search(ctx: Ctx) {
                     Spacer(Modifier.width(18.dp))
                     Column {
                         Text(top.name, color = TextMain, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-                        Text("Artist", color = TextDim)
+                        ArtistLabel(ctx.state, top, 14.sp)
                     }
                 }
             }
@@ -1364,7 +1368,7 @@ private fun Search(ctx: Ctx) {
                             horizontalAlignment = Alignment.CenterHorizontally) {
                             Art(a.picture, 124, round = true)
                             Text(a.name, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
-                            Text("Artist", color = TextDim, fontSize = 12.sp)
+                            ArtistLabel(ctx.state, a, 12.sp)
                         }
                     }
                 }
@@ -1408,7 +1412,12 @@ private fun CatalogArtistPage(ctx: Ctx, artist: RemoteArtist, back: (() -> Unit)
             val s = ctx.state
             Header(artist.name, if (s.isAi(artist.name)) "Artist · marked as AI (hidden from suggestions)" else "Artist", picture, round = true, back = back) {
                 val following = s.isFollowed(artist)
-                OutlinedButton(onClick = { s.toggleFollow(artist.copy(picture = picture)) }) { Text(if (following) "Following" else "Follow", color = if (following) Accent else TextMain) }
+                // Following stands out (filled, with a check); Follow is an outline with a plus.
+                if (following) Button(onClick = { s.toggleFollow(artist.copy(picture = picture)) }, colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Bg)) {
+                    Icon(Icons.Rounded.Check, null, Modifier.size(18.dp)); Text(" Following")
+                } else OutlinedButton(onClick = { s.toggleFollow(artist.copy(picture = picture)) }) {
+                    Icon(Icons.Rounded.Add, null, Modifier.size(18.dp), tint = TextMain); Text(" Follow", color = TextMain)
+                }
                 Spacer(Modifier.width(6.dp))
                 TextButton(onClick = { s.toggleBlocked(artist.name) }) { Text(if (s.isBlocked(artist.name)) "Suggest again" else "Don't suggest", color = TextDim) }
                 if (!s.onAiList(artist.name)) TextButton(onClick = { s.toggleAi(artist.name) }) { Text(if (s.isAi(artist.name)) "Not AI after all" else "This is AI", color = TextDim) }
@@ -1898,6 +1907,33 @@ private fun QueuePanel(player: Player, recent: List<Player.Item>, onClear: () ->
     }
 }
 
+/** Your phone's queue while this PC controls it: the same list, changed on the phone. */
+@Composable
+private fun PhoneQueuePanel(n: Link.PhoneNow, onClose: () -> Unit) = PanelFrame("Queue on ${n.name}", onClose) {
+    fun item(o: org.json.JSONObject) = Player.Item(o.optString("key"), o.optString("title"), o.optString("artist"), o.optString("album"),
+        o.optString("art").takeIf { it.startsWith("http") }, "", durationMs = o.optLong("dur"))
+    val next = n.s.optJSONArray("next")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) } }.orEmpty()
+    val reorder = remember { ReorderState() }
+    LazyColumn {
+        item { Section("Now playing") }
+        item { QueueRow(item(n.s), true, onClick = {}) }
+        if (next.isNotEmpty()) item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Section("Next")
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { Link.phoneCommand("clear") }) { Text("Clear", color = Accent) }
+            }
+        }
+        items(next.size) { k ->
+            val o = next[k]
+            QueueRow(item(o), false, Modifier.reorderRow(reorder, k, next.size), onRemove = { Link.phoneCommand("remove") { put("i", k) } },
+                handle = { DragHandle(reorder, k, next.size, o.optString("title")) { from, to -> Link.phoneCommand("move") { put("from", from); put("to", to) } } }) {
+                Link.phoneCommand("jump") { put("i", k) }
+            }
+        }
+    }
+}
+
 @Composable
 private fun QueueRow(it: Player.Item, now: Boolean, modifier: Modifier = Modifier, onRemove: (() -> Unit)? = null,
                      handle: (@Composable () -> Unit)? = null, onClick: () -> Unit) {
@@ -2100,7 +2136,7 @@ private fun PlayerBar(ctx: Ctx, panel: Panel, toggle: (Panel) -> Unit) {
     // Your phone playing (and this PC not): the bar shows it and its buttons control it.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Link.phoneNow != null) { while (Link.phoneNow != null) { now = System.currentTimeMillis(); delay(500) } }
-    Link.activePhone(now)?.let { return PhonePlayerBar(ctx, it, now) }
+    Link.activePhone(now)?.let { return PhonePlayerBar(ctx, it, now, panel, toggle) }
     val cur = player?.current
     Row(Modifier.fillMaxWidth().height(96.dp).background(Side).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
@@ -2259,7 +2295,7 @@ private fun qualityOf(item: Player.Item): String? {
 
 /** The player bar while your phone plays: its song, and buttons that control it there. */
 @Composable
-private fun PhonePlayerBar(ctx: Ctx, n: Link.PhoneNow, now: Long) {
+private fun PhonePlayerBar(ctx: Ctx, n: Link.PhoneNow, now: Long, panel: Panel, toggle: (Panel) -> Unit) {
     val s = n.s
     val title = s.optString("title"); val artist = s.optString("artist")
     // A catalog song has its cover link; for your own songs, the same song's cover here (if it's on this PC too).
@@ -2305,6 +2341,7 @@ private fun PhonePlayerBar(ctx: Ctx, n: Link.PhoneNow, now: Long) {
             }
         }
         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            Tip("Queue on ${n.name}") { IconButton(onClick = { toggle(Panel.QUEUE) }) { Icon(Icons.AutoMirrored.Rounded.QueueMusic, "Queue on ${n.name}", tint = if (panel == Panel.QUEUE) Accent else TextDim) } }
             OutputButton(ctx.state, ctx.player)
         }
     }
@@ -3159,4 +3196,11 @@ private fun GetFromPhone(ctx: Ctx, list: List<Track>) {
             ctx.toast("Asked ${ph.name} for ${missing.size} songs; they arrive in “Onda from phone”")
         }) { Text("Get ${missing.size} from ${ph.name}", color = Accent) }
     }
+}
+
+/** "Artist", or "✓ Following" in the accent colour for one you follow. */
+@Composable
+private fun ArtistLabel(s: AppState, a: RemoteArtist, size: androidx.compose.ui.unit.TextUnit) {
+    if (s.isFollowed(a)) Text("✓ Following", color = Accent, fontSize = size, fontWeight = FontWeight.Medium)
+    else Text("Artist", color = TextDim, fontSize = size)
 }

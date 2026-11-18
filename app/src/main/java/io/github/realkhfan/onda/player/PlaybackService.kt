@@ -119,7 +119,7 @@ class PlaybackService : MediaLibraryService() {
         player.addListener(object : Player.Listener {
             override fun onEvents(p: Player, events: Player.Events) {
                 if (events.containsAny(Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_POSITION_DISCONTINUITY,
-                        Player.EVENT_REPEAT_MODE_CHANGED, Player.EVENT_MEDIA_METADATA_CHANGED)) reportSoon()
+                        Player.EVENT_REPEAT_MODE_CHANGED, Player.EVENT_MEDIA_METADATA_CHANGED, Player.EVENT_TIMELINE_CHANGED)) reportSoon()
             }
         })
         scope.launch { androidx.compose.runtime.snapshotFlow { Shuffle.on }.collect { reportSoon() } }
@@ -147,6 +147,22 @@ class PlaybackService : MediaLibraryService() {
             .put("title", meta.title?.toString().orEmpty()).put("artist", meta.artist?.toString().orEmpty()).put("album", meta.albumTitle?.toString().orEmpty())
             .put("art", meta.artworkUri?.toString()?.takeIf { it.startsWith("http") }).put("pos", p.currentPosition.coerceAtLeast(0))
             .put("dur", p.duration.coerceAtLeast(0)).put("shuffle", Shuffle.on).put("repeat", RemotePlayer.pcRepeat(p.repeatMode))
+            // What's next too, for the PC's queue panel while it controls this phone.
+            .put("next", org.json.JSONArray(upcoming(p, 50).map { i ->
+                val it = p.getMediaItemAt(i).mediaMetadata
+                JSONObject().put("key", p.getMediaItemAt(i).mediaId).put("title", it.title?.toString().orEmpty()).put("artist", it.artist?.toString().orEmpty())
+                    .put("album", it.albumTitle?.toString().orEmpty()).put("art", it.artworkUri?.toString()?.takeIf { a -> a.startsWith("http") }).put("dur", it.durationMs ?: 0L)
+            }))
+    }
+
+    /** The songs still to come, in play order (as [max] timeline indexes): what the PC's queue panel shows and changes. */
+    private fun upcoming(p: Player, max: Int = Int.MAX_VALUE): List<Int> {
+        val t = p.currentTimeline
+        if (t.isEmpty) return emptyList()
+        val out = ArrayList<Int>()
+        var i = t.getNextWindowIndex(p.currentMediaItemIndex, Player.REPEAT_MODE_OFF, p.shuffleModeEnabled)
+        while (i != androidx.media3.common.C.INDEX_UNSET && out.size < max) { out += i; i = t.getNextWindowIndex(i, Player.REPEAT_MODE_OFF, p.shuffleModeEnabled) }
+        return out
     }
 
     /** The PC controls this phone, hands over, or started playing itself. */
@@ -170,6 +186,15 @@ class PlaybackService : MediaLibraryService() {
             "seek" -> p.seekTo(m.optLong("ms").coerceAtLeast(0))
             "shuffle" -> Shuffle.set(p, m.optBoolean("on"))
             "repeat" -> p.repeatMode = RemotePlayer.exoRepeat(m.optInt("mode"))
+            // The PC's queue panel ([i], [from], [to] count from the first song still to come).
+            "jump" -> upcoming(player).getOrNull(m.optInt("i", -1))?.let { p.seekTo(it, 0) }
+            "remove" -> upcoming(player).drop(m.optInt("i", -1).coerceAtLeast(0)).take(m.optInt("n", 1).coerceIn(1, 50))
+                .takeIf { m.optInt("i", -1) >= 0 }?.sortedDescending()?.forEach(p::removeMediaItem)
+            "move" -> upcoming(player).let { up ->
+                val f = m.optInt("from", -1); val t = m.optInt("to", -1)
+                if (f in up.indices && t in up.indices) p.moveMediaItem(up[f], up[t])
+            }
+            "clear" -> upcoming(player).sortedDescending().forEach(p::removeMediaItem)
         }
         if (m.optBoolean("handover")) {
             // "This PC" on the PC: what plays here carries on there, from the same place.

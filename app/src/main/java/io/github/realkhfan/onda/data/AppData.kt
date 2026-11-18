@@ -13,6 +13,7 @@ object AppData {
         if (loaded) return
         loaded = true
         val c = context.applicationContext
+        Prefs.watch(c)
         MusicLibrary.load(c)
         PlaylistStore.load(c)
         Overrides.load(c.filesDir)

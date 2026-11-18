@@ -47,6 +47,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AddCircleOutline
 import androidx.compose.material.icons.rounded.Bookmark
@@ -361,9 +364,17 @@ private fun TopArtistCard(a: RemoteArtist, onClick: () -> Unit) {
         Spacer(Modifier.width(16.dp))
         Column {
             Text(a.name, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 22.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("Artist", color = TextDim, fontSize = 13.sp)
+            ArtistLabel(a, 13.sp)
         }
     }
+}
+
+/** "Artist", or "✓ Following" in the accent colour for one you follow. */
+@Composable
+private fun ArtistLabel(a: RemoteArtist, size: androidx.compose.ui.unit.TextUnit) {
+    val followed by UserCollection.followed.collectAsState()
+    if (followed.any { it.id == a.id }) Text("✓ Following", color = Accent, fontSize = size, fontWeight = FontWeight.Medium)
+    else Text("Artist", color = TextDim, fontSize = size)
 }
 
 @Composable
@@ -372,7 +383,7 @@ private fun ArtistBubble(a: RemoteArtist, onClick: () -> Unit) {
         Art(a.picture, 104.dp, round = true)
         Spacer(Modifier.height(6.dp))
         Text(a.name, color = TextMain, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-        Text("Artist", color = TextDim, fontSize = 11.sp)
+        ArtistLabel(a, 11.sp)
     }
 }
 
@@ -452,9 +463,7 @@ internal fun RemoteArtistScreen(
                     val ai = remember(marked) { UserCollection.isAi(artist.name) }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { UserCollection.toggleFollow(artist.copy(picture = picture)) }) {
-                            Text(if (following) "Following" else "Follow", color = if (following) Accent else TextMain)
-                        }
+                        FollowButton(following) { UserCollection.toggleFollow(artist.copy(picture = picture)) }
                         val blockedNow by UserCollection.blocked.collectAsState()
                         val noSuggest = remember(blockedNow) { UserCollection.isBlocked(artist.name) }
                         TextButton(onClick = { UserCollection.toggleBlocked(artist.name) }) {
@@ -639,3 +648,17 @@ private fun typeLabel(type: String?): String? = when (type) {
 /** "2026-11-14" -> "14 Nov 2026"; unknown formats pass through. */
 private fun prettyDate(date: String?): String? =
     date?.let { runCatching { LocalDate.parse(it).format(DateTimeFormatter.ofPattern("d MMM yyyy")) }.getOrDefault(it) }
+
+/** Following stands out (filled, with a check); Follow is an outline with a plus. */
+@Composable
+internal fun FollowButton(following: Boolean, onClick: () -> Unit) {
+    if (following) {
+        Button(onClick, colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Bg)) {
+            Icon(Icons.Rounded.Check, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Following")
+        }
+    } else {
+        OutlinedButton(onClick) {
+            Icon(Icons.Rounded.Add, null, Modifier.size(18.dp), tint = TextMain); Spacer(Modifier.width(6.dp)); Text("Follow", color = TextMain)
+        }
+    }
+}

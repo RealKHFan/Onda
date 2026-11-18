@@ -173,7 +173,9 @@ fun main(args: Array<String>) {
                 state.start()
                 if (player == null) return@LaunchedEffect
                 player.changeVolume(state.settings.volume)
-                player.equalize(state.settings.eq)
+                // Settings can change under us (a sync with your phone): the player follows them.
+                scope.launch { snapshotFlow { state.settings.eq }.collect { player.equalize(it) } }
+                scope.launch { snapshotFlow { state.settings.crossfade }.collect { player.crossfade = it } }
                 // Back where you left off: same queue and song, paused at the same moment.
                 if (files.isNotEmpty()) openFiles(files)
                 else withContext(Dispatchers.IO) { Store.session() }?.let { player.restore(it.items, it.index, it.positionMs, it.shuffle, it.repeat) }

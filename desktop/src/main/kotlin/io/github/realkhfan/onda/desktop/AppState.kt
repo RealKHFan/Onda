@@ -39,8 +39,9 @@ import java.util.UUID
 class AppState(private val scope: CoroutineScope) {
     var settings by mutableStateOf(Store.settings()); private set
     private var localCache by mutableStateOf(Store.localCache())
-    /** When each file was added (its modification time), for "Recently added". */
-    val addedAt by derivedStateOf { localCache.values.associate { it.second.id to it.first } }
+    private var firstSeen by mutableStateOf(Store.firstSeen())
+    /** When each file was added (its modification time, or earlier where your phone saw it first), for "Recently added". */
+    val addedAt by derivedStateOf { localCache.values.associate { (mtime, t) -> t.id to minOf(mtime, firstSeen[t.id] ?: mtime) } }
     var local by mutableStateOf(localCache.values.map { it.second }); internal set
     var serverSongs by mutableStateOf(if (settings.server != null) Store.serverSongs() else emptyList()); private set
     var serverPlaylists by mutableStateOf(if (settings.server != null) Store.serverPlaylists() else emptyList()); private set
@@ -86,7 +87,7 @@ class AppState(private val scope: CoroutineScope) {
 
     /** Albums from your folders, newest files first. */
     val recentlyAdded by derivedStateOf {
-        val added = localCache.values.associate { it.second.id to it.first }
+        val added = addedAt
         Grouping.albums(Overrides.apply(local, meta)).sortedByDescending { a -> a.tracks.maxOf { added[it.id] ?: 0L } }.take(14)
     }
 
@@ -561,7 +562,48 @@ class AppState(private val scope: CoroutineScope) {
     fun setCrossfade(s: Int) = update(settings.copy(crossfade = s.coerceIn(0, 12)))
 
     /** What a sync carries, as one number (history aside): the phone is told to sync when it changes. */
-    fun linkFingerprint(): Int = listOf(collection, meta, settings.picture).hashCode()
+    fun linkFingerprint(): Int = listOf(collection, meta, settings.picture, sharedSettings(), settings.pinned, settings.searches, settings.picks, mixes).hashCode()
+
+    /** The settings both apps share ([LinkSync.SETTINGS]) as text; "server" only when logged in, so a missing one never logs the phone out. */
+    fun sharedSettings(): Map<String, String> = settings.let { s ->
+        listOfNotNull(
+            "accent" to s.accent.toString(), "crossfade" to s.crossfade.toString(), "normalize" to s.normalize.toString(),
+            "albumGain" to s.albumGain.toString(), "eq" to s.eq.joinToString(","), "eqPreset" to s.eqPreset, "lyricsScale" to s.lyricsScale.toString(),
+            "playlistOrder" to s.playlistOrder, "autoplay" to s.autoplay.toString(), "releaseAlerts" to s.releaseAlerts.toString(),
+            "apple" to s.apple.toString(), "listenBrainz" to s.listenBrainz.toString(), "kbps" to s.kbps.toString(),
+            s.server?.let { "server" to org.json.JSONObject().put("url", it.url).put("user", it.user).put("salt", it.salt).put("token", it.token).toString() },
+        ).toMap()
+    }
+
+    /** Settings from the phone (anything unreadable stays as it is; no "server": logged out); the player follows them (see Main). */
+    private fun applyShared(m: Map<String, String>) {
+        val s = settings
+        fun bool(k: String, now: Boolean) = m[k]?.toBooleanStrictOrNull() ?: now
+        val server = when (val v = m["server"].orEmpty()) {
+            "" -> null
+            else -> runCatching { org.json.JSONObject(v).let { Subsonic.Config(it.getString("url"), it.getString("user"), it.getString("salt"), it.getString("token")) } }
+                .getOrNull()?.takeIf { it.url.isNotBlank() && it.token.isNotBlank() } ?: s.server
+        }
+        val next = s.copy(
+            accent = m["accent"]?.toLongOrNull() ?: s.accent, crossfade = m["crossfade"]?.toIntOrNull()?.coerceIn(0, 12) ?: s.crossfade,
+            normalize = bool("normalize", s.normalize), albumGain = bool("albumGain", s.albumGain),
+            eq = m["eq"]?.split(',')?.mapNotNull { it.toDoubleOrNull() }?.takeIf { it.size == 10 } ?: s.eq,
+            eqPreset = m["eqPreset"]?.takeIf { it.isNotBlank() } ?: s.eqPreset,
+            lyricsScale = m["lyricsScale"]?.toFloatOrNull()?.coerceIn(0.6f, 1.8f) ?: s.lyricsScale,
+            playlistOrder = m["playlistOrder"]?.takeIf { it.isNotBlank() } ?: s.playlistOrder,
+            autoplay = bool("autoplay", s.autoplay), releaseAlerts = bool("releaseAlerts", s.releaseAlerts),
+            apple = bool("apple", s.apple), listenBrainz = bool("listenBrainz", s.listenBrainz),
+            kbps = m["kbps"]?.toIntOrNull()?.coerceAtLeast(0) ?: s.kbps, server = server,
+        )
+        if (next == s) return
+        update(next)
+        accentState.value = androidx.compose.ui.graphics.Color(next.accent.toInt())
+        if (next.server != s.server) {
+            serverSongs = emptyList(); serverPlaylists = emptyList()
+            Store.saveServerSongs(emptyList()); Store.saveServerPlaylists(emptyList())
+            sync() // the new server's songs (nothing when it was removed)
+        }
+    }
 
     /** Your files and server songs with their own tags (no edits). */
     val rawTracks: List<Track> get() = serverTracks + local
@@ -579,6 +621,13 @@ class AppState(private val scope: CoroutineScope) {
             plays = plays.map { it.copy(key = it.key.takeIf { k -> Source.of(k) != null }.orEmpty()) },
             edits = Overrides.forSync(rawTracks, foreign),
             picture = settings.picture?.let(::coverHash).orEmpty(),
+            pins = settings.pinned,
+            hidden = c.hidden.filter { Source.of(it) == null }.mapNotNull(lib::song),
+            searches = settings.searches,
+            settings = sharedSettings(),
+            lyrics = settings.picks.mapNotNull { (id, v) -> lib.songId(id)?.let { it to LinkSync.Lyric(v.first, v.second) } }.toMap(),
+            added = addedAt.mapNotNull { (id, t) -> lib.songId(id)?.let { it to t } }.toMap(),
+            mixes = mixes.values.map { LinkSync.Mix(it.kind.name, it.period, it.tracks) },
         ).also { known += lib.learned }
     }
 
@@ -596,8 +645,25 @@ class AppState(private val scope: CoroutineScope) {
             folders = s.folders.map { Store.Folder(it.id, it.name) },
             liked = s.liked.map(lib::id).distinct(),
             want = s.want, remote = (s.catalog + c.remote).distinctBy { it.key }, followed = s.followed, albums = s.albums,
-            hidden = c.hidden.filter { Source.of(it) == null } + s.notInterested, blocked = s.blocked, ai = s.ai,
+            hidden = (s.hidden?.map(lib::id) ?: c.hidden.filter { Source.of(it) == null }) + s.notInterested, blocked = s.blocked, ai = s.ai,
         ))
+        s.settings?.let(::applyShared)
+        update(settings.copy(
+            pinned = s.pins ?: settings.pinned,
+            searches = s.searches ?: settings.searches,
+            // Picks for songs that aren't here stay; the rest are as agreed (one put back on either side is gone).
+            picks = s.lyrics?.let { m ->
+                settings.picks.filterKeys { lib.songId(it) == null } + m.mapNotNull { (k, l) -> lib.local(k)?.let { it to (l.id to l.shiftMs) } }
+            } ?: settings.picks,
+        ))
+        s.added?.let { m ->
+            val seen = firstSeen + m.mapNotNull { (k, t) -> lib.local(k)?.let { it to t } }.filter { (id, t) -> t > 0 && t < (firstSeen[id] ?: Long.MAX_VALUE) }
+            if (seen != firstSeen) { firstSeen = seen; Store.saveFirstSeen(seen) }
+        }
+        s.mixes?.let { list ->
+            val got = list.mapNotNull { m -> Discovery.Kind.entries.firstOrNull { it.name == m.kind }?.let { it to Discover.Mix(it, m.period, m.tracks) } }.toMap()
+            if (got.any { (k, m) -> mixes[k] != m }) { mixes = mixes + got; Store.saveMixes(mixes) }
+        }
         plays = s.plays.map { p -> p.copy(key = p.key.ifEmpty { lib.id(LinkSync.Song(null, p.title, p.artist)) }) }.takeLast(LinkSync.MAX_PLAYS)
         Store.savePlays(plays)
         known += lib.learned

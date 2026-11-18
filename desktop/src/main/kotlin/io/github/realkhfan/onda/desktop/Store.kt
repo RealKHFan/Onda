@@ -46,7 +46,7 @@ object Store {
         val gapless: Boolean = true, val pinned: List<String> = emptyList(), val picks: Map<String, Pair<Long, Long>> = emptyMap(),
         /** Crossfade between songs, in seconds (0 = off). */
         val crossfade: Int = 0,
-        /** Last searches, newest first (on this PC only). */
+        /** Last searches, newest first (synced with a linked phone). */
         val searches: List<String> = emptyList(),
         /** [albumGain]: normalise whole albums; [output]: the chosen speakers (a sink name), null = system default. */
         val albumGain: Boolean = false, val output: String? = null,
@@ -191,6 +191,12 @@ object Store {
             k to Discover.Mix(k, it.getString("period"), it.optJSONArray("tracks").objects().map(::remote))
         }
     }.getOrDefault(emptyMap())
+    /** First-seen dates agreed with your phone (song id → ms) where they're earlier than the file's own. */
+    fun firstSeen(): Map<String, Long> = runCatching {
+        JSONObject(File(data, "first-seen.json").readText()).let { o -> o.keys().asSequence().associateWith { o.getLong(it) } }
+    }.getOrDefault(emptyMap())
+    fun saveFirstSeen(m: Map<String, Long>) = write("first-seen.json", JSONObject(m).toString())
+
     fun saveMixes(m: Map<Discovery.Kind, Discover.Mix>) = write("mixes.json", JSONArray(m.values.map {
         JSONObject().put("kind", it.kind.name).put("period", it.period).put("tracks", JSONArray(it.tracks.map(::json)))
     }).toString())

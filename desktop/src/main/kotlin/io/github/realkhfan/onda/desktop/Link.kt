@@ -174,6 +174,15 @@ object Link {
             "seek" -> s.put("pos", msg.optLong("ms"))
             "shuffle" -> s.put("shuffle", msg.optBoolean("on"))
             "repeat" -> s.put("repeat", msg.optInt("mode"))
+            "remove", "move", "clear" -> {
+                val next = s.optJSONArray("next")?.let { a -> (0 until a.length()).map { a.get(it) } }.orEmpty().toMutableList()
+                when (cmd) {
+                    "remove" -> msg.optInt("i", -1).takeIf { it in next.indices }?.let { next.removeAt(it) }
+                    "move" -> { val f = msg.optInt("from", -1); val t = msg.optInt("to", -1); if (f in next.indices && t in next.indices) next.add(t, next.removeAt(f)) }
+                    else -> next.clear()
+                }
+                s.put("next", JSONArray(next))
+            }
         }
         phoneNow = n.copy(s = s, at = System.currentTimeMillis())
     }
@@ -322,7 +331,7 @@ object Link {
         val p = player ?: return JSONObject().put("has", false)
         val cur = p.current ?: return JSONObject().put("has", false).put("volume", p.volume)
         // What's next too, for the phone's queue screen while it's the remote.
-        val next = JSONArray(p.upcoming().take(20).map { (_, i) ->
+        val next = JSONArray(p.upcoming().take(50).map { (_, i) ->
             JSONObject().put("key", i.id).put("title", i.title).put("artist", i.artist).put("album", i.album).put("art", i.art?.takeIf { it.startsWith("http") }).put("dur", i.durationMs)
         })
         return JSONObject().put("has", true).put("playing", p.playing).put("key", cur.id).put("title", cur.title).put("artist", cur.artist).put("album", cur.album)
@@ -340,6 +349,11 @@ object Link {
             "volume" -> { p.changeVolume(req.optDouble("v", p.volume)); state.setVolume(p.volume) }
             "shuffle" -> p.shuffleOn(req.optBoolean("on"))
             "repeat" -> p.repeatMode(req.optInt("mode"))
+            // The phone's queue screen while it's the remote ([i], [from], [to] count from the first song still to come).
+            "jump" -> p.upcoming().getOrNull(req.optInt("i", -1))?.let { p.jumpTo(it.first) }
+            "remove" -> repeat(req.optInt("n", 1).coerceIn(1, 50)) { p.upcoming().getOrNull(req.optInt("i", -1))?.let { p.removeAt(it.first) } }
+            "move" -> p.moveUpcoming(req.optInt("from", -1), req.optInt("to", -1))
+            "clear" -> p.clearUpcoming()
         }
     }
 

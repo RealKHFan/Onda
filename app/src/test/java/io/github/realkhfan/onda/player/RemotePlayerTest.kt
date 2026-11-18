@@ -30,6 +30,10 @@ class RemotePlayerTest {
         assertEquals(200_000L, p.duration)
         assertEquals(0.5f, p.volume, 0.001f)
         assertTrue(p.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT))
+        assertTrue(p.isCommandAvailable(Player.COMMAND_SEEK_TO_MEDIA_ITEM)) // a song further down the PC's queue
+        p.removeMediaItem(0) // never the song playing
+        org.robolectric.Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("Tides", p.mediaMetadata.title.toString())
         p.show(JSONObject().put("has", false))
         assertEquals(Player.STATE_IDLE, p.playbackState)
     }

@@ -213,6 +213,21 @@ class CollectionRulesTest {
         assertEquals(before + 2, s.playCounts[i.id] ?: 0)
     }
 
+    @Test fun settingsPinsAndSearchesFromThePhoneAreTakenIn() = runBlocking {
+        val s = AppState(CoroutineScope(Dispatchers.Default))
+        val before = s.linkSnapshot(emptyMap(), HashMap())
+        val shared = s.sharedSettings()
+        s.applyLink(before.copy(settings = shared + ("crossfade" to "5") + ("apple" to (!s.settings.apple).toString()),
+            pins = listOf("pin-test"), searches = listOf("tides", "velvet")), HashMap())
+        assertEquals(5, s.settings.crossfade)
+        assertEquals(shared["apple"] != "true", s.settings.apple)
+        assertEquals(listOf("pin-test"), s.settings.pinned)
+        assertEquals(listOf("tides", "velvet"), s.settings.searches)
+        assertEquals("5", s.linkSnapshot(emptyMap(), HashMap()).settings!!["crossfade"]) // and it goes back out as it is now
+        s.applyLink(before.copy(settings = shared, pins = before.pins, searches = before.searches), HashMap())
+        assertEquals(shared, s.sharedSettings())
+    }
+
     @Test fun draggingAPlaylistInTheSidebarMovesIt() = runBlocking {
         val s = AppState(CoroutineScope(Dispatchers.Default))
         val order = s.settings.playlistOrder
