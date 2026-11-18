@@ -2200,7 +2200,8 @@ internal fun IconTile(icon: ImageVector, side: Dp, bg: Color = Accent, fg: Color
 @Composable
 private fun SongMenu(title: String, artist: String, art: String?, actions: List<MenuAction>, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+        // No stretch at the ends: in a sheet it looks like the whole menu jumping up and down.
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState(), overscrollEffect = null).padding(bottom = 24.dp)) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Art(art, 48.dp)
                 Spacer(Modifier.width(12.dp))
@@ -2232,7 +2233,8 @@ private fun AddToPlaylistSheet(
     onCreate: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = CardBg, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+        // No stretch at the ends: in a sheet it looks like the whole menu jumping up and down.
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState(), overscrollEffect = null).padding(bottom = 24.dp)) {
             Text("Add to playlist", color = TextMain, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
             MenuRow("New playlist", Icons.Rounded.Add, onCreate)
             HorizontalDivider(color = Raised)
