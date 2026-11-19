@@ -37,6 +37,7 @@ class LinkClientTest {
             // What played last on the PC, later than anything here: this phone picks it up (paused) at the same moment.
             last = LinkSync.LastPlay(LinkSync.Queue(listOf(LinkSync.Song("dz:2", "Tides", "Lumen Trio")),
                 listOf(RemoteTrack(2, "Tides", "Lumen Trio", "Sea", null, "https://example.invalid/p.mp3", 200)), 42_000, 0, false, 1), System.currentTimeMillis()))
+        var duringPut: (() -> Unit)? = null // something done on the phone while it waits for the PC's answer
         // A bare HTTP server (the JDK's isn't on Android's test classpath): one request per connection.
         fun handle(path: String, body: ByteArray): Pair<Int, ByteArray?> {
             val (key, aad) = if (path == "/v1/pair") LinkCrypto.pairKey("123456") to "/v1/pair" else LinkCrypto.linkKey(token) to path
@@ -44,7 +45,7 @@ class LinkClientTest {
             val res: Any = when (path) {
                 "/v1/pair" -> { token = LinkCrypto.newToken(); JSONObject().put("token", token).put("pc", "pc-1").put("name", "Test PC") }
                 "/v1/sync/get" -> JSONObject().put("version", "v1").put("snapshot", LinkSync.toJson(pcSnapshot))
-                "/v1/sync/put" -> { pcSnapshot = LinkSync.fromJson(req.getJSONObject("snapshot")); JSONObject().put("ok", true) }
+                "/v1/sync/put" -> { duringPut?.invoke(); duringPut = null; pcSnapshot = LinkSync.fromJson(req.getJSONObject("snapshot")); JSONObject().put("ok", true) }
                 "/v1/cover/get" -> covers[req.getString("hash")] ?: return 404 to null
                 "/v1/cover/put" -> { covers[req.getString("hash")] = java.util.Base64.getDecoder().decode(req.getString("data")); JSONObject() }
                 "/v1/file/stat" -> JSONObject().put("found", true).put("size", songFile.size).put("ext", "flac")
@@ -111,6 +112,16 @@ class LinkClientTest {
             pcSnapshot = pcSnapshot.copy(playlists = pcSnapshot.playlists.filterNot { it.id == "phone-pl" })
             runBlocking { Link.sync() }
             assertEquals(listOf("pc-pl"), PlaylistStore.playlists.value.map { it.id })
+            // A playlist made here while a sync waited for the PC: kept (it was overwritten by the answer), and sent next time.
+            duringPut = { PlaylistStore.createPlaylist("Made meanwhile") }
+            runBlocking { Link.sync() }
+            assertEquals(listOf("pc-pl", "Made meanwhile"), PlaylistStore.playlists.value.map { if (it.id == "pc-pl") it.id else it.name })
+            // A second sync starts by itself and takes it to the PC.
+            val until = System.currentTimeMillis() + 15_000
+            while ("Made meanwhile" !in pcSnapshot.playlists.map { it.name } && System.currentTimeMillis() < until) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(20)
+            }
+            assertTrue("Made meanwhile" in pcSnapshot.playlists.map { it.name })
         } finally {
             server.close()
             Link.unlink()

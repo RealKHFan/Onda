@@ -214,6 +214,7 @@ import androidx.compose.material.icons.rounded.SelectAll
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.random.Random
 
@@ -351,8 +352,9 @@ fun OndaApp(player: PlayerState?) {
     var menuFor by remember { mutableStateOf<MenuFor?>(null) }
     var remoteMenu by remember { mutableStateOf<RemoteTrack?>(null) }
     var remoteMenuPlaylist by remember { mutableStateOf<String?>(null) } // set when opened from a playlist row
-    var addTracks by remember { mutableStateOf<List<Track>?>(null) }
-    var pendingAdd by remember { mutableStateOf<List<Track>?>(null) }
+    // What "Add to playlist" adds once a playlist is picked: your songs, or a catalog song.
+    var adding by remember { mutableStateOf<((PlaylistStore.Playlist) -> Unit)?>(null) }
+    var pendingAdd by remember { mutableStateOf<((PlaylistStore.Playlist) -> Unit)?>(null) }
     var showCreate by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
@@ -480,6 +482,15 @@ fun OndaApp(player: PlayerState?) {
     fun addToPlaylist(pl: PlaylistStore.Playlist, list: List<Track>) {
         PlaylistStore.addToPlaylist(pl.id, list.map { it.id })
         toast(if (list.size == 1) "Added to ${pl.name}" else "Added ${songCount(list.size)} to ${pl.name}")
+    }
+    fun addSongs(list: List<Track>) { adding = { pl -> addToPlaylist(pl, list) } }
+    // A catalog song: your own copy if you have it, else the song itself (playable as a preview), like the desktop.
+    fun addCatalogSong(r: RemoteTrack) {
+        adding = { pl ->
+            val own = localFor(r)
+            PlaylistStore.addToPlaylist(pl.id, listOf(own?.id ?: r.key), if (own == null) listOf(r) else emptyList())
+            toast("Added to ${pl.name}")
+        }
     }
     fun togglePin(id: String) {
         pinned = if (id in pinned) pinned - id else listOf(id) + pinned
@@ -712,7 +723,7 @@ fun OndaApp(player: PlayerState?) {
                             onBack = { pop() }, onMenu = { menuFor = MenuFor(it, LIKED_ID, false) }, onQueue = ::queue,
                             onDownload = downloadAll(likedTracks),
                             more = getMissing(likedShown),
-                            onAddTo = { addTracks = it }, onEdit = { editMany = it },
+                            onAddTo = { addSongs(it) }, onEdit = { editMany = it },
                             onRemove = { list ->
                                 val before = liked
                                 PlaylistStore.setLiked(before - list.map { it.id }.toSet())
@@ -780,7 +791,7 @@ fun OndaApp(player: PlayerState?) {
                                         MenuAction(if (pl.folder == null) "Move to a folder" else "Move to another folder", Icons.Rounded.Folder) { movingToFolder = pl },
                                         MenuAction("Delete playlist", Icons.Rounded.Delete) { confirmDelete = pl },
                                     ),
-                                    onAddTo = { addTracks = it }, onEdit = { editMany = it },
+                                    onAddTo = { addSongs(it) }, onEdit = { editMany = it },
                                     onRemove = { list ->
                                         val before = pl.trackIds
                                         // A song can be saved under its catalog key and play from your file: both ids go.
@@ -817,7 +828,7 @@ fun OndaApp(player: PlayerState?) {
                                 sourceId = null, player = player, round = d.round,
                                 onBack = { pop() }, onMenu = { menuFor = MenuFor(it, null, false) }, onQueue = ::queue,
                                 onDownload = downloadAll(d.tracks),
-                                onAddTo = { addTracks = it }, onEdit = { editMany = it },
+                                onAddTo = { addSongs(it) }, onEdit = { editMany = it },
                                 below = if (d.kind != "Artist" || deezerId <= 0) null else ({
                                     fansAlsoLike(d.title, related, onMore = { push(RemoteArtistRoute(RemoteArtist(deezerId, d.title, d.art))) }) { push(RemoteArtistRoute(it)) }
                                 }),
@@ -897,6 +908,7 @@ fun OndaApp(player: PlayerState?) {
                                 onPlaySongs = { list, i -> player?.play(list, i, "Library", "Your library") },
                                 onMenu = { menuFor = MenuFor(it, null, false) },
                                 onQueue = ::queue,
+                                onAddTo = { addSongs(listOf(it)) },
                             )
                         }
                     }
@@ -972,14 +984,14 @@ fun OndaApp(player: PlayerState?) {
                 }
                 add(MenuAction("Search for it", Icons.Rounded.Search) { menuFor = null; closePages(); tab = 1; query = "${t.artist} ${t.title}" })
                 add(MenuAction("Start radio", Icons.Rounded.Radio) { startRadio(null, t.artist, t.id, "${t.title} Radio") })
-                add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
+                add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addSongs(listOf(t)) })
             }
             if (!playingIt && !missing) {
                 add(MenuAction(if (isLiked) "Remove from Liked Songs" else "Add to Liked Songs",
                     if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder) { PlaylistStore.toggleLike(t.id) })
             }
             if (!missing) add(MenuAction("Copy song name", Icons.Rounded.ContentCopy) { copyText(ctx, "Song name", "${t.title} — ${t.artist}") })
-            if (!missing) add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addTracks = listOf(t) })
+            if (!missing) add(MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addSongs(listOf(t)) })
             if (!missing) Downloads.forTrack(t, serverCfg)?.let { item -> add(MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) }) }
             if (inPlaylist && pid != null) {
                 add(MenuAction("Remove from this playlist", Icons.Rounded.RemoveCircleOutline) {
@@ -1035,6 +1047,7 @@ fun OndaApp(player: PlayerState?) {
             },
             MenuAction(if (wanted) "Remove from Want to listen" else "Add to Want to listen",
                 if (wanted) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder) { PlaylistStore.toggleWant(r) },
+            MenuAction("Add to playlist", Icons.Rounded.AddCircleOutline) { addCatalogSong(r) },
             Downloads.forRemote(r)?.let { item -> MenuAction("Download", Icons.Rounded.Download) { download(listOf(item)) } },
             // "Not interested": shapes Daily/Weekly, and the artist page can undo the artist part.
             (r.key in hiddenSongs).let { h ->
@@ -1058,12 +1071,12 @@ fun OndaApp(player: PlayerState?) {
         SongMenu(r.title, r.artist, r.cover, actions) { remoteMenu = null; remoteMenuPlaylist = null }
     }
 
-    addTracks?.let { list ->
+    adding?.let { add ->
         AddToPlaylistSheet(
             orderedPlaylists,
-            onDismiss = { addTracks = null },
-            onPick = { pl -> addToPlaylist(pl, list); addTracks = null },
-            onCreate = { pendingAdd = list; addTracks = null; showCreate = true },
+            onDismiss = { adding = null },
+            onPick = { pl -> add(pl); adding = null },
+            onCreate = { pendingAdd = add; adding = null; showCreate = true },
         )
     }
 
@@ -1072,7 +1085,7 @@ fun OndaApp(player: PlayerState?) {
             onDismiss = { showCreate = false; pendingAdd = null },
             onCreate = { name ->
                 val id = PlaylistStore.createPlaylist(name)
-                pendingAdd?.let { list -> PlaylistStore.playlists.value.firstOrNull { it.id == id }?.let { addToPlaylist(it, list) } }
+                pendingAdd?.let { add -> PlaylistStore.playlists.value.firstOrNull { it.id == id }?.let(add) }
                 pendingAdd = null; showCreate = false
             },
         )
@@ -1324,6 +1337,7 @@ internal fun LibraryScreen(
     onPlaySongs: (List<Track>, Int) -> Unit,
     onMenu: (Track) -> Unit,
     onQueue: (Track) -> Unit,
+    onAddTo: (Track) -> Unit = {},
     pinned: Set<String> = emptySet(),
     order: String = "Custom",
     onOrder: (String) -> Unit = {},
@@ -1395,7 +1409,7 @@ internal fun LibraryScreen(
                 items(fAl) { a -> GroupRow(a.title, "Album · ${a.artist}", { onOpenAlbum(a) }) { Art(a.artUri, 52.dp) } }
                 if (fSo.isNotEmpty()) item { SectionLabel("Songs") }
                 itemsIndexed(fSo) { i, t ->
-                    SwipeTrackRow(t, t.id == currentId, onQueue = { onQueue(t) }, onMenu = { onMenu(t) }) { onPlaySongs(fSo, i) }
+                    SwipeTrackRow(t, t.id == currentId, onQueue = { onQueue(t) }, onMenu = { onMenu(t) }, onAddTo = { onAddTo(t) }) { onPlaySongs(fSo, i) }
                 }
             } else {
                 when (chip) {
@@ -1594,7 +1608,7 @@ internal fun TrackListScreen(
                     val missing = LinkSync.isMissing(t.id)
                     SwipeTrackRow(
                         t, player?.currentId == t.id, onQueue = { onQueue(t) }, onMenu = { onMenu(t) },
-                        selected = t.id in selected, onLongClick = toggle, missing = missing,
+                        selected = t.id in selected, onLongClick = toggle, missing = missing, onAddTo = onAddTo?.let { add -> { add(listOf(t)) } },
                     ) { if (selecting) toggle() else if (!missing) player?.play(playable, playable.indexOf(t), kind, title, sourceId) }
                 }
                 // Dragging moves songs only in the list's own order.
@@ -2099,44 +2113,54 @@ internal fun SectionLabel(text: String, modifier: Modifier = Modifier.padding(16
     Text(text, color = TextDim, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = modifier)
 }
 
-/** A song row. Dragging it right past 40% and letting go adds it to the queue, exactly once. */
+/**
+ * A song row. Dragging it right past 40% and letting go adds it to the queue; left, to a playlist ([onAddTo]). Exactly once.
+ * A song that's only on your PC can't be queued, but can go into a playlist.
+ */
 @Composable
-private fun SwipeTrackRow(
+internal fun SwipeTrackRow(
     t: Track, playing: Boolean, onQueue: () -> Unit, onMenu: () -> Unit,
-    selected: Boolean = false, onLongClick: (() -> Unit)? = null, missing: Boolean = false, onClick: () -> Unit,
+    selected: Boolean = false, onLongClick: (() -> Unit)? = null, missing: Boolean = false,
+    onAddTo: (() -> Unit)? = null, onClick: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
-    val fire by rememberUpdatedState(onQueue)
+    val queue by rememberUpdatedState(onQueue)
+    val add by rememberUpdatedState(onAddTo)
     var dx by remember { mutableFloatStateOf(0f) }
     var width by remember { mutableFloatStateOf(1f) }
-    val armed = dx > width * SWIPE_FRACTION
+    val armed = abs(dx) > width * SWIPE_FRACTION
     Box(Modifier.fillMaxWidth().onSizeChanged { width = it.width.toFloat() }) {
-        if (dx > 0f) {
-            Row(Modifier.matchParentSize().background(Raised).padding(start = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null, tint = if (armed) Accent else TextDim)
+        if (dx != 0f) {
+            val toQueue = dx > 0f
+            Row(Modifier.matchParentSize().background(Raised).padding(horizontal = 20.dp),
+                horizontalArrangement = if (toQueue) Arrangement.Start else Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                val tint = if (armed) Accent else TextDim
+                Icon(if (toQueue) Icons.AutoMirrored.Rounded.PlaylistAdd else Icons.Rounded.AddCircleOutline, null, tint = tint)
                 Spacer(Modifier.width(8.dp))
-                Text("Add to queue", color = if (armed) Accent else TextDim, fontSize = 13.sp)
+                Text(if (toQueue) "Add to queue" else "Add to playlist", color = tint, fontSize = 13.sp)
             }
         }
         Row(
             Modifier.fillMaxWidth()
                 .offset { IntOffset(dx.roundToInt(), 0) }
                 .background(Bg)
-                .pointerInput(missing) {
-                    if (missing) return@pointerInput // nothing here to queue
+                .pointerInput(missing, onAddTo != null) {
+                    if (missing && onAddTo == null) return@pointerInput // nothing to swipe to
+                    val most = { size.width.toFloat() }
                     var wasArmed = false
                     val back: () -> Unit = { wasArmed = false; scope.launch { animate(dx, 0f) { v, _ -> dx = v } } }
                     detectHorizontalDragGestures(
                         onDragEnd = {
-                            if (dx > size.width * SWIPE_FRACTION) fire() // decided once, on release
+                            // Decided once, on release.
+                            if (dx > most() * SWIPE_FRACTION) queue() else if (dx < -most() * SWIPE_FRACTION) add?.invoke()
                             back()
                         },
                         onDragCancel = back,
                     ) { change, amount ->
                         change.consume()
-                        dx = (dx + amount).coerceIn(0f, size.width.toFloat())
-                        val nowArmed = dx > size.width * SWIPE_FRACTION
+                        dx = (dx + amount).coerceIn(if (onAddTo != null) -most() else 0f, if (missing) 0f else most())
+                        val nowArmed = abs(dx) > most() * SWIPE_FRACTION
                         if (nowArmed && !wasArmed) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         wasArmed = nowArmed
                     }

@@ -156,6 +156,7 @@ object Link {
                 val base = stored?.optJSONObject("base")?.let(LinkSync::fromJson)
                 val known = HashMap(LinkSync.songsFromJson(stored?.optJSONObject("known")))
                 val mine = snapshot(base, known)
+                val before = fingerprint() // runs on the main thread: nothing changes between these two
                 val theirs = LinkSync.fromJson(got.getJSONObject("snapshot"))
                 val merged = withContext(Dispatchers.Default) { LinkSync.merge(base, mine, theirs) }
                 if (!swapCovers(merged, theirs)) return done("Couldn't send a playlist cover to ${_pc.value?.name ?: "your PC"}.")
@@ -165,18 +166,21 @@ object Link {
                 if (put.status == 409) return@repeat // changed on the PC meanwhile: merge again
                 if (put.status == 423) return done("${_pc.value?.name ?: "Your PC"} is still scanning its music. Try again in a moment.")
                 if (put.status != 200) return done("The PC refused the sync (${put.status}).")
-                apply(merged, known)
+                // Changed here while waiting for the PC (a playlist made meanwhile): kept on top of what was agreed, sent next time.
+                val meanwhile = fingerprint() != before
+                apply(if (meanwhile) LinkSync.merge(mine, snapshot(base, known), merged) else merged, known)
                 Overrides.synced()
                 // Your profile picture as agreed: the PC's, or none.
                 when {
                     merged.picture == "" && Profile.picture != null -> withContext(Dispatchers.Main) { Profile.clear(app) }
                     picture.isNotEmpty() -> withContext(Dispatchers.Main) { Profile.set(app, picture) }
                 }
-                synced = fingerprint() // what came from the PC isn't news for it
+                synced = if (meanwhile) before else fingerprint() // what came from the PC isn't news for it
                 withContext(Dispatchers.IO) {
                     val f = File(dir, "link-base.json")
                     File(f.path + ".tmp").apply { writeText(JSONObject().put("base", LinkSync.toJson(merged)).put("known", LinkSync.songsToJson(known)).toString()) }.renameTo(f)
                 }
+                if (meanwhile) syncLater() // the watcher skipped it while this sync ran
                 return done("Synced " + java.time.LocalTime.now().withNano(0).withSecond(0))
             }
             done("Your PC kept changing; try again.")

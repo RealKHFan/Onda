@@ -83,7 +83,7 @@ class PlaybackService : MediaLibraryService() {
         Effects.attach(player.audioSessionId)
         // Every control goes through this one: Previous goes back to what actually played.
         val back = HistoryPlayer(player).also { this.back = it }
-        session = MediaLibrarySession.Builder(this, back, AutoLibrary(this, scope)).build()
+        session = MediaLibrarySession.Builder(this, back, AutoLibrary(this, scope)).setBitmapLoader(androidx.media3.session.CacheBitmapLoader(CoverLoader(this, scope))).build()
         // Playing on your PC: the session (player bar, notification, lock screen) controls the PC instead.
         val remote = RemotePlayer(mainLooper, scope).also { remotePlayer = it }
         scope.launch {

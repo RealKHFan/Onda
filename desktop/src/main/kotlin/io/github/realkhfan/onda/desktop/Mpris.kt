@@ -147,7 +147,7 @@ class Mpris(
         art == null -> null
         art.startsWith("/") -> "file://$art"
         "/rest/" in art -> null
-        else -> art
+        else -> cachedCover(art) ?: art
     }
 
     companion object {
@@ -157,3 +157,8 @@ class Mpris(
         const val PLAYER = "org.mpris.MediaPlayer2.Player"
     }
 }
+
+/** A web cover Onda's window has shown, as the file in its image cache: KDE needn't download it (black on a poor network). */
+internal fun cachedCover(url: String): String? = runCatching {
+    coil3.SingletonImageLoader.get(coil3.PlatformContext.INSTANCE).diskCache?.openSnapshot(url)?.use { "file://${it.data}" }
+}.getOrNull()

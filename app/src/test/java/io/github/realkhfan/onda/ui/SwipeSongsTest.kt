@@ -57,6 +57,15 @@ class SwipeSongsTest {
         assertEquals(0f, dx.floatValue)
     }
 
+    @Test fun aSmallSlowDragIsEnough() {
+        bar()
+        // A fifth of the bar, slowly: no flick, just the drag.
+        rule.onNodeWithTag("bar").performTouchInput { swipe(center, center.copy(x = center.x - width * 0.2f), durationMillis = 1000) }
+        rule.waitForIdle()
+        assertEquals(listOf(true), skips)
+        assertEquals(0f, dx.floatValue)
+    }
+
     @Test fun noNextSongSpringsBack() {
         bar(hasNext = false)
         rule.onNodeWithTag("bar").performTouchInput { swipeLeft() }

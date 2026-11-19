@@ -115,7 +115,9 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.customActions
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
@@ -177,18 +179,15 @@ internal fun MiniPlayer(player: PlayerState, tint: Color, onOpen: () -> Unit) {
             },
     ) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Row(
+            Art(player.artUri, 40.dp) // stays put; only the names slide
+            Spacer(Modifier.width(10.dp))
+            Column(
                 Modifier.weight(1f).clipToBounds()
                     .offset { IntOffset(dx.floatValue.roundToInt(), 0) }
                     .graphicsLayer { alpha = 1f - (abs(dx.floatValue) / size.width).coerceIn(0f, 0.8f) },
-                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Art(player.artUri, 40.dp)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(player.title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
-                    Text(artistLine(player), color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
-                }
+                Text(player.title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
+                Text(artistLine(player), color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
             }
             IconButton(onClick = { player.togglePlay() }) {
                 Icon(if (player.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
@@ -216,17 +215,19 @@ internal fun Modifier.swipeSongs(dx: MutableFloatState, go: suspend (next: Boole
             onDragEnd = {
                 val w = size.width.toFloat()
                 val v = tracker.calculateVelocity().x
-                // A flick, or a drag past a quarter of the bar.
-                val dir = when { abs(v) > 1000f -> sign(v); abs(dx.floatValue) > w / 4 -> sign(dx.floatValue); else -> 0f }
+                // A light flick, or a drag past an eighth of the bar.
+                val dir = when { abs(v) > 150.dp.toPx() -> sign(v); abs(dx.floatValue) > w / 8 -> sign(dx.floatValue); else -> 0f }
                 job = launch {
-                    if (dir != 0f) {
-                        to(dir * w, 120)
-                        if (go(dir < 0)) dx.floatValue = -dir * w // the new song comes in from the other side
-                    }
-                    to(0f, 220)
+                    if (dir == 0f) return@launch to(0f, 180)
+                    // Skips right away; the names slide out meanwhile. No next song: it answers at once and springs back.
+                    val moved = async(start = CoroutineStart.UNDISPATCHED) { go(dir < 0) }
+                    if (moved.isCompleted && !moved.await()) return@launch to(0f, 180)
+                    to(dir * w, 90)
+                    if (moved.await()) dx.floatValue = -dir * w // the new song comes in from the other side
+                    to(0f, 180)
                 }
             },
-            onDragCancel = { job = launch { to(0f, 220) } },
+            onDragCancel = { job = launch { to(0f, 180) } },
         ) { change, amount ->
             change.consume()
             dx.floatValue += amount
