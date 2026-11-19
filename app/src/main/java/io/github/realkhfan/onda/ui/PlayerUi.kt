@@ -109,6 +109,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import androidx.compose.runtime.MutableFloatState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.abs
+import kotlin.math.sign
 
 private val Dim = Color.White.copy(alpha = 0.7f)
 
@@ -142,16 +154,41 @@ internal fun MiniPlayer(player: PlayerState, tint: Color, onOpen: () -> Unit) {
     }
     // Right after a skip the next song's length isn't known yet: start, not "full".
     val frac = if (player.durationMs > 0) (pos.toFloat() / player.durationMs).coerceIn(0f, 1f) else 0f
+    val dx = remember { mutableFloatStateOf(0f) }
+    val skip: suspend (Boolean) -> Boolean = remember(player) {
+        { next ->
+            if (next && !player.controller.hasNextMediaItem()) false
+            else {
+                val was = player.currentId
+                if (next) player.next() else player.prevSong()
+                withTimeoutOrNull(600) { snapshotFlow { player.currentId }.first { it != was } } // slide the new song in, not the old
+                true
+            }
+        }
+    }
     Column(
         Modifier.fillMaxWidth().padding(8.dp, 4.dp).clip(RoundedCornerShape(8.dp))
-            .background(tint).clickable(onClick = onOpen),
+            .background(tint).clickable(onClick = onOpen).swipeSongs(dx, skip)
+            .semantics {
+                customActions = listOf(
+                    CustomAccessibilityAction("Next song") { player.next(); true },
+                    CustomAccessibilityAction("Previous song") { player.prevSong(); true },
+                )
+            },
     ) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Art(player.artUri, 40.dp)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(player.title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
-                Text(artistLine(player), color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
+            Row(
+                Modifier.weight(1f).clipToBounds()
+                    .offset { IntOffset(dx.floatValue.roundToInt(), 0) }
+                    .graphicsLayer { alpha = 1f - (abs(dx.floatValue) / size.width).coerceIn(0f, 0.8f) },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Art(player.artUri, 40.dp)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(player.title, color = TextMain, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
+                    Text(artistLine(player), color = Dim, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
+                }
             }
             IconButton(onClick = { player.togglePlay() }) {
                 Icon(if (player.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
@@ -161,6 +198,39 @@ internal fun MiniPlayer(player: PlayerState, tint: Color, onOpen: () -> Unit) {
         }
         Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(2.dp).background(Color.White.copy(alpha = 0.2f))) {
             Box(Modifier.fillMaxWidth(frac).fillMaxHeight().background(Color.White))
+        }
+    }
+}
+
+/**
+ * Spotify's mini player: swipe left for the next song, right for the one before. [dx] is how far the song is moved.
+ * [go] skips (true = next) and returns once the new song shows, or false when there is none (it springs back).
+ */
+internal fun Modifier.swipeSongs(dx: MutableFloatState, go: suspend (next: Boolean) -> Boolean) = pointerInput(dx, go) {
+    coroutineScope {
+        val tracker = VelocityTracker()
+        var job: Job? = null
+        suspend fun to(x: Float, ms: Int) = animate(dx.floatValue, x, animationSpec = tween(ms)) { v, _ -> dx.floatValue = v }
+        detectHorizontalDragGestures(
+            onDragStart = { job?.cancel(); tracker.resetTracking() },
+            onDragEnd = {
+                val w = size.width.toFloat()
+                val v = tracker.calculateVelocity().x
+                // A flick, or a drag past a quarter of the bar.
+                val dir = when { abs(v) > 1000f -> sign(v); abs(dx.floatValue) > w / 4 -> sign(dx.floatValue); else -> 0f }
+                job = launch {
+                    if (dir != 0f) {
+                        to(dir * w, 120)
+                        if (go(dir < 0)) dx.floatValue = -dir * w // the new song comes in from the other side
+                    }
+                    to(0f, 220)
+                }
+            },
+            onDragCancel = { job = launch { to(0f, 220) } },
+        ) { change, amount ->
+            change.consume()
+            dx.floatValue += amount
+            tracker.addPosition(change.uptimeMillis, Offset(dx.floatValue, 0f))
         }
     }
 }

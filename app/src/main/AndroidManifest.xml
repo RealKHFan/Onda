@@ -29,6 +29,8 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <!-- Marks Onda as a music app (e.g. for "open music player" in other apps). -->
+                <category android:name="android.intent.category.APP_MUSIC" />
             </intent-filter>
             <!-- "Open with Onda" for a song in a file manager or a chat app. -->
             <intent-filter>
@@ -50,6 +52,14 @@
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+        <!-- Play on headphones while Onda is closed; also how KLCK, Tasker etc. recognise a music player. -->
+        <receiver
+            android:name=".player.MediaButtons"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
         <provider
             android:name=".player.ArtProvider"
             android:authorities="io.github.realkhfan.onda.art"

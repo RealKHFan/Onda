@@ -277,6 +277,9 @@ class PlayerState(val controller: MediaController) {
     /** The song that played before (or the start of this one after 3 s); see [HistoryPlayer]. */
     fun prev() = controller.seekToPrevious()
 
+    /** The song that played before, even after 3 s (a swipe on the mini player). */
+    fun prevSong() = controller.seekToPreviousMediaItem()
+
     fun seekTo(ms: Long) = controller.seekTo(ms)
 
     fun toggleShuffle() {
