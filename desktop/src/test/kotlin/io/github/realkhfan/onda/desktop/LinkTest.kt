@@ -154,7 +154,7 @@ class LinkTest {
         val before = state.local
         val id = "file:/tmp/onda-edit-sync-test.mp3"
         val mine = io.github.realkhfan.onda.core.Track(id, id, "tides demo", "lumen trio", "", "lumen trio", 0, 200_000, "audio/mpeg", null, "onda-edit-sync-test.mp3")
-        val key = LinkSync.idOf(mine.artist, mine.title)
+        val key = LinkSync.fileKey(mine)
         try {
             state.local = before + mine
             // Edited on the PC: the phone gets it.
@@ -174,33 +174,39 @@ class LinkTest {
     }
 
     /**
-     * Edited on the PC, synced with a phone that still has the old edit: the PC's newer one stays, also when another song
-     * here has the same artist and title (a single and its album version), whose older edit came with an earlier sync.
+     * The user's case: versions of one song (BAIXO, its ALT Version, slowed, super slowed) each keep their own edit through
+     * a sync with a phone that had one edit stamped on all of them. The old loose key dropped "(…)", so all versions were
+     * one song to the sync. Two files with exactly the same tags are told apart by their names.
      */
-    @Test fun theNewerPcEditWinsOverThePhonesOldOne() = runBlocking(Dispatchers.Swing) {
+    @Test fun versionsOfASongKeepTheirOwnEdits() = runBlocking(Dispatchers.Swing) {
         val state = AppState(CoroutineScope(Dispatchers.Swing))
         val before = state.local
-        fun song(n: String) = io.github.realkhfan.onda.core.Track("file:/tmp/$n.mp3", "file:/tmp/$n.mp3", "tides demo", "lumen trio", "", "lumen trio", 0, 200_000, "audio/mpeg", null, "$n.mp3")
-        val album = song("onda-dup-album"); val single = song("onda-dup-single")
-        val key = LinkSync.idOf(album.artist, album.title)
+        fun song(file: String, title: String) = io.github.realkhfan.onda.core.Track("file:/tmp/$file.mp3", "file:/tmp/$file.mp3", title, "Xxanteria", "", "Xxanteria", 0, 200_000, "audio/mpeg", null, "$file.mp3")
+        val plain = song("onda-baixo", "BAIXO")
+        val versions = listOf(song("onda-baixo-alt", "BAIXO (ALT Version)"), song("onda-baixo-slowed", "BAIXO (slowed)"), song("onda-baixo-super", "BAIXO (super slowed)"),
+            song("onda-baixo-x1", "BAIXO (sped up)"), song("onda-baixo-x2", "BAIXO (sped up)"))
+        val all = versions + plain
+        val loose = LinkSync.idOf("Xxanteria", "BAIXO")
         val ov = io.github.realkhfan.onda.data.Overrides
         try {
-            state.local = before + album + single
-            // An earlier sync gave both the phone's old edit.
-            val old = LinkSync.Edit("Tides (old)", "Lumen Trio", "Sea", null, 0, 1000)
-            val agreed = state.applyLink(state.linkSnapshot(emptyMap(), HashMap()).copy(edits = mapOf(key to old)), HashMap())
-            assertEquals("Tides (old)", ov.meta.value[single.id]?.title)
-            // Now edited on the PC (the album version): that is what the PC sends…
-            ov.edit(album, "Tides", "Lumen Trio", "Sea")
-            val mine = state.linkSnapshot(mapOf(key to old) + agreed, HashMap())
-            assertEquals("Tides", mine.edits[key]?.title)
-            // …and what the merge with the phone's old one keeps, back here on both songs.
-            val merged = LinkSync.merge(LinkSync.Snapshot(edits = mapOf(key to old)), LinkSync.Snapshot(edits = mapOf(key to old)), mine)
+            state.local = before + all
+            assertEquals(all.size, all.map(LinkSync::fileKey).toSet().size)
+            // The phone (updated): one old edit on every version; the old loose key was agreed last time.
+            val stamped = LinkSync.Edit("BAIXO (super slowed)", "Xxanteria", "BAIXO (super slowed)", null, 0, 1000)
+            val phone = LinkSync.Snapshot(edits = all.associate { LinkSync.fileKey(it) to stamped })
+            // Edited on the PC, each its own.
+            val titles = versions.mapIndexed { i, t -> t to t.title + if (i >= 3) " #$i" else "" }.toMap()
+            titles.forEach { (t, title) -> ov.edit(t, title, "Xxanteria", title) }
+            val mine = state.linkSnapshot(mapOf(loose to stamped), HashMap())
+            titles.forEach { (t, title) -> assertEquals(title, mine.edits[LinkSync.fileKey(t)]?.title) }
+            assertTrue(mine.edits.keys.none { it.startsWith("~") }) // the old key is left behind
+            val merged = LinkSync.merge(LinkSync.Snapshot(edits = mapOf(loose to stamped)), phone, mine)
             state.applyLink(merged, HashMap())
-            assertEquals("Tides", ov.meta.value[album.id]?.title)
-            assertEquals("Tides", ov.meta.value[single.id]?.title)
+            // Back here after the sync: each version as edited here, none turned into another.
+            titles.forEach { (t, title) -> assertEquals(title, ov.meta.value[t.id]?.title) }
+            assertTrue(merged.edits.keys.none { it.startsWith("~") })
         } finally {
-            ov.restore(album.id); ov.restore(single.id); ov.synced()
+            all.forEach { ov.restore(it.id) }; ov.synced()
             state.local = before
         }
     }
@@ -211,7 +217,7 @@ class LinkTest {
         val before = state.local
         val id = "file:/tmp/onda-edit-keep-test.mp3"
         val mine = io.github.realkhfan.onda.core.Track(id, id, "tides demo", "lumen trio", "", "lumen trio", 0, 200_000, "audio/mpeg", null, "onda-edit-keep-test.mp3")
-        val key = LinkSync.idOf(mine.artist, mine.title)
+        val key = LinkSync.fileKey(mine)
         val ov = io.github.realkhfan.onda.data.Overrides
         try {
             state.local = before + mine

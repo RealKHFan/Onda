@@ -61,15 +61,17 @@ class RenameSyncTest {
             val mine = Overrides.names.value.getValue(key)
             assertEquals("Lumen Trio - Tides", mine.stem) // what the phone gets: the name without the extension
 
-            // An older rename from the phone loses; a newer one is done here, copy included.
+            // An older rename of the old file from the phone loses.
             onUi { s.adoptNames(mapOf(key to LinkSync.Name("Old idea", t.album, mine.at - 1000))) }
             Thread.sleep(300)
             assertEquals(listOf("Lumen Trio - Tides.wav"), File(music, "Lumen Trio").list()!!.toList())
-            onUi { s.adoptNames(mapOf(key to LinkSync.Name("Tides (Live)", t.album, mine.at + 1000))) }
+            // Renamed again on the phone (the file as it's named now): done here, copy included.
+            val now = onUi { s.local.single { it.fileName == "Lumen Trio - Tides.wav" } }
+            onUi { s.adoptNames(mapOf(LinkSync.nameKey(now) to LinkSync.Name("Tides (Live)", t.album, mine.at + 1000))) }
             waitFor("the phone's newer name is used") { File(music, "Lumen Trio/Tides (Live).wav").isFile }
             waitFor("its copy follows") { File(copies, "Lumen Trio/Tides (Live).wav").isFile }
             assertEquals(1, File(copies, "Lumen Trio").list()!!.size)
-            assertEquals(mine.at + 1000, Overrides.names.value.getValue(key).at) // known now: not done again
+            assertEquals(mine.at + 1000, Overrides.names.value.getValue(LinkSync.nameKey(now)).at) // known now: not done again
             assertTrue(!copy.exists())
         } finally {
             onUi { s.setCopyDir(copyDir); s.removeFolder(music.path); folders.filter { it !in s.settings.folders }.forEach(s::addFolder) }

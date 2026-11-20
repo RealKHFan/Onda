@@ -210,8 +210,21 @@ object LinkSync {
         }.toMap()
     }
 
-    /** The key a rename is synced by: the file's own artist and title, like [Snapshot.edits]. */
-    fun nameKey(raw: Track) = idOf(raw.artist, raw.title)
+    /**
+     * The key an edit, a restore and a rename of one of your songs travel by: its own artist and title exactly, not the
+     * catalog's loose [idOf], which drops "(slowed)", "(Live)" and the like and made all versions of a song one (an edit of
+     * one landed on all), plus its file name, so versions with the same tags stay apart too. Keys from before start with "~".
+     */
+    fun fileKey(raw: Track) = "=" + exact(raw.artist) + "|" + exact(raw.title) + "#" + raw.fileName.substringBeforeLast('.').lowercase()
+
+    /** The part of a [fileKey] without the file name: the song's own artist and title. */
+    fun songPart(key: String) = key.substringBefore('#')
+
+    private val spaces = Regex("\\s+")
+    private fun exact(s: String) = s.lowercase().trim().replace(spaces, " ")
+
+    /** The key a rename is synced by: the [fileKey] of the file before it was renamed. */
+    fun nameKey(raw: Track) = fileKey(raw)
 
     /** A rename of [raw] (the file with its own tags) to [to], made at [at], as it's synced. */
     fun nameOf(raw: Track, to: String, at: Long) = nameKey(raw) to Name(to.substringBeforeLast('.').ifEmpty { to }, raw.album, at)
@@ -222,14 +235,19 @@ object LinkSync {
      * own extension. [raw]: this device's files with their own tags.
      */
     fun renamesFor(names: Map<String, Name>, known: Map<String, Name>, raw: List<Track>): List<Pair<FileNames.Rename, Name>> {
-        val byKey = raw.filter { it.fileName.isNotEmpty() }.groupBy(::nameKey)
-        return names.mapNotNull { (k, n) ->
-            if (n.at <= (known[k]?.at ?: 0L)) return@mapNotNull null
-            val here = byKey[k].orEmpty().let { all -> if (all.size > 1) all.filter { Match.norm(it.album) == Match.norm(n.album) } else all }
-            val t = here.singleOrNull() ?: return@mapNotNull null // not here, or can't tell which
-            val ext = t.fileName.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
-            val to = n.stem + ext
-            if (to == t.fileName) null else FileNames.Rename(t.id, t.fileName, to) to n
+        val files = raw.filter { it.fileName.isNotEmpty() }
+        val byKey = files.groupBy(::fileKey)
+        val loose = files.groupBy { idOf(it.artist, it.title) } // renames recorded before exact keys
+        return names.flatMap { (k, n) ->
+            if (n.at <= (known[k]?.at ?: 0L)) return@flatMap emptyList()
+            // The same file (the same one in two folders: both); an old loose key only when one song fits.
+            val here = if (k.startsWith("~")) listOfNotNull(loose[k].orEmpty().let { all -> if (all.size > 1) all.filter { Match.norm(it.album) == Match.norm(n.album) } else all }.singleOrNull())
+                else byKey[k].orEmpty()
+            here.mapNotNull { t ->
+                val ext = t.fileName.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+                val to = n.stem + ext
+                if (to == t.fileName) null else FileNames.Rename(t.id, t.fileName, to) to n
+            }
         }
     }
 

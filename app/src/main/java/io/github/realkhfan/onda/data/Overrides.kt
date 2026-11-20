@@ -126,7 +126,8 @@ object Overrides {
     fun forSync(raw: List<Track>, agreed: Map<String, LinkSync.Edit>): Map<String, LinkSync.Edit> {
         val restored = restoresForSync(raw).keys
         // An edit here older than the agreed one is one this device missed (its songs weren't loaded yet), not news.
-        return agreed.filterKeys { it !in restored } + forSync(raw).filter { (k, e) -> agreed[k]?.let { it.at > e.at } != true }
+        // Agreed edits under the old loose keys ("~") are left behind: each device sends its own under the exact key.
+        return agreed.filterKeys { it !in restored && !it.startsWith("~") } + forSync(raw).filter { (k, e) -> agreed[k]?.let { it.at > e.at } != true }
     }
 
     /** Your restores of original tags, by song key, with when: a restore newer than an edit removes it on both devices. */
@@ -145,21 +146,28 @@ object Overrides {
     fun forSync(raw: List<Track>): Map<String, io.github.realkhfan.onda.core.LinkSync.Edit> {
         val byId = raw.associateBy { it.id }
         return _meta.value.mapNotNull { (id, m) ->
-            byId[id]?.let { t -> LinkSync.idOf(t.artist, t.title) to LinkSync.Edit(m.title, m.artist, m.album, m.cover, m.deezerId, m.at) }
+            byId[id]?.let { t -> LinkSync.fileKey(t) to LinkSync.Edit(m.title, m.artist, m.album, m.cover, m.deezerId, m.at) }
         }
-            // Several songs with that artist and title (a single and its album version): the newest edit of them, not
-            // whichever happens to come last (an older one from an earlier sync undid a new edit).
+            // The same file twice (two folders): the newest edit of them, not whichever happens to come last.
             .groupBy({ it.first }, { it.second }).mapValues { (_, edits) -> edits.maxBy { it.at } }
     }
 
     /** The synced edits on the songs found here (an edit undone on the other side is undone here); returns those for songs not here. */
     fun fromSync(raw: List<Track>, edits: Map<String, io.github.realkhfan.onda.core.LinkSync.Edit>): Map<String, io.github.realkhfan.onda.core.LinkSync.Edit> {
-        val byName = raw.groupBy { io.github.realkhfan.onda.core.LinkSync.idOf(it.artist, it.title) }
+        val exact = edits.filterKeys { !it.startsWith("~") } // old loose keys fit every version of a song: not used
+        // Named differently here (renamed, not synced yet): the one edit for exactly this artist and title, if only one.
+        val bySong = exact.entries.groupBy { LinkSync.songPart(it.key) }
         val known = raw.map { it.id }.toSet()
+        val used = HashSet<String>()
         val next = _meta.value.filterKeys { it !in known }.toMutableMap() // songs this device can't see right now keep theirs
-        for (t in raw) edits[io.github.realkhfan.onda.core.LinkSync.idOf(t.artist, t.title)]?.let { e -> next[t.id] = Meta(e.title, e.artist, e.album, e.cover, e.deezerId, e.at) }
+        for (t in raw) {
+            val k = LinkSync.fileKey(t)
+            val (key, e) = exact[k]?.let { k to it } ?: bySong[LinkSync.songPart(k)]?.singleOrNull()?.toPair() ?: continue
+            used += key
+            next[t.id] = Meta(e.title, e.artist, e.album, e.cover, e.deezerId, e.at)
+        }
         if (next != _meta.value) { _meta.value = next; _reviewed.value = _reviewed.value + next.keys; write() }
-        return edits.filterKeys { it !in byName }
+        return exact.filterKeys { it !in used }
     }
 
     /** Files renamed here ([LinkSync.nameOf]): by you, or to match the other device (with its date), so each is done once. */

@@ -14,7 +14,7 @@ class OverridesSyncTest {
         val dir = Files.createTempDirectory("ov").toFile()
         Overrides.load(dir)
         val t = song("content://a")
-        val key = LinkSync.idOf(t.artist, t.title)
+        val key = LinkSync.fileKey(t)
         val agreed = mapOf(key to LinkSync.Edit("Tides", "Lumen Trio", "Sea", null, 0))
         // This phone doesn't have the edit right now (the song got a new id, say): the agreed one goes out, not a removal.
         assertEquals("Tides", Overrides.forSync(listOf(t), agreed)[key]?.title)
@@ -33,7 +33,7 @@ class OverridesSyncTest {
         val dir = Files.createTempDirectory("ov3").toFile()
         Overrides.load(dir)
         val t = song("content://b")
-        val key = LinkSync.idOf(t.artist, t.title)
+        val key = LinkSync.fileKey(t)
         Overrides.edit(t, "Tides (old)", "Lumen Trio", "Sea")
         val mine = Overrides.meta.value.getValue(t.id).at
         // The PC's newer edit was agreed while this phone's songs weren't loaded: this phone's older one isn't news.

@@ -52,17 +52,32 @@ class LinkSyncDatesTest {
     }
 
     @Test fun renamesAreDoneOnTheRightSongHere() {
-        fun t(id: String, name: String, album: String = "Sea") = Track(id, id, "Tides", "Lumen Trio", album, "Lumen Trio", 0, 1, "", null, name)
+        fun t(id: String, name: String, title: String = "Tides") = Track(id, id, title, "Lumen Trio", "Sea", "Lumen Trio", 0, 1, "", null, name)
         val mine = t("file:/m/01.flac", "01 tides.flac")
+        val k = LinkSync.fileKey(mine) // the file as it was named before the rename
         val name = Name("Lumen Trio - Tides", "Sea", 200)
         // Its own extension, the same folder.
         assertEquals(listOf(FileNames.Rename(mine.id, "01 tides.flac", "Lumen Trio - Tides.flac")), LinkSync.renamesFor(mapOf(k to name), emptyMap(), listOf(mine)).map { it.first })
-        // Done already (known as new as this), or named so already: nothing.
+        // Done already (known as new as this): nothing.
         assertEquals(0, LinkSync.renamesFor(mapOf(k to name), mapOf(k to name), listOf(mine)).size)
-        assertEquals(0, LinkSync.renamesFor(mapOf(k to name), emptyMap(), listOf(t("file:/m/x.flac", "Lumen Trio - Tides.flac"))).size)
-        // Two songs with that artist and title: the album tells them apart; can't tell: left alone.
-        val live = t("file:/m/live.flac", "tides live.flac", album = "Live")
-        assertEquals(listOf(mine.id), LinkSync.renamesFor(mapOf(k to name), emptyMap(), listOf(mine, live)).map { it.first.id })
-        assertEquals(0, LinkSync.renamesFor(mapOf(k to name), emptyMap(), listOf(mine, t("file:/n/01.flac", "copy.flac"))).size)
+        // Another version (its own title, brackets and all) and another file of the song are left alone.
+        val slowed = t("file:/m/02.flac", "01 tides.flac", title = "Tides (slowed)")
+        val other = t("file:/n/x.flac", "tides.flac")
+        assertEquals(listOf(mine.id), LinkSync.renamesFor(mapOf(k to name), emptyMap(), listOf(mine, slowed, other)).map { it.first.id })
+        // The same file in two folders: both.
+        val copy = t("file:/n/01.flac", "01 tides.flac")
+        assertEquals(setOf(mine.id, copy.id), LinkSync.renamesFor(mapOf(k to name), emptyMap(), listOf(mine, copy)).map { it.first.id }.toSet())
+        // A rename recorded before exact keys (loose key): only when one song fits.
+        val old = LinkSync.idOf("Lumen Trio", "Tides")
+        assertEquals(listOf(mine.id), LinkSync.renamesFor(mapOf(old to name), emptyMap(), listOf(mine)).map { it.first.id })
+        assertEquals(0, LinkSync.renamesFor(mapOf(old to name), emptyMap(), listOf(mine, other)).size)
+    }
+
+    @Test fun versionsOfASongHaveTheirOwnKey() {
+        fun t(title: String, file: String) = Track("file:/m/$file", "file:/m/$file", title, "Xxanteria", "BAIXO", "Xxanteria", 0, 1, "", null, file)
+        val keys = listOf(t("BAIXO", "a.mp3"), t("BAIXO (ALT Version)", "b.mp3"), t("BAIXO (slowed)", "c.mp3"), t("BAIXO (super slowed)", "d.mp3"), t("BAIXO", "e.mp3")).map(LinkSync::fileKey)
+        assertEquals(keys.size, keys.toSet().size)
+        // Case and spacing don't matter (the same file read on two devices).
+        assertEquals(LinkSync.fileKey(t("BAIXO  (slowed) ", "c.mp3")), LinkSync.fileKey(t("baixo (slowed)", "c.mp3")))
     }
 }
