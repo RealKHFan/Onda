@@ -29,6 +29,34 @@ class OverridesSyncTest {
         assertEquals("Tides", Overrides.forSync(listOf(t), agreed)[key]?.title) // a later sync's agreed edits decide again
     }
 
+    @Test fun aStaleEditHereDoesntBeatANewerAgreedOne() {
+        val dir = Files.createTempDirectory("ov3").toFile()
+        Overrides.load(dir)
+        val t = song("content://b")
+        val key = LinkSync.idOf(t.artist, t.title)
+        Overrides.edit(t, "Tides (old)", "Lumen Trio", "Sea")
+        val mine = Overrides.meta.value.getValue(t.id).at
+        // The PC's newer edit was agreed while this phone's songs weren't loaded: this phone's older one isn't news.
+        val agreed = mapOf(key to LinkSync.Edit("Tides (PC)", "Lumen Trio", "Sea", null, 0, mine + 1000))
+        assertEquals("Tides (PC)", Overrides.forSync(listOf(t), agreed)[key]?.title)
+        // Edited here after that: this one goes.
+        Thread.sleep(2); Overrides.edit(t, "Tides (phone)", "Lumen Trio", "Sea")
+        assertEquals("Tides (phone)", Overrides.forSync(listOf(t), mapOf(key to agreed.getValue(key).copy(at = mine)))[key]?.title)
+        // A restore carries its date, kept over a restart; a sync takes in only the restores it sent.
+        Overrides.restore(t.id)
+        Overrides.load(dir)
+        val at = Overrides.restoresForSync(listOf(t)).getValue(key)
+        Overrides.synced(upTo = at - 1)
+        assertEquals(at, Overrides.restoresForSync(listOf(t))[key])
+        Overrides.synced(upTo = at)
+        assertNull(Overrides.restoresForSync(listOf(t))[key])
+        // Renames known here survive a restart too, and only a newer one replaces one.
+        Overrides.knowNames(mapOf(key to LinkSync.Name("Lumen Trio - Tides", "Sea", 200)))
+        Overrides.knowNames(mapOf(key to LinkSync.Name("Older", "Sea", 100)))
+        Overrides.load(dir)
+        assertEquals("Lumen Trio - Tides", Overrides.names.value[key]?.stem)
+    }
+
     @Test fun editsFollowAMovedFileByItsName() {
         Overrides.load(Files.createTempDirectory("ov2").toFile())
         fun file(path: String, name: String) = Track("file:$path", "file:$path", "tides demo", "lumen trio", "", "lumen trio", 0, 200_000, "audio/mpeg", null, name)

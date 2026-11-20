@@ -246,6 +246,7 @@ object Link {
                     val merged = LinkSync.fromJson(req.getJSONObject("snapshot"))
                     state.applyLink(merged, known)
                     merged.last?.let(::takeLast)
+                    merged.names?.let(state::adoptNames)
                     // All edits agreed now (not only those for songs this PC doesn't have): one missing here later keeps it.
                     foreignEdits = merged.edits
                     Overrides.synced()

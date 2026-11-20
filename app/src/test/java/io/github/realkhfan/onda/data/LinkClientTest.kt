@@ -23,6 +23,11 @@ class LinkClientTest {
     @Test fun pairsAndSyncsBothWays() {
         val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
         AppData.load(ctx)
+        // Onda shows its saved song list first (on the main thread); a sync waits for it.
+        val loading = System.currentTimeMillis() + 5_000
+        while (!io.github.realkhfan.onda.scan.MusicLibrary.loaded.value && System.currentTimeMillis() < loading) {
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(10)
+        }
         val phoneCover = java.io.File(ctx.filesDir, "covers").apply { mkdirs() }.resolve("phone-pl-1.img").apply { writeBytes(ByteArray(2000) { 7 }) }
         PlaylistStore.fromSync(listOf(PlaylistStore.Playlist("phone-pl", "On the phone", listOf("dz:1"), cover = phoneCover.path)), emptyList(), emptyList(), emptyList(),
             listOf(RemoteTrack(1, "Paper Moon", "Velvet Hours", "Moons", null, null, 180)))

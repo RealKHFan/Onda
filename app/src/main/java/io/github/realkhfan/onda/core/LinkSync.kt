@@ -20,8 +20,17 @@ object LinkSync {
     /** A folder of playlists. */
     data class Folder(val id: String, val name: String)
 
-    /** Details you edited for one of your songs; found on the other side by the file's own artist and title. */
-    data class Edit(val title: String, val artist: String, val album: String, val cover: String?, val deezerId: Long)
+    /**
+     * Details you edited for one of your songs; found on the other side by the file's own artist and title. [at]: when it
+     * was edited (0: before Onda kept dates), so the newer edit wins a sync.
+     */
+    data class Edit(val title: String, val artist: String, val album: String, val cover: String?, val deezerId: Long, val at: Long = 0)
+
+    /**
+     * A song file renamed in Onda: its new name without the extension ([stem]), its album (to tell apart songs with the same
+     * artist and title) and when. The newest rename of a song wins, and the other device renames its file the same way.
+     */
+    data class Name(val stem: String, val album: String, val at: Long)
 
     /** Lyrics you chose for a song: the LRCLIB id (0 = the one found) and a timing shift in ms (+ = shown earlier). */
     data class Lyric(val id: Long, val shiftMs: Long)
@@ -87,6 +96,10 @@ object LinkSync {
         val added: Map<String, Long>? = null,
         val mixes: List<Mix>? = null,
         val last: LastPlay? = null,
+        /** When you restored a song's original tags, by the same key as [edits]: newer than an edit, it removes it. */
+        val restores: Map<String, Long>? = null,
+        /** Files renamed in Onda, by the same key as [edits]. */
+        val names: Map<String, Name>? = null,
     )
 
     fun idOf(artist: String, title: String) = "~" + Match.norm(artist) + "|" + Match.norm(title)
@@ -139,7 +152,6 @@ object LinkSync {
         val folderIds = folders.map { it.id }.toSet()
         val liked = list(base?.liked, a.liked, b.liked, newFirst = true) { it.id }
         val used = (playlists.flatMap { it.songs } + liked).mapNotNull { it.key }.toSet()
-        val editKeys = list(base?.edits?.keys?.toList(), a.edits.keys.toList(), b.edits.keys.toList()) { it }
         return Snapshot(
             // A playlist in a folder that was deleted on the other side moves out of it.
             playlists = playlists.map { if (it.folder != null && it.folder !in folderIds) it.copy(folder = null) else it },
@@ -155,7 +167,7 @@ object LinkSync {
             // The same play from both sides carries the same moment; loops of a short song a few seconds apart all stay.
             plays = (a.plays + b.plays).distinctBy { Triple(Match.norm(it.artist), Match.norm(it.title), it.atMs) }
                 .sortedBy { it.atMs }.takeLast(MAX_PLAYS),
-            edits = editKeys.associateWith { k -> a.edits[k]?.takeIf { it != base?.edits?.get(k) || b.edits[k] == null } ?: b.edits[k] ?: a.edits.getValue(k) },
+            edits = edits(base?.edits, a, b),
             // The side that changed it since last time ([a] when both did).
             picture = when {
                 b.picture == null -> a.picture
@@ -172,10 +184,54 @@ object LinkSync {
             added = both(base?.added, a.added, b.added) { _, x, y -> x + y.filter { (k, t) -> x[k]?.let { it <= t } != true } },
             mixes = both(base?.mixes, a.mixes, b.mixes) { o, x, y -> mixes(o, x, y) },
             last = listOfNotNull(a.last, b.last).maxByOrNull { it.at },
+            // Restores are news once: the merged edits already left them out.
+            restores = null,
+            names = both(base?.names, a.names, b.names) { _, x, y -> (x.keys + y.keys).associateWith { k -> listOfNotNull(x[k], y[k]).maxBy { it.at } } },
         )
     }
 
     private fun <T> both(base: T?, a: T?, b: T?, merge: (T?, T, T) -> T): T? = if (a == null) b else if (b == null) a else merge(base, a, b)
+
+    /**
+     * Edits: the newest wins, an edit or a restore of the original tags, each by its date. Edits from before Onda kept dates
+     * (on both sides) keep the old rule: the side that changed it since [base] ([a] when both did).
+     */
+    private fun edits(base: Map<String, Edit>?, a: Snapshot, b: Snapshot): Map<String, Edit> {
+        val kept = list(base?.keys?.toList(), a.edits.keys.toList(), b.edits.keys.toList()) { it }.toSet()
+        return (kept + a.edits.keys + b.edits.keys).mapNotNull { k ->
+            val x = a.edits[k]; val y = b.edits[k]
+            val restored = maxOf(a.restores?.get(k) ?: 0L, b.restores?.get(k) ?: 0L)
+            val newest = listOfNotNull(x, y).maxByOrNull { it.at }
+            when {
+                (newest?.at ?: 0L) > 0L || restored > 0L -> newest?.takeIf { it.at > restored }
+                k !in kept -> null
+                else -> x?.takeIf { it != base?.get(k) || y == null } ?: y ?: x
+            }?.let { k to it }
+        }.toMap()
+    }
+
+    /** The key a rename is synced by: the file's own artist and title, like [Snapshot.edits]. */
+    fun nameKey(raw: Track) = idOf(raw.artist, raw.title)
+
+    /** A rename of [raw] (the file with its own tags) to [to], made at [at], as it's synced. */
+    fun nameOf(raw: Track, to: String, at: Long) = nameKey(raw) to Name(to.substringBeforeLast('.').ifEmpty { to }, raw.album, at)
+
+    /**
+     * Renames to do here so files are named as on the other device: for each synced [names] entry newer than what this device
+     * knows ([known]), the one song here with that key (its album decides between several) whose name differs. Same folder,
+     * own extension. [raw]: this device's files with their own tags.
+     */
+    fun renamesFor(names: Map<String, Name>, known: Map<String, Name>, raw: List<Track>): List<Pair<FileNames.Rename, Name>> {
+        val byKey = raw.filter { it.fileName.isNotEmpty() }.groupBy(::nameKey)
+        return names.mapNotNull { (k, n) ->
+            if (n.at <= (known[k]?.at ?: 0L)) return@mapNotNull null
+            val here = byKey[k].orEmpty().let { all -> if (all.size > 1) all.filter { Match.norm(it.album) == Match.norm(n.album) } else all }
+            val t = here.singleOrNull() ?: return@mapNotNull null // not here, or can't tell which
+            val ext = t.fileName.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+            val to = n.stem + ext
+            if (to == t.fileName) null else FileNames.Rename(t.id, t.fileName, to) to n
+        }
+    }
 
     /**
      * Per key: the side that changed it since [base] ([a] when both did; gone when that side removed it). With no [base] (the
@@ -264,7 +320,7 @@ object LinkSync {
         .put("notInterested", JSONArray(s.notInterested)).put("blocked", JSONArray(s.blocked)).put("ai", JSONArray(s.ai))
         .put("plays", JSONArray(s.plays.map { JSONObject().put("k", it.key).put("a", it.artist).put("t", it.title).put("at", it.atMs) }))
         .put("edits", JSONObject().apply {
-            s.edits.forEach { (k, e) -> put(k, JSONObject().put("t", e.title).put("a", e.artist).put("al", e.album).put("c", e.cover).put("dz", e.deezerId)) }
+            s.edits.forEach { (k, e) -> put(k, JSONObject().put("t", e.title).put("a", e.artist).put("al", e.album).put("c", e.cover).put("dz", e.deezerId).put("at", e.at)) }
         })
         .apply { s.picture?.let { put("picture", it) } }
         .apply { s.pins?.let { put("pins", JSONArray(it)) } }
@@ -274,6 +330,8 @@ object LinkSync {
         .apply { s.lyrics?.let { m -> put("lyrics", JSONObject().apply { m.forEach { (k, l) -> put(k, JSONArray().put(l.id).put(l.shiftMs)) } }) } }
         .apply { s.added?.let { put("added", JSONObject(it)) } }
         .apply { s.last?.let { put("last", JSONObject().put("queue", queueToJson(it.queue)).put("at", it.at)) } }
+        .apply { s.restores?.let { put("restores", JSONObject(it)) } }
+        .apply { s.names?.let { n -> put("names", JSONObject().apply { n.forEach { (k, v) -> put(k, JSONObject().put("n", v.stem).put("al", v.album).put("at", v.at)) } }) } }
         .apply {
             s.mixes?.let { m ->
                 put("mixes", JSONArray(m.map { JSONObject().put("kind", it.kind).put("period", it.period).put("tracks", JSONArray(it.tracks.map(::track))).put("basedOn", JSONArray(it.basedOn)) }))
@@ -295,7 +353,7 @@ object LinkSync {
         plays = objects(o.optJSONArray("plays")).map { Discovery.Play(it.optString("k"), it.optString("a"), it.optString("t"), it.optLong("at")) },
         edits = o.optJSONObject("edits")?.let { e ->
             e.keys().asSequence().associateWith { k ->
-                e.getJSONObject(k).let { Edit(it.optString("t"), it.optString("a"), it.optString("al"), it.optString("c").ifBlank { null }, it.optLong("dz")) }
+                e.getJSONObject(k).let { Edit(it.optString("t"), it.optString("a"), it.optString("al"), it.optString("c").ifBlank { null }, it.optLong("dz"), it.optLong("at")) }
             }
         }.orEmpty(),
         picture = if (o.has("picture")) o.optString("picture") else null,
@@ -308,6 +366,11 @@ object LinkSync {
         },
         added = o.optJSONObject("added")?.let { m -> m.keys().asSequence().associateWith { m.optLong(it) } },
         last = o.optJSONObject("last")?.let { l -> l.optJSONObject("queue")?.let { LastPlay(queueFromJson(it), l.optLong("at")) } },
+        restores = o.optJSONObject("restores")?.let { m -> m.keys().asSequence().associateWith { m.optLong(it) } },
+        names = o.optJSONObject("names")?.let { m ->
+            m.keys().asSequence().associateWith { k -> m.getJSONObject(k).let { Name(it.optString("n"), it.optString("al"), it.optLong("at")) } }
+                .filterValues { it.stem.isNotBlank() }
+        },
         mixes = if (!o.has("mixes")) null else objects(o.optJSONArray("mixes")).map {
             Mix(it.optString("kind"), it.optString("period"), objects(it.optJSONArray("tracks")).map(::track), strings(it.optJSONArray("basedOn")))
         },

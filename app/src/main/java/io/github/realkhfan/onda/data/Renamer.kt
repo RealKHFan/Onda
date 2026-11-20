@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import io.github.realkhfan.onda.core.FileNames
+import io.github.realkhfan.onda.core.LinkSync
+import io.github.realkhfan.onda.scan.MusicLibrary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -19,7 +21,12 @@ object Renamer {
     fun canWrite(context: Context, treeUri: String): Boolean =
         context.contentResolver.persistedUriPermissions.any { it.uri.toString() == treeUri && it.isWritePermission }
 
-    suspend fun apply(context: Context, plan: List<FileNames.Rename>): Result {
+    /**
+     * [at]: when each rename counts as made (now for yours; the PC's date when matching its rename). Recorded, so the PC
+     * names its copy the same; the copy in "Copy new songs to a folder" follows too.
+     */
+    suspend fun apply(context: Context, plan: List<FileNames.Rename>, at: (FileNames.Rename) -> Long = { System.currentTimeMillis() }): Result {
+        val raw = MusicLibrary.tracks.value.associateBy { it.id } // own tags, before a rescan gives the files their new ids
         val moved = LinkedHashMap<String, String>()
         val undo = ArrayList<FileNames.Rename>()
         val failed = ArrayList<String>()
@@ -38,9 +45,11 @@ object Renamer {
                 }
             }
         }
+        Overrides.knowNames(plan.filter { it.id in moved }.mapNotNull { r -> raw[r.id]?.let { LinkSync.nameOf(it, r.to, at(r)) } }.toMap())
         PlaylistStore.migrateIds(moved)
         Overrides.migrateIds(moved)
         PlayLog.migrateIds(moved)
+        SongCopy.renamed(context, moved)
         return Result(moved.size, failed, undo)
     }
 }

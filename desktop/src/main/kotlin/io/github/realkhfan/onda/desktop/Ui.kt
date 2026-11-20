@@ -1980,7 +1980,7 @@ private fun LyricsTools(state: AppState, player: Player, ls: LyricsState, big: B
     if (!ls.full) return
     val (picked, shift) = state.lyricsPick(cur.id)
     var choosing by remember { mutableStateOf(false) }
-    val tint = if (big) TextMain.copy(alpha = 0.8f) else TextDim
+    val tint = TextMain.copy(alpha = 0.8f) // on the cover's colour
     Row(Modifier.padding(if (big) 44.dp else 12.dp, 0.dp, 12.dp, 0.dp), verticalAlignment = Alignment.CenterVertically) {
         if (ls.lyrics?.synced?.isNotEmpty() == true) {
             TextButton(onClick = { state.setLyricsPick(cur.id, picked, shift + 500) }) { Text("Earlier", color = tint, fontSize = 12.sp) }
@@ -2065,7 +2065,7 @@ private fun LyricsLines(state: AppState, player: Player, ls: LyricsState, big: B
         ls.lyrics.instrumental -> Note("Instrumental")
         lines.isNotEmpty() -> LazyColumn(state = list, contentPadding = PaddingValues(if (big) 48.dp else 16.dp, 8.dp, 16.dp, 240.dp)) {
             itemsIndexed(lines) { i, l ->
-                Text(l.text.ifBlank { "♪" }, color = if (i == active) TextMain else if (big) TextMain.copy(alpha = 0.45f) else TextDim,
+                Text(l.text.ifBlank { "♪" }, color = if (i == active) TextMain else TextMain.copy(alpha = 0.45f),
                     fontSize = if (i == active) on else off, fontWeight = if (i == active) FontWeight.Bold else FontWeight.SemiBold,
                     lineHeight = (if (i == active) on else off) * 1.2f,
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { player.seek(l.timeMs - ls.shift) }.padding(vertical = if (big) 10.dp else 6.dp, horizontal = 4.dp))
@@ -2081,11 +2081,12 @@ private fun LyricsLines(state: AppState, player: Player, ls: LyricsState, big: B
 @Composable
 private fun LyricsPanel(state: AppState, player: Player, onExpand: () -> Unit, onClose: () -> Unit) {
     val ls = rememberLyrics(state, player)
-    Column(Modifier.width(360.dp).fillMaxHeight().background(Side)) {
+    // On the cover's colour, like the full-screen lyrics (and Spotify's).
+    Column(Modifier.width(360.dp).fillMaxHeight().background(rememberArtTint(player.current?.art))) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Lyrics", color = TextMain, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
-            Tip("Show lyrics full screen") { IconButton(onClick = onExpand) { Icon(Icons.Rounded.OpenInFull, "Show lyrics full screen", tint = TextDim) } }
-            Tip("Close lyrics") { IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Close lyrics", tint = TextDim) } }
+            Tip("Show lyrics full screen") { IconButton(onClick = onExpand) { Icon(Icons.Rounded.OpenInFull, "Show lyrics full screen", tint = TextMain) } }
+            Tip("Close lyrics") { IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "Close lyrics", tint = TextMain) } }
         }
         LyricsLines(state, player, ls, big = false)
     }
@@ -2110,15 +2111,20 @@ private fun LyricsFull(state: AppState, player: Player, onCollapse: () -> Unit, 
     }
 }
 
-/** The cover's dominant colour, darkened for white text (the phone's ArtColor); the accent's dark violet while loading. */
+/**
+ * The cover's dominant colour, darkened for white text (the phone's ArtColor), fading from one song's to the next; the
+ * accent's dark violet until the first is known.
+ */
 @Composable
 private fun rememberArtTint(art: String?): Color {
-    var c by remember(art) { mutableStateOf(Color(0xFF2B2140)) }
+    var c by remember { mutableStateOf(Color(0xFF2B2140)) }
     LaunchedEffect(art) {
         if (art == null) return@LaunchedEffect
         val argb = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             runCatching {
-                val img = if (art.startsWith("/")) javax.imageio.ImageIO.read(File(art))
+                // A web cover the window has shown comes from the image cache, without the network.
+                val local = if (art.startsWith("/")) art else cachedCover(art)?.removePrefix("file://")
+                val img = if (local != null) javax.imageio.ImageIO.read(File(local))
                 else java.net.URI(art).toURL().openConnection().apply { setRequestProperty("User-Agent", "Onda"); connectTimeout = 5000; readTimeout = 8000 }
                     .getInputStream().use { javax.imageio.ImageIO.read(it) }
                 val small = java.awt.image.BufferedImage(24, 24, java.awt.image.BufferedImage.TYPE_INT_ARGB)
@@ -2128,7 +2134,7 @@ private fun rememberArtTint(art: String?): Color {
         }
         if (argb != null) c = Color(argb)
     }
-    return c
+    return androidx.compose.animation.animateColorAsState(c, androidx.compose.animation.core.tween(600)).value
 }
 
 /* ---------- Player bar ---------- */
@@ -3155,9 +3161,7 @@ private fun RenamePage(ctx: Ctx, back: (() -> Unit)?) {
     fun run(p: List<io.github.realkhfan.onda.core.FileNames.Rename>, undo: Boolean) {
         busy = true
         state.launch {
-            val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Renames.apply(p) }
-            state.rescanNow()
-            state.migrateIds(r.moved)
+            val r = state.renameFiles(p)
             result = if (undo) null else r
             busy = false
             ctx.toast(if (undo) "Old names restored" else "Renamed ${r.moved.size} files")

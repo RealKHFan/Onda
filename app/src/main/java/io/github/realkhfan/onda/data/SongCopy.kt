@@ -120,6 +120,41 @@ object SongCopy {
         }
     }
 
+    /**
+     * Songs renamed in Onda: not copied again as new ones, and their copy in the folder gets the same name, in place (your
+     * backup sees a rename, not a new song).
+     */
+    suspend fun renamed(ctx: Context, moved: Map<String, String>) = withContext(Dispatchers.IO) {
+        if (moved.isEmpty()) return@withContext
+        val tree = Prefs.copyTree(ctx)?.let(Uri::parse) ?: return@withContext
+        running.withLock {
+            val done = readCopied(ctx)
+            if (done.any { it in moved }) writeCopied(ctx, done.mapTo(HashSet()) { moved[it] ?: it })
+            val root = runCatching { DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)) }.getOrNull() ?: return@withLock
+            for ((a, b) in moved) runCatching {
+                val parts = pathOf(Uri.parse(a))?.split('/') ?: return@runCatching
+                val name = pathOf(Uri.parse(b))?.substringAfterLast('/') ?: return@runCatching
+                var dir = root
+                for (folder in parts.dropLast(1)) dir = child(ctx, tree, dir, folder) ?: return@runCatching
+                val copy = child(ctx, tree, dir, parts.last()) ?: return@runCatching
+                if (child(ctx, tree, dir, name) == null) DocumentsContract.renameDocument(ctx.contentResolver, copy, name)
+            }
+        }
+    }
+
+    /** Where a song is below its music folder ("Artist/Album/song.flac", as in [songs]); null when that can't be told. */
+    private fun pathOf(uri: Uri): String? {
+        val id = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: return null
+        for (t in MusicLibrary.folders.value) {
+            val tree = Uri.parse(t)
+            if (tree.authority != uri.authority) continue
+            val root = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull() ?: continue
+            val prefix = if (root.endsWith(":")) root else "$root/" // the whole card ("primary:") or a folder on it
+            if (id.startsWith(prefix)) return id.removePrefix(prefix)
+        }
+        return null
+    }
+
     /** True when copied; false when it's there already. */
     private fun copyOne(ctx: Context, s: Song, tree: Uri, root: Uri): Boolean {
         val cr = ctx.contentResolver

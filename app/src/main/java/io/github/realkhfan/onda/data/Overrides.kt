@@ -1,5 +1,6 @@
 package io.github.realkhfan.onda.data
 
+import io.github.realkhfan.onda.core.LinkSync
 import io.github.realkhfan.onda.core.RemoteTrack
 import io.github.realkhfan.onda.core.Source
 import io.github.realkhfan.onda.core.Track
@@ -16,7 +17,8 @@ import java.io.File
  */
 object Overrides {
 
-    data class Meta(val title: String, val artist: String, val album: String, val cover: String?, val deezerId: Long)
+    /** [at]: when it was made (0: before Onda kept dates); the newer edit wins a sync. */
+    data class Meta(val title: String, val artist: String, val album: String, val cover: String?, val deezerId: Long, val at: Long = 0)
 
     private val _meta = MutableStateFlow<Map<String, Meta>>(emptyMap())
     val meta: StateFlow<Map<String, Meta>> = _meta.asStateFlow()
@@ -29,8 +31,12 @@ object Overrides {
     private val _artistPics = MutableStateFlow<Map<String, String>>(emptyMap())
     val artistPics: StateFlow<Map<String, String>> = _artistPics.asStateFlow()
 
-    /** Songs whose original tags you restored since the last sync: only these lose their edit on the other device too. */
-    private val _restored = MutableStateFlow<Set<String>>(emptySet())
+    /** Songs whose original tags you restored since the last sync (and when): only these lose their edit on the other device too. */
+    private val _restored = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+    /** The newest rename this device knows of per song ([LinkSync.nameKey]): its own and those taken over from the other device. */
+    private val _names = MutableStateFlow<Map<String, LinkSync.Name>>(emptyMap())
+    val names: StateFlow<Map<String, LinkSync.Name>> = _names.asStateFlow()
 
     private var file: File? = null
 
@@ -50,7 +56,7 @@ object Overrides {
 
     fun replace(local: Track, r: RemoteTrack) {
         // Only a Deezer id is kept: it makes the song's link; an Apple id there would point to another song.
-        _meta.value = _meta.value + (local.id to Meta(r.title, r.artist, r.album.ifBlank { local.album }, r.cover, if (r.source == Source.DEEZER) r.id else 0))
+        _meta.value = _meta.value + (local.id to Meta(r.title, r.artist, r.album.ifBlank { local.album }, r.cover, if (r.source == Source.DEEZER) r.id else 0, now()))
         _reviewed.value = _reviewed.value + local.id
         _restored.value = _restored.value - local.id
         val key = r.artist.lowercase()
@@ -64,7 +70,7 @@ object Overrides {
     fun edit(t: Track, title: String, artist: String, album: String, cover: String? = null) {
         val old = _meta.value[t.id]
         _meta.value = _meta.value + (t.id to Meta(title.trim().ifEmpty { t.title }, artist.trim().ifEmpty { t.artist },
-            album.trim().ifEmpty { t.album }, cover ?: old?.cover, old?.deezerId ?: 0))
+            album.trim().ifEmpty { t.album }, cover ?: old?.cover, old?.deezerId ?: 0, now()))
         _reviewed.value = _reviewed.value + t.id
         _restored.value = _restored.value - t.id
         write()
@@ -81,7 +87,7 @@ object Overrides {
         if (map.isEmpty()) return
         _meta.value = _meta.value.mapKeys { (k, _) -> map[k] ?: k }
         _reviewed.value = _reviewed.value.map { map[it] ?: it }.toSet()
-        _restored.value = _restored.value.map { map[it] ?: it }.toSet()
+        _restored.value = _restored.value.mapKeys { (k, _) -> map[k] ?: k }
         write()
     }
 
@@ -107,23 +113,31 @@ object Overrides {
 
     fun restore(trackId: String) {
         _meta.value = _meta.value - trackId
-        _restored.value = _restored.value + trackId
+        _restored.value = _restored.value + (trackId to now())
         write()
     }
+
+    private fun now() = System.currentTimeMillis()
 
     /**
      * The edits to sync: those agreed last time ([agreed]) and yours here, minus the songs you restored. A song merely
      * missing an edit here (not loaded yet, renamed, scanned again) keeps it; only "Restore original tags" removes it.
      */
-    fun forSync(raw: List<Track>, agreed: Map<String, io.github.realkhfan.onda.core.LinkSync.Edit>): Map<String, io.github.realkhfan.onda.core.LinkSync.Edit> {
-        val restored = raw.filter { it.id in _restored.value }.map { io.github.realkhfan.onda.core.LinkSync.idOf(it.artist, it.title) }.toSet()
-        return agreed.filterKeys { it !in restored } + forSync(raw)
+    fun forSync(raw: List<Track>, agreed: Map<String, LinkSync.Edit>): Map<String, LinkSync.Edit> {
+        val restored = restoresForSync(raw).keys
+        // An edit here older than the agreed one is one this device missed (its songs weren't loaded yet), not news.
+        return agreed.filterKeys { it !in restored } + forSync(raw).filter { (k, e) -> agreed[k]?.let { it.at > e.at } != true }
     }
 
-    /** After a sync took in your restores, they're news no more. */
-    fun synced() {
-        if (_restored.value.isEmpty()) return
-        _restored.value = emptySet()
+    /** Your restores of original tags, by song key, with when: a restore newer than an edit removes it on both devices. */
+    fun restoresForSync(raw: List<Track>): Map<String, Long> =
+        raw.mapNotNull { t -> _restored.value[t.id]?.let { LinkSync.nameKey(t) to it } }.toMap()
+
+    /** After a sync took in your restores (those made up to [upTo]), they're news no more. */
+    fun synced(upTo: Long = Long.MAX_VALUE) {
+        val left = _restored.value.filterValues { it > upTo }
+        if (left == _restored.value) return
+        _restored.value = left
         write()
     }
 
@@ -131,7 +145,7 @@ object Overrides {
     fun forSync(raw: List<Track>): Map<String, io.github.realkhfan.onda.core.LinkSync.Edit> {
         val byId = raw.associateBy { it.id }
         return _meta.value.mapNotNull { (id, m) ->
-            byId[id]?.let { t -> io.github.realkhfan.onda.core.LinkSync.idOf(t.artist, t.title) to io.github.realkhfan.onda.core.LinkSync.Edit(m.title, m.artist, m.album, m.cover, m.deezerId) }
+            byId[id]?.let { t -> LinkSync.idOf(t.artist, t.title) to LinkSync.Edit(m.title, m.artist, m.album, m.cover, m.deezerId, m.at) }
         }.toMap()
     }
 
@@ -140,9 +154,17 @@ object Overrides {
         val byName = raw.groupBy { io.github.realkhfan.onda.core.LinkSync.idOf(it.artist, it.title) }
         val known = raw.map { it.id }.toSet()
         val next = _meta.value.filterKeys { it !in known }.toMutableMap() // songs this device can't see right now keep theirs
-        for (t in raw) edits[io.github.realkhfan.onda.core.LinkSync.idOf(t.artist, t.title)]?.let { e -> next[t.id] = Meta(e.title, e.artist, e.album, e.cover, e.deezerId) }
+        for (t in raw) edits[io.github.realkhfan.onda.core.LinkSync.idOf(t.artist, t.title)]?.let { e -> next[t.id] = Meta(e.title, e.artist, e.album, e.cover, e.deezerId, e.at) }
         if (next != _meta.value) { _meta.value = next; _reviewed.value = _reviewed.value + next.keys; write() }
         return edits.filterKeys { it !in byName }
+    }
+
+    /** Files renamed here ([LinkSync.nameOf]): by you, or to match the other device (with its date), so each is done once. */
+    fun knowNames(names: Map<String, LinkSync.Name>) {
+        val newer = names.filter { (k, n) -> n.at > (_names.value[k]?.at ?: 0L) }
+        if (newer.isEmpty()) return
+        _names.value = _names.value + newer
+        write()
     }
 
     fun setArtistPics(pics: Map<String, String>) {
@@ -160,12 +182,16 @@ object Overrides {
             _meta.value = m.keys().asSequence().associateWith { id ->
                 val o = m.getJSONObject(id)
                 Meta(o.getString("title"), o.getString("artist"), o.optString("album"),
-                    o.optString("cover").ifBlank { null }, o.optLong("dz"))
+                    o.optString("cover").ifBlank { null }, o.optLong("dz"), o.optLong("at"))
             }
             val rv = root.optJSONArray("reviewed") ?: JSONArray()
             _reviewed.value = (0 until rv.length()).map { rv.getString(it) }.toSet()
-            val rs = root.optJSONArray("restored") ?: JSONArray()
-            _restored.value = (0 until rs.length()).map { rs.getString(it) }.toSet()
+            // Before 0.29.0 a list of ids without dates.
+            _restored.value = root.optJSONObject("restored")?.let { o -> o.keys().asSequence().associateWith { o.optLong(it) } }
+                ?: root.optJSONArray("restored")?.let { a -> (0 until a.length()).associate { a.getString(it) to 0L } }.orEmpty()
+            _names.value = root.optJSONObject("names")?.let { o ->
+                o.keys().asSequence().associateWith { k -> o.getJSONObject(k).let { LinkSync.Name(it.optString("n"), it.optString("al"), it.optLong("at")) } }
+            }.orEmpty()
             val ap = root.optJSONObject("artistPics") ?: JSONObject()
             _artistPics.value = ap.keys().asSequence().associateWith { ap.getString(it) }
         } catch (_: Throwable) {
@@ -180,14 +206,15 @@ object Overrides {
             val m = JSONObject()
             _meta.value.forEach { (id, v) ->
                 m.put(id, JSONObject().put("title", v.title).put("artist", v.artist).put("album", v.album)
-                    .put("cover", v.cover).put("dz", v.deezerId))
+                    .put("cover", v.cover).put("dz", v.deezerId).put("at", v.at))
             }
             val ap = JSONObject()
             _artistPics.value.forEach { (k, v) -> ap.put(k, v) }
             val root = JSONObject()
                 .put("meta", m)
                 .put("reviewed", JSONArray(_reviewed.value.toList()))
-                .put("restored", JSONArray(_restored.value.toList()))
+                .put("restored", JSONObject(_restored.value as Map<*, *>))
+                .put("names", JSONObject().apply { _names.value.forEach { (k, n) -> put(k, JSONObject().put("n", n.stem).put("al", n.album).put("at", n.at)) } })
                 .put("artistPics", ap)
             // Temp file + rename, so a crash mid-write never leaves a half-written file.
             val tmp = File(f.path + ".tmp")

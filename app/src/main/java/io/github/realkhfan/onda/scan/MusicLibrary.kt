@@ -29,6 +29,10 @@ object MusicLibrary {
     private val _folders = MutableStateFlow<List<String>>(emptyList())
     val folders: StateFlow<List<String>> = _folders.asStateFlow()
 
+    /** False from start until the saved song list shows (true when nothing was loaded, e.g. in tests). */
+    private val _loaded = MutableStateFlow(true)
+    val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
+
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
@@ -47,7 +51,8 @@ object MusicLibrary {
             org.json.JSONObject(File(context.filesDir, "added.json").readText()).let { o -> o.keys().asSequence().associateWith { o.getLong(it) } }
         }.getOrDefault(emptyMap())
         val c = context.applicationContext
-        scope.launch { lock.withLock { showSaved(c) } } // first in line, so a scan started now waits for it
+        _loaded.value = false
+        scope.launch { lock.withLock { try { showSaved(c) } finally { _loaded.value = true } } } // first in line, so a scan started now waits for it
     }
 
     private suspend fun showSaved(context: Context) {

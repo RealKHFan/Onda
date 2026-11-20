@@ -1,6 +1,7 @@
 package io.github.realkhfan.onda.desktop
 
 import io.github.realkhfan.onda.core.Grouping
+import io.github.realkhfan.onda.core.FileNames
 import io.github.realkhfan.onda.core.LinkSync
 
 import io.github.realkhfan.onda.core.SpotifyImport
@@ -74,6 +75,8 @@ class AppState(private val scope: CoroutineScope) {
 
     /** Details accepted from the online match (shown instead of the file's tags) and artist photos found with it. */
     var meta by mutableStateOf(Overrides.meta.value); private set
+    /** Files renamed in Onda here or on the phone ([Overrides.names]): a rename here reaches the phone. */
+    var names by mutableStateOf(Overrides.names.value); private set
     var artistPics by mutableStateOf(Overrides.artistPics.value); private set
 
     private val serverTracks by derivedStateOf { Navidrome.tracks(serverSongs, settings.server, settings.kbps) }
@@ -503,6 +506,7 @@ class AppState(private val scope: CoroutineScope) {
 
     fun start() {
         scope.launch { Overrides.meta.collect { meta = it } }
+        scope.launch { Overrides.names.collect { names = it } }
         scope.launch { Overrides.artistPics.collect { artistPics = it } }
         if (settings.folders.isNotEmpty()) rescan()
         if (settings.server != null) sync()
@@ -562,7 +566,7 @@ class AppState(private val scope: CoroutineScope) {
     fun setCrossfade(s: Int) = update(settings.copy(crossfade = s.coerceIn(0, 12)))
 
     /** What a sync carries, as one number (history aside): the phone is told to sync when it changes. */
-    fun linkFingerprint(): Int = listOf(collection, meta, settings.picture, sharedSettings(), settings.pinned, settings.searches, settings.picks, mixes).hashCode()
+    fun linkFingerprint(): Int = listOf(collection, meta, settings.picture, sharedSettings(), settings.pinned, settings.searches, settings.picks, mixes, names).hashCode()
 
     /** The settings both apps share ([LinkSync.SETTINGS]) as text; "server" only when logged in, so a missing one never logs the phone out. */
     fun sharedSettings(): Map<String, String> = settings.let { s ->
@@ -628,6 +632,8 @@ class AppState(private val scope: CoroutineScope) {
             lyrics = settings.picks.mapNotNull { (id, v) -> lib.songId(id)?.let { it to LinkSync.Lyric(v.first, v.second) } }.toMap(),
             added = addedAt.mapNotNull { (id, t) -> lib.songId(id)?.let { it to t } }.toMap(),
             mixes = mixes.values.map { LinkSync.Mix(it.kind.name, it.period, it.tracks) },
+            restores = Overrides.restoresForSync(rawTracks),
+            names = Overrides.names.value,
         ).also { known += lib.learned }
     }
 
@@ -735,6 +741,48 @@ class AppState(private val scope: CoroutineScope) {
         plays = plays.map { it.copy(key = m(it.key)) }; Store.savePlays(plays)
         Overrides.migrateIds(moved)
         readCopied().let { c -> if (c.any { it in moved }) writeCopied(c.mapTo(HashSet(), ::m)) } // a renamed song isn't new
+        renameCopies(moved)
+    }
+
+    /**
+     * Renames files: yours ([at] now) or the phone's renames ([at] their date). Recorded, so the other device names its copy the
+     * same (the newest rename wins); playlists, likes, history and the copy in the copy folder follow ([migrateIds]).
+     */
+    suspend fun renameFiles(plan: List<FileNames.Rename>, at: (FileNames.Rename) -> Long = { System.currentTimeMillis() }): Renames.Result {
+        val raw = local.associateBy { it.id } // own tags, before the rescan gives the files their new ids
+        val r = withContext(Dispatchers.IO) { Renames.apply(plan) }
+        Overrides.knowNames(plan.filter { it.id in r.moved }.mapNotNull { p -> raw[p.id]?.let { LinkSync.nameOf(it, p.to, at(p)) } }.toMap())
+        rescanNow()
+        migrateIds(r.moved)
+        return r
+    }
+
+    /** Renames made on the phone: the same song here gets the same name (the newest rename of a song wins). */
+    fun adoptNames(names: Map<String, LinkSync.Name>) {
+        val plan = LinkSync.renamesFor(names, Overrides.names.value, local)
+        if (plan.isEmpty()) return
+        val dates = plan.associate { (r, n) -> r.id to n.at }
+        launch { renameFiles(plan.map { it.first }) { dates.getValue(it.id) } }
+    }
+
+    /** Where a song of yours is copied to in the copy folder [dir]: the same place as below its music folder. */
+    private fun copyOf(f: java.io.File, roots: List<java.io.File>, dir: java.io.File) =
+        java.io.File(dir, roots.firstOrNull { f.startsWith(it) }?.let { f.relativeTo(it).path } ?: f.name)
+
+    /** Renamed files: their copies in the copy folder get the same name, in place (your backup sees a rename, not a new song). */
+    private fun renameCopies(moved: Map<String, String>) {
+        val dir = settings.copyDir?.let { java.io.File(it).absoluteFile } ?: return
+        val roots = settings.folders.map { java.io.File(it).absoluteFile }
+        val files = moved.filter { (a, b) -> a.startsWith("file:") && b.startsWith("file:") }
+        if (files.isEmpty()) return
+        // Off the UI thread: a share whose server is off can take seconds to answer.
+        scope.launch(Dispatchers.IO) {
+            for ((a, b) in files) runCatching {
+                val from = copyOf(java.io.File(java.net.URI(a)).absoluteFile, roots, dir)
+                val to = copyOf(java.io.File(java.net.URI(b)).absoluteFile, roots, dir)
+                if (from.isFile && !to.exists()) java.nio.file.Files.move(from.toPath(), to.toPath())
+            }
+        }
     }
 
     /* ---------- Copy new songs to a folder ---------- */
@@ -796,7 +844,7 @@ class AppState(private val scope: CoroutineScope) {
     private fun copyOne(f: java.io.File, roots: List<java.io.File>, fromPhone: java.io.File?, dir: java.io.File): Boolean {
         if (fromPhone != null && f.startsWith(fromPhone)) return false // your phone has these already
         if (f.startsWith(dir)) return false
-        val out = java.io.File(dir, roots.firstOrNull { f.startsWith(it) }?.let { f.relativeTo(it).path } ?: f.name)
+        val out = copyOf(f, roots, dir)
         if (out.exists()) return false
         out.parentFile.mkdirs()
         // Copied next to it under a hidden name, then renamed: a song never shows up half-copied.

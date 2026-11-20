@@ -18,6 +18,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
 import org.json.JSONObject
 import java.io.File
 import java.net.DatagramPacket
@@ -146,6 +148,8 @@ object Link {
     suspend fun sync(): String = mutex.withLock {
         if (_pc.value == null) return "Not linked with a PC."
         if (MusicLibrary.scanning.value) return "Your music is still being scanned. Try again in a moment."
+        // Just opened: without the saved song list, the PC's edits to your songs would be agreed but not applied here.
+        if (withTimeoutOrNull(20_000) { MusicLibrary.loaded.first { it } } == null) return "Your music is still loading. Try again in a moment."
         syncing.value = true
         try {
             repeat(3) {
@@ -157,6 +161,7 @@ object Link {
                 val known = HashMap(LinkSync.songsFromJson(stored?.optJSONObject("known")))
                 val mine = snapshot(base, known)
                 val before = fingerprint() // runs on the main thread: nothing changes between these two
+                val takenAt = System.currentTimeMillis()
                 val theirs = LinkSync.fromJson(got.getJSONObject("snapshot"))
                 val merged = withContext(Dispatchers.Default) { LinkSync.merge(base, mine, theirs) }
                 if (!swapCovers(merged, theirs)) return done("Couldn't send a playlist cover to ${_pc.value?.name ?: "your PC"}.")
@@ -169,7 +174,7 @@ object Link {
                 // Changed here while waiting for the PC (a playlist made meanwhile): kept on top of what was agreed, sent next time.
                 val meanwhile = fingerprint() != before
                 apply(if (meanwhile) LinkSync.merge(mine, snapshot(base, known), merged) else merged, known)
-                Overrides.synced()
+                Overrides.synced(upTo = takenAt) // a restore made meanwhile goes next time
                 // Your profile picture as agreed: the PC's, or none.
                 when {
                     merged.picture == "" && Profile.picture != null -> withContext(Dispatchers.Main) { Profile.clear(app) }
@@ -180,6 +185,7 @@ object Link {
                     val f = File(dir, "link-base.json")
                     File(f.path + ".tmp").apply { writeText(JSONObject().put("base", LinkSync.toJson(merged)).put("known", LinkSync.songsToJson(known)).toString()) }.renameTo(f)
                 }
+                adoptNames(merged.names)
                 if (meanwhile) syncLater() // the watcher skipped it while this sync ran
                 return done("Synced " + java.time.LocalTime.now().withNano(0).withSecond(0))
             }
@@ -196,6 +202,14 @@ object Link {
     }
 
     private fun raw(): List<Track> = MusicLibrary.tracks.value + AppData.serverTracks()
+
+    /** Files renamed on the PC: the same song here gets the same name (the newest rename of a song wins). */
+    private suspend fun adoptNames(names: Map<String, LinkSync.Name>?) {
+        val plan = LinkSync.renamesFor(names ?: return, Overrides.names.value, MusicLibrary.tracks.value)
+        if (plan.isEmpty()) return
+        val dates = plan.associate { (r, n) -> r.id to n.at }
+        if (Renamer.apply(app, plan.map { it.first }) { dates.getValue(it.id) }.renamed > 0) MusicLibrary.rescanSoon(app)
+    }
 
     private fun snapshot(base: LinkSync.Snapshot?, known: MutableMap<String, LinkSync.Song>): LinkSync.Snapshot {
         val raw = raw()
@@ -222,6 +236,8 @@ object Link {
             lyrics = Prefs.lyricsPicks(app).mapNotNull { (id, v) -> lib.songId(id)?.let { it to LinkSync.Lyric(v.first, v.second) } }.toMap(),
             added = MusicLibrary.addedAt.value.mapNotNull { (id, t) -> lib.songId(id)?.let { it to t } }.toMap(),
             mixes = Mixes.mixes.value.values.map { LinkSync.Mix(it.kind.name, it.period, it.tracks, it.basedOn) },
+            restores = Overrides.restoresForSync(raw),
+            names = Overrides.names.value,
             last = io.github.realkhfan.onda.player.LastSession.current?.takeIf { it.at > 0 }?.let { s ->
                 val q = io.github.realkhfan.onda.player.RemotePlayer.queueOf(s.items, s.positionMs)
                 val (songs, start) = LinkSync.around(q.songs, s.index)
@@ -337,7 +353,7 @@ object Link {
         UserCollection.followed.value, UserCollection.albums.value, UserCollection.hidden.value, UserCollection.blocked.value,
         UserCollection.aiMarked.value, Overrides.meta.value, Profile.picture?.path,
         Prefs.shared(app), Prefs.pinned(app), Prefs.searches(app), Prefs.lyricsPicks(app), Mixes.mixes.value,
-        io.github.realkhfan.onda.player.LastSession.state.value,
+        io.github.realkhfan.onda.player.LastSession.state.value, Overrides.names.value,
     ).hashCode()
 
     /** Changes here reach the PC a few seconds later (while Onda runs). */
@@ -346,7 +362,7 @@ object Link {
         val flows = listOf<kotlinx.coroutines.flow.Flow<Any?>>(
             PlaylistStore.playlists, PlaylistStore.folders, PlaylistStore.liked, PlaylistStore.want, UserCollection.followed, UserCollection.albums,
             UserCollection.hidden, UserCollection.blocked, UserCollection.aiMarked, Overrides.meta,
-            androidx.compose.runtime.snapshotFlow { Profile.picture }, Prefs.changed, Mixes.mixes, io.github.realkhfan.onda.player.LastSession.state,
+            androidx.compose.runtime.snapshotFlow { Profile.picture }, Prefs.changed, Mixes.mixes, io.github.realkhfan.onda.player.LastSession.state, Overrides.names,
         )
         scope.launch {
             kotlinx.coroutines.flow.combine(flows) { fingerprint() }.collectLatest { f ->
