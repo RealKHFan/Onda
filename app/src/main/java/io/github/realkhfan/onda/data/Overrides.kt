@@ -131,7 +131,7 @@ object Overrides {
 
     /** Your restores of original tags, by song key, with when: a restore newer than an edit removes it on both devices. */
     fun restoresForSync(raw: List<Track>): Map<String, Long> =
-        raw.mapNotNull { t -> _restored.value[t.id]?.let { LinkSync.nameKey(t) to it } }.toMap()
+        raw.mapNotNull { t -> _restored.value[t.id]?.let { LinkSync.nameKey(t) to it } }.groupBy({ it.first }, { it.second }).mapValues { (_, at) -> at.max() }
 
     /** After a sync took in your restores (those made up to [upTo]), they're news no more. */
     fun synced(upTo: Long = Long.MAX_VALUE) {
@@ -146,7 +146,10 @@ object Overrides {
         val byId = raw.associateBy { it.id }
         return _meta.value.mapNotNull { (id, m) ->
             byId[id]?.let { t -> LinkSync.idOf(t.artist, t.title) to LinkSync.Edit(m.title, m.artist, m.album, m.cover, m.deezerId, m.at) }
-        }.toMap()
+        }
+            // Several songs with that artist and title (a single and its album version): the newest edit of them, not
+            // whichever happens to come last (an older one from an earlier sync undid a new edit).
+            .groupBy({ it.first }, { it.second }).mapValues { (_, edits) -> edits.maxBy { it.at } }
     }
 
     /** The synced edits on the songs found here (an edit undone on the other side is undone here); returns those for songs not here. */

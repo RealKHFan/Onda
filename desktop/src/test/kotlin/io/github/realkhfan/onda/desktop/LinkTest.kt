@@ -173,6 +173,38 @@ class LinkTest {
         }
     }
 
+    /**
+     * Edited on the PC, synced with a phone that still has the old edit: the PC's newer one stays, also when another song
+     * here has the same artist and title (a single and its album version), whose older edit came with an earlier sync.
+     */
+    @Test fun theNewerPcEditWinsOverThePhonesOldOne() = runBlocking(Dispatchers.Swing) {
+        val state = AppState(CoroutineScope(Dispatchers.Swing))
+        val before = state.local
+        fun song(n: String) = io.github.realkhfan.onda.core.Track("file:/tmp/$n.mp3", "file:/tmp/$n.mp3", "tides demo", "lumen trio", "", "lumen trio", 0, 200_000, "audio/mpeg", null, "$n.mp3")
+        val album = song("onda-dup-album"); val single = song("onda-dup-single")
+        val key = LinkSync.idOf(album.artist, album.title)
+        val ov = io.github.realkhfan.onda.data.Overrides
+        try {
+            state.local = before + album + single
+            // An earlier sync gave both the phone's old edit.
+            val old = LinkSync.Edit("Tides (old)", "Lumen Trio", "Sea", null, 0, 1000)
+            val agreed = state.applyLink(state.linkSnapshot(emptyMap(), HashMap()).copy(edits = mapOf(key to old)), HashMap())
+            assertEquals("Tides (old)", ov.meta.value[single.id]?.title)
+            // Now edited on the PC (the album version): that is what the PC sends…
+            ov.edit(album, "Tides", "Lumen Trio", "Sea")
+            val mine = state.linkSnapshot(mapOf(key to old) + agreed, HashMap())
+            assertEquals("Tides", mine.edits[key]?.title)
+            // …and what the merge with the phone's old one keeps, back here on both songs.
+            val merged = LinkSync.merge(LinkSync.Snapshot(edits = mapOf(key to old)), LinkSync.Snapshot(edits = mapOf(key to old)), mine)
+            state.applyLink(merged, HashMap())
+            assertEquals("Tides", ov.meta.value[album.id]?.title)
+            assertEquals("Tides", ov.meta.value[single.id]?.title)
+        } finally {
+            ov.restore(album.id); ov.restore(single.id); ov.synced()
+            state.local = before
+        }
+    }
+
     /** An edit only goes away by "Restore original tags": a song missing it for a moment (not loaded yet, renamed) keeps it. */
     @Test fun anEditIsOnlyRemovedByARestore() = runBlocking(Dispatchers.Swing) {
         val state = AppState(CoroutineScope(Dispatchers.Swing))
