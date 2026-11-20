@@ -497,6 +497,9 @@ class AppState(private val scope: CoroutineScope) {
         ?: meta[t.id]?.deezerId?.takeIf { it > 0 }?.let { RemoteTrack(it, t.title, t.artist, t.album, null, null, 0) }
 
     fun remember(r: RemoteTrack) { seen[r.key] = r }
+    /** A song from the catalog you don't have (a preview): saving it goes to Want to listen, as on the phone. */
+    fun catalogSong(id: String): RemoteTrack? = if (byId.containsKey(id)) null else collection.remote.firstOrNull { it.key == id } ?: seen[id]
+
     fun canSave(id: String) = byId.containsKey(id) || seen.containsKey(id) || collection.remote.any { it.key == id } || LinkSync.isMissing(id)
 
     private fun withRemote(id: String, c: Store.Collection): Store.Collection {

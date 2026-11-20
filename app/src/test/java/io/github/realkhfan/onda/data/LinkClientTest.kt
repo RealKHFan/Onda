@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import io.github.realkhfan.onda.core.LinkCrypto
 import io.github.realkhfan.onda.core.LinkSync
 import io.github.realkhfan.onda.core.RemoteTrack
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -42,7 +43,8 @@ class LinkClientTest {
             // What played last on the PC, later than anything here: this phone picks it up (paused) at the same moment.
             last = LinkSync.LastPlay(LinkSync.Queue(listOf(LinkSync.Song("dz:2", "Tides", "Lumen Trio")),
                 listOf(RemoteTrack(2, "Tides", "Lumen Trio", "Sea", null, "https://example.invalid/p.mp3", 200)), 42_000, 0, false, 1), System.currentTimeMillis()))
-        var duringPut: (() -> Unit)? = null // something done on the phone while it waits for the PC's answer
+        var duringPut: (() -> Unit)? = null
+        var pcPlays = false // something done on the phone while it waits for the PC's answer
         // A bare HTTP server (the JDK's isn't on Android's test classpath): one request per connection.
         fun handle(path: String, body: ByteArray): Pair<Int, ByteArray?> {
             val (key, aad) = if (path == "/v1/pair") LinkCrypto.pairKey("123456") to "/v1/pair" else LinkCrypto.linkKey(token) to path
@@ -53,6 +55,7 @@ class LinkClientTest {
                 "/v1/sync/put" -> { duringPut?.invoke(); duringPut = null; pcSnapshot = LinkSync.fromJson(req.getJSONObject("snapshot")); JSONObject().put("ok", true) }
                 "/v1/cover/get" -> covers[req.getString("hash")] ?: return 404 to null
                 "/v1/cover/put" -> { covers[req.getString("hash")] = java.util.Base64.getDecoder().decode(req.getString("data")); JSONObject() }
+                "/v1/player/state" -> JSONObject().put("has", pcPlays).put("playing", pcPlays)
                 "/v1/file/stat" -> JSONObject().put("found", true).put("size", songFile.size).put("ext", "flac")
                 "/v1/file/read" -> {
                     val o = req.getLong("offset").toInt(); val n = minOf(req.getInt("length"), songFile.size - o)
@@ -127,6 +130,20 @@ class LinkClientTest {
                 org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(20)
             }
             assertTrue("Made meanwhile" in pcSnapshot.playlists.map { it.name })
+
+            // Onda opened while the PC was already playing (it said so only when it started): the phone asks, and shows it.
+            pcPlays = true
+            val heard = java.util.concurrent.CopyOnWriteArrayList<JSONObject>()
+            Link.onMessage = { heard += it }
+            val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+            org.robolectric.Shadows.shadowOf(cm).setNetworkCapabilities(cm.activeNetwork,
+                org.robolectric.shadows.ShadowNetworkCapabilities.newInstance().also { org.robolectric.Shadows.shadowOf(it).addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI) })
+            val listening = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { Link.listen(ctx) }
+            val by = System.currentTimeMillis() + 10_000
+            while (heard.none { it.optBoolean("pcPlaying") } && System.currentTimeMillis() < by) Thread.sleep(20)
+            listening.cancel()
+            Link.onMessage = null
+            assertEquals(1, heard.count { it.optBoolean("pcPlaying") })
         } finally {
             server.close()
             Link.unlink()

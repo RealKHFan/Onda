@@ -438,10 +438,16 @@ object Link {
      * Only on Wi-Fi, where the PC can be.
      */
     suspend fun listen(context: Context) {
+        var fresh = true // just started or back in reach: the PC may have been playing for a while
         while (true) {
-            if (_pc.value == null || !onWifi(context)) { kotlinx.coroutines.delay(30_000); continue }
+            if (_pc.value == null || !onWifi(context)) { fresh = true; kotlinx.coroutines.delay(30_000); continue }
+            // The PC says "I'm playing" only when it starts; a phone that wasn't listening then asks.
+            if (fresh) state()?.let { st ->
+                fresh = false
+                if (st.optBoolean("has") && st.optBoolean("playing")) onMessage?.invoke(JSONObject().put("pcPlaying", true))
+            }
             val r = call("/v1/inbox", timeoutMs = 30_000)?.takeIf { it.status == 200 }?.json
-            if (r == null) { kotlinx.coroutines.delay(20_000); continue } // the PC isn't reachable right now
+            if (r == null) { fresh = true; kotlinx.coroutines.delay(20_000); continue } // the PC isn't reachable right now
             r.optJSONObject("play")?.let(LinkSync::queueFromJson)?.let { q -> onPlay?.invoke(q) }
             if (r.optBoolean("sync")) syncLater()
             r.optJSONObject("send")?.let { send(context, LinkSync.songFromJson(it)) }

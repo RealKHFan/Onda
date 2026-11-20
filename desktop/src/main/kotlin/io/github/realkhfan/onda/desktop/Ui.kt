@@ -60,6 +60,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddCircleOutline
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
@@ -165,6 +166,14 @@ import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.MutableLongState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -680,7 +689,14 @@ private fun TrackRow(
         SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
             note = if (missing) "Not on this PC" else if (s.isPreviewRow(t)) "Preview" else null, selected = t.id in selected, dim = missing,
             onCtrlClick = onSelect?.let { f -> { f(i, true, false) } }, onShiftClick = onSelect?.let { f -> { f(i, false, true) } },
-            trailing = { if (s.isLiked(t.id)) Icon(Icons.Rounded.Favorite, "Liked", tint = Accent, modifier = Modifier.padding(12.dp)) }) {
+            trailing = {
+                // The heart of a liked song takes the like away (with Undo), like Spotify's.
+                if (s.isLiked(t.id)) Tip("Remove from Liked Songs") {
+                    IconButton(onClick = { s.toggleLike(t.id); ctx.undoable("Removed from Liked Songs") { s.toggleLike(t.id) } }) {
+                        Icon(Icons.Rounded.Favorite, "Remove from Liked Songs", tint = Accent)
+                    }
+                }
+            }) {
             onSelect?.invoke(i, false, false)
             if (!missing) ctx.play(list, i)
         }
@@ -767,7 +783,8 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
                     add(ContextMenuItem("Add to queue") { p.enqueue(item) })
                 }
             }
-            add(ContextMenuItem(if (s.isLiked(r.key)) "Remove from Liked Songs" else "Add to Liked Songs") { s.remember(r); s.toggleLike(r.key) })
+            // Saving a catalog song is Want to listen (as on the phone); one liked before can still be taken out.
+            if (s.isLiked(r.key)) add(ContextMenuItem("Remove from Liked Songs") { s.toggleLike(r.key) })
             s.collection.playlists.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.remember(r); s.addToPlaylist(pl.id, r.key) }) }
             add(ContextMenuItem("Add to new playlist…") { s.remember(r); ctx.dialog(Naming.New(r.key)) })
             add(ContextMenuItem(if (wanted) "Remove from Want to listen" else "Add to Want to listen") { s.toggleWant(r) })
@@ -2042,11 +2059,21 @@ private fun LyricsChoiceDialog(state: AppState, cur: Player.Item, picked: Long, 
 @Composable
 private fun LyricsLines(state: AppState, player: Player, ls: LyricsState, big: Boolean) {
     val lines = ls.lyrics?.synced.orEmpty()
-    val active = if (lines.isEmpty()) -1 else Lrc.indexAt(lines, player.positionMs + ls.shift)
+    val pos = rememberSmoothPosition(player)
+    // Lit a moment early, as the line starts; recomposes only when the line changes, not every frame.
+    val active by remember(lines, ls.shift) { derivedStateOf { if (lines.isEmpty()) -1 else Lrc.indexAt(lines, pos.longValue + ls.shift + 150) } }
     val list = rememberLazyListState()
-    LaunchedEffect(active) { if (active >= 0) list.animateScrollToItem((active - if (big) 4 else 3).coerceAtLeast(0)) }
+    LaunchedEffect(active) {
+        if (active < 0) return@LaunchedEffect
+        // Glide so the sung line sits a third down; far away (a seek): jump there first.
+        val item = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == active }
+            ?: return@LaunchedEffect list.scrollToItem((active - if (big) 3 else 2).coerceAtLeast(0))
+        val target = (list.layoutInfo.viewportSize.height * 0.3f).toInt()
+        list.animateScrollBy((item.offset - target).toFloat(), tween(550, easing = FastOutSlowInEasing))
+    }
     val k = state.settings.lyricsScale
-    val (on, off) = if (big) (40 * k).sp to (32 * k).sp else (26 * k).sp to (20 * k).sp
+    // One size for every line, so nothing below moves when the line changes; the sung one grows a little on top.
+    val size = if (big) (34 * k).sp else (22 * k).sp
     val l = ls.lyrics
     val hint = when {
         l == null || l.instrumental -> null
@@ -2065,16 +2092,51 @@ private fun LyricsLines(state: AppState, player: Player, ls: LyricsState, big: B
         ls.lyrics.instrumental -> Note("Instrumental")
         lines.isNotEmpty() -> LazyColumn(state = list, contentPadding = PaddingValues(if (big) 48.dp else 16.dp, 8.dp, 16.dp, 240.dp)) {
             itemsIndexed(lines) { i, l ->
-                Text(l.text.ifBlank { "♪" }, color = if (i == active) TextMain else TextMain.copy(alpha = 0.45f),
-                    fontSize = if (i == active) on else off, fontWeight = if (i == active) FontWeight.Bold else FontWeight.SemiBold,
-                    lineHeight = (if (i == active) on else off) * 1.2f,
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).clickable { player.seek(l.timeMs - ls.shift) }.padding(vertical = if (big) 10.dp else 6.dp, horizontal = 4.dp))
+                // Like the phone: sung white, sung before dim, still to come in between; fading, not switching.
+                val color by animateColorAsState(when { i == active -> TextMain; i < active -> TextMain.copy(alpha = 0.45f); else -> TextMain.copy(alpha = 0.7f) }, tween(300))
+                val grow by animateFloatAsState(if (i == active) 1.06f else 1f, tween(300))
+                Text(l.text.ifBlank { "♪" }, color = color, fontSize = size, fontWeight = FontWeight.Bold, lineHeight = size * 1.25f,
+                    modifier = Modifier.fillMaxWidth().graphicsLayer { scaleX = grow; scaleY = grow; transformOrigin = TransformOrigin(0f, 0.5f) }
+                        .clip(RoundedCornerShape(6.dp)).clickable { player.seek(l.timeMs - ls.shift) }.padding(vertical = if (big) 10.dp else 6.dp, horizontal = 4.dp))
             }
         }
         ls.lyrics.plain != null -> Text(ls.lyrics.plain, color = TextMain, fontSize = if (big) (28 * k).sp else (18 * k).sp,
             modifier = Modifier.padding(if (big) 48.dp else 16.dp).verticalScroll(rememberScrollState()))
         else -> Note("No lyrics for this song.")
     }
+    }
+}
+
+/**
+ * The play position between the player's own updates (every 0.4 s), moved on each frame while playing, so lyrics change
+ * on time. Never more than a second past the player's last word (a stalled stream doesn't run away).
+ */
+@Composable
+private fun rememberSmoothPosition(player: Player): MutableLongState {
+    val pos = remember { mutableLongStateOf(player.positionMs) }
+    LaunchedEffect(player) {
+        var base = -1L; var at = 0L
+        while (true) withFrameNanos { now ->
+            if (player.positionMs != base) { base = player.positionMs; at = now }
+            pos.longValue = if (player.playing) base + ((now - at) / 1_000_000).coerceAtMost(1000) else base
+        }
+    }
+    return pos
+}
+
+/** The player's save button: your songs go to Liked Songs, a catalog song (a preview) to Want to listen, as on the phone. */
+@Composable
+private fun SaveButton(state: AppState, id: String) {
+    val r = state.catalogSong(id)
+    val saved = if (r != null) state.isWanted(r) else state.isLiked(id)
+    val what = if (r != null) "Want to listen" else "Liked Songs"
+    Tip(if (saved) "Remove from $what" else "Add to $what") {
+        IconButton(onClick = { if (r != null) state.toggleWant(r) else state.toggleLike(id) }) {
+            Icon(
+                when { r != null && saved -> Icons.Rounded.Bookmark; r != null -> Icons.Rounded.BookmarkBorder; saved -> Icons.Rounded.Favorite; else -> Icons.Rounded.FavoriteBorder },
+                if (saved) "Remove from $what" else "Add to $what", tint = if (saved) Accent else TextDim,
+            )
+        }
     }
 }
 
@@ -2160,13 +2222,7 @@ private fun PlayerBar(ctx: Ctx, panel: Panel, toggle: (Panel) -> Unit) {
                     player.error?.let { Text(it, color = ErrorRed, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                         ?: Text(qualityOf(cur).orEmpty(), color = Accent.copy(alpha = 0.85f), fontSize = 10.sp, maxLines = 1) // keeps its line: nothing jumps when it arrives
                 }
-                if (state.canSave(cur.id)) {
-                    val liked = state.isLiked(cur.id)
-                    IconButton(onClick = { state.toggleLike(cur.id) }) {
-                        Icon(if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (liked) "Remove from Liked Songs" else "Add to Liked Songs",
-                            tint = if (liked) Accent else TextDim)
-                    }
-                }
+                if (state.canSave(cur.id)) SaveButton(state, cur.id)
             }
         }
         Column(Modifier.weight(1.3f), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -2271,12 +2327,7 @@ internal fun MiniPlayer(state: AppState, player: Player, openMain: () -> Unit) {
                     Icon(if (player.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (player.playing) "Pause" else "Play", tint = Color.Black)
                 }
                 Tip("Next") { IconButton(onClick = { player.next() }) { Icon(Icons.Rounded.SkipNext, "Next", tint = TextMain) } }
-                if (cur != null && state.canSave(cur.id)) {
-                    val liked = state.isLiked(cur.id)
-                    IconButton(onClick = { state.toggleLike(cur.id) }) {
-                        Icon(if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (liked) "Remove from Liked Songs" else "Add to Liked Songs", tint = if (liked) Accent else TextDim)
-                    }
-                }
+                if (cur != null && state.canSave(cur.id)) SaveButton(state, cur.id)
                 Spacer(Modifier.weight(1f))
                 Tip("Open Onda") { IconButton(onClick = openMain) { Icon(Icons.Rounded.OpenInFull, "Open Onda", tint = TextDim) } }
             }
