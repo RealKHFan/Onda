@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.freedesktop.gstreamer.Bus
+import org.freedesktop.gstreamer.BusSyncReply
 import org.freedesktop.gstreamer.ElementFactory
 import org.freedesktop.gstreamer.Format
 import org.freedesktop.gstreamer.Gst
@@ -22,6 +23,7 @@ import org.freedesktop.gstreamer.elements.PlayBin
 import org.freedesktop.gstreamer.event.SeekFlags
 import java.net.URI
 import java.util.EnumSet
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 
 /** Plays through the system's GStreamer (files, your server, previews). All calls on the UI thread. */
@@ -88,7 +90,8 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     /** Called when the last song starts (repeat off): "similar songs when the queue ends" adds more. */
     var onLastSong: (() -> Unit)? = null
-    private var loadToken = 0
+    @Volatile private var loadToken = 0 // also read on GStreamer's threads
+    private var closed = false
     private var pendingSeek = -1L
     /** The player you hear; [spare] plays the next song's start during a crossfade, then they swap. */
     private var bin: PlayBin
@@ -113,7 +116,17 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         // Tests: a silent sink that still keeps real time, like speakers do.
         if (audioSink != null) b.setAudioSink(ElementFactory.make(audioSink, "audio-$name").also { it.set("sync", true) })
         runCatching { ElementFactory.make("equalizer-10bands", "eq-$name") }.getOrNull()?.also { b.set("audio-filter", it); eqs[b] = it }
-        b.bus.connect(Bus.EOS { _ -> scope.launch { if (b !== bin) return@launch; gaplessNext = -1; if (crossing != null) finishCrossfade() else next(auto = true) } })
+        // GStreamer hands these over later on its own thread, often after a skip loaded the next song: each one is
+        // marked with the song it was posted for, so a late end or error of a song you left doesn't skip the next one.
+        val ends = ConcurrentLinkedQueue<Int>(); val errors = ConcurrentLinkedQueue<Int>()
+        b.bus.setSyncHandler { m ->
+            when (m.type) { MessageType.EOS -> ends.add(loadToken); MessageType.ERROR -> errors.add(loadToken); else -> {} }
+            BusSyncReply.PASS
+        }
+        b.bus.connect(Bus.EOS { _ ->
+            val of = ends.poll() ?: loadToken
+            scope.launch { if (b !== bin || of != loadToken) return@launch; gaplessNext = -1; if (crossing != null) finishCrossfade() else next(auto = true) }
+        })
         // Called on GStreamer's thread shortly before the end: the next file is handed over now, so there's no gap.
         // A stream starting after the one just loaded is the next song handed over gaplessly (the same file twice too).
         b.bus.connect(Bus.MESSAGE { _, m -> if (m.type == MessageType.STREAM_START) scope.launch { if (b === bin) streamStarted() } })
@@ -121,8 +134,11 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
             if (b === bin) gaplessTarget()?.let { i -> gaplessItem = queue[i]; gaplessNext = i; b.set("uri", queue[i].uri) }
         })
         b.bus.connect(Bus.ERROR { _, _, message ->
+            val of = errors.poll() ?: loadToken
             scope.launch {
+                if (closed) return@launch
                 if (b !== bin) { cancelCrossfade(); return@launch } // the next song's start failed: it just starts normally
+                if (of != loadToken) return@launch // from stopping a song you already left
                 error = "Couldn't play “${current?.title.orEmpty()}”: $message"
                 next(auto = true, afterError = true)
             }
@@ -137,6 +153,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         scope.launch {
             while (true) {
                 delay(if (gaplessNext >= 0 || crossing != null || nearCrossfade()) 50 else 400)
+                if (closed) break
                 tickCrossfade()
                 if (sleepAt in 1..System.currentTimeMillis()) { sleepAt = 0; pause(); applyVolume() } // back to full for next time
                 else if (sleepAt > 0 && sleepAt - System.currentTimeMillis() < 30_000) applyVolume()
@@ -326,11 +343,11 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         playingItem = item
         if (!goingOn) rule.start(playing, now())
         @Suppress("NAME_SHADOWING") val seekTo = if (seekTo >= 0) seekTo else resumeAt(item).takeIf { it > 0 } ?: -1
-        val token = ++loadToken
         started = false
         gaplessNext = -1
         error = null; fullFrom = null
         bin.stop()
+        val token = ++loadToken // after stop: what the old song posts while stopping still counts as the old song's
         positionMs = seekTo.coerceAtLeast(0)
         // A catalog song may turn out to be a 30-second preview: its full length would show until then.
         durationMs = if (item.preview) 0 else item.durationMs
@@ -428,7 +445,7 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
 
     val hasEqualizer get() = eqs.isNotEmpty()
 
-    fun close() { leaving(); spare.stop(); spare.dispose(); bin.stop(); bin.dispose() }
+    fun close() { closed = true; leaving(); spare.stop(); spare.dispose(); bin.stop(); loadToken++; bin.dispose() } // a load still on its way stops there
 
     /* ---------- crossfade ---------- */
 

@@ -219,6 +219,14 @@ class FeaturesTest {
         }
     }
 
+    @Test fun mixPreviewsThatWereNeverSavedStillPlay() {
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        val shown = io.github.realkhfan.onda.core.RemoteTrack(626262, "Sombrero", "Night Kites", "Dunes", null, null, 180)
+        val item = onUi { s.remember(shown); s.item(s.asTrack(shown)) } // a mix row: seen on the page, not in your collection
+        assertTrue(item.preview)
+        assertEquals(626262L, item.deezerId) // the player fetches the link instead of trying an empty one
+    }
+
     @Test fun openWithOndaHandsFilesToTheRunningOne() {
         val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
         val opened = ArrayList<String>()

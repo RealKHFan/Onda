@@ -190,6 +190,18 @@ class QueueEditingTest {
         onUi { p.close() }
     }
 
+    @Test fun skippingFastNeverSkipsAnExtraSong() {
+        val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
+        repeat(20) {
+            onUi { p.play((1..6).map(::item), 0); p.pause() }
+            repeat(4) { onUi { p.next() } } // GStreamer reports the stopped songs late: that must not count against the next one
+            Thread.sleep(150)
+            assertEquals("id5", onUi { p.current?.id })
+            assertEquals(null, onUi { p.error })
+        }
+        onUi { p.close() }
+    }
+
     @Test fun removeMoveAppendAndClear() {
         val p = onUi { Player(CoroutineScope(ui), audioSink = "fakesink") }
         var lastSongCalls = 0

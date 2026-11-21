@@ -64,7 +64,7 @@ class AppState(private val scope: CoroutineScope) {
     }.getOrDefault(emptySet())
 
     /** Catalog songs shown or played this run, so the heart and menus can save them. */
-    private val seen = HashMap<String, RemoteTrack>()
+    private val seen = java.util.concurrent.ConcurrentHashMap<String, RemoteTrack>() // filled from page loads off the UI thread
 
     init {
         accentState.value = androidx.compose.ui.graphics.Color(settings.accent.toInt()); Lrclib.init(Store.cache); Overrides.load(Store.data); ListenBrainz.load(Store.data)
@@ -991,7 +991,8 @@ class AppState(private val scope: CoroutineScope) {
     /* ---------- Playing ---------- */
 
     fun item(t: Track): Player.Item {
-        if (isPreviewRow(t)) collection.remote.firstOrNull { it.key == t.id }?.let { r -> item(r)?.let { return it } }
+        // a preview row may be a saved song or one only shown on a page (a mix, an artist): both are in seen or the collection
+        if (isPreviewRow(t)) (collection.remote.firstOrNull { it.key == t.id } ?: seen[t.id])?.let { r -> item(r)?.let { return it } }
         return Player.Item(t.id, t.title, t.artist, t.album, t.artUri, t.uri, durationMs = t.durationMs)
     }
 
