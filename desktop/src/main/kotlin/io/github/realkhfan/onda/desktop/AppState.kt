@@ -743,7 +743,8 @@ class AppState(private val scope: CoroutineScope) {
         recent = recent.map { i -> moved[i.id]?.let { i.copy(id = it, uri = it) } ?: i }.distinctBy { it.id }; Store.saveRecent(recent)
         plays = plays.map { it.copy(key = m(it.key)) }; Store.savePlays(plays)
         Overrides.migrateIds(moved)
-        readCopied().let { c -> if (c.any { it in moved }) writeCopied(c.mapTo(HashSet(), ::m)) } // a renamed song isn't new
+        // A renamed song isn't new; its old id stays until its copy has the new name too (tidyCopies, if this rename can't reach it).
+        readCopied().let { c -> if (c.any { it in moved }) writeCopied(c + c.mapNotNull { moved[it] }) }
         renameCopies(moved)
     }
 
@@ -781,10 +782,49 @@ class AppState(private val scope: CoroutineScope) {
         // Off the UI thread: a share whose server is off can take seconds to answer.
         scope.launch(Dispatchers.IO) {
             for ((a, b) in files) runCatching {
-                val from = copyOf(java.io.File(java.net.URI(a)).absoluteFile, roots, dir)
-                val to = copyOf(java.io.File(java.net.URI(b)).absoluteFile, roots, dir)
-                if (from.isFile && !to.exists()) java.nio.file.Files.move(from.toPath(), to.toPath())
+                moveCopy(copyOf(java.io.File(java.net.URI(a)).absoluteFile, roots, dir), copyOf(java.io.File(java.net.URI(b)).absoluteFile, roots, dir))
             }
+        }
+    }
+
+    /**
+     * Gives a copy its song's new name in place. When the song is already there under that name (copied anew meanwhile), the
+     * old copy goes, but only if it's byte for byte the same: a backup mirroring the folder then holds the song once.
+     */
+    private fun moveCopy(old: java.io.File, new: java.io.File): Boolean {
+        if (!old.isFile || old == new) return false
+        val a = old.toPath(); val b = new.toPath()
+        return when {
+            !new.exists() -> { new.parentFile.mkdirs(); java.nio.file.Files.move(a, b); true }
+            // The same file (a share that ignores case and only the case changed): through a temporary name, never deleted.
+            java.nio.file.Files.isSameFile(a, b) -> { val t = java.io.File(old.parentFile, ".${old.name}.renaming").toPath(); java.nio.file.Files.move(a, t); java.nio.file.Files.move(t, b); true }
+            java.nio.file.Files.mismatch(a, b) == -1L -> old.delete()
+            else -> false
+        }
+    }
+
+    /**
+     * Copies whose song is gone from where it was: renamed in Onda while the copy folder couldn't be reached, renamed in another
+     * app, or copied again under its new name before. The song with the same size and file date (a rename keeps both) is the one
+     * it became, if exactly one fits; its copy then has one name ([moveCopy]). A song deleted here keeps its copy.
+     */
+    private fun tidyCopies(done: MutableSet<String>, songs: List<String>, roots: List<java.io.File>, fromPhone: java.io.File?, dir: java.io.File) {
+        val gone = done.filter { it.startsWith("file:") }.map { it to java.io.File(java.net.URI(it)).absoluteFile }.filter { !it.second.exists() }
+        if (gone.isEmpty()) return
+        val here by lazy {
+            songs.map { it to java.io.File(java.net.URI(it)).absoluteFile }
+                .filter { (_, f) -> f.isFile && !f.startsWith(dir) && (fromPhone == null || !f.startsWith(fromPhone)) }.groupBy { it.second.length() }
+        }
+        for ((id, f) in gone) runCatching {
+            val old = copyOf(f, roots, dir)
+            if (!old.isFile) {
+                if (roots.firstOrNull { f.startsWith(it) }?.isDirectory == true) done -= id // nothing left of it (a drive that's away keeps its songs)
+                return@runCatching
+            }
+            val (newId, song) = here[old.length()].orEmpty()
+                .filter { (_, g) -> kotlin.math.abs(g.lastModified() - old.lastModified()) <= 2000 && copyOf(g, roots, dir) != old }
+                .singleOrNull() ?: return@runCatching
+            if (moveCopy(old, copyOf(song, roots, dir))) { done -= id; done += newId }
         }
     }
 
@@ -827,7 +867,9 @@ class AppState(private val scope: CoroutineScope) {
             val done = withContext(Dispatchers.IO) { readCopied() }
             val roots = settings.folders.map { java.io.File(it).absoluteFile }
             val fromPhone = Downloads.target(this)?.let { java.io.File(it, "Onda from phone").absoluteFile }
-            val todo = localFiles().filter { it !in done }
+            val songs = localFiles()
+            withContext(Dispatchers.IO) { tidyCopies(done, songs, roots, fromPhone, dir) }
+            val todo = songs.filter { it !in done }
             var copied = 0; var failed = 0
             for ((i, id) in todo.withIndex()) {
                 if (todo.size > 3) copyNote = "Copying new songs: ${i + 1} of ${todo.size}…"

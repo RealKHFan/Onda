@@ -13,8 +13,8 @@ android {
         applicationId = "io.github.realkhfan.onda"
         minSdk = 26
         targetSdk = 36
-        versionCode = 43
-        versionName = "0.30.2"
+        versionCode = 44
+        versionName = "0.30.3"
     }
 
     buildFeatures {

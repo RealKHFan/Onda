@@ -21,8 +21,7 @@ class RenameSyncTest {
     private val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private fun <T> onUi(block: suspend () -> T): T = runBlocking { withContext(ui) { block() } }
 
-    private fun wav(): ByteArray {
-        val n = 800
+    private fun wav(n: Int = 800): ByteArray {
         val b = ByteBuffer.allocate(44 + n * 2).order(ByteOrder.LITTLE_ENDIAN)
         b.put("RIFF".toByteArray()).putInt(36 + n * 2).put("WAVEfmt ".toByteArray()).putInt(16).putShort(1).putShort(1)
             .putInt(8000).putInt(16000).putShort(2).putShort(16).put("data".toByteArray()).putInt(n * 2)
@@ -32,6 +31,39 @@ class RenameSyncTest {
     private fun waitFor(what: String, check: () -> Boolean) {
         val until = System.currentTimeMillis() + 10_000
         while (!check()) { assertTrue(System.currentTimeMillis() < until, what); Thread.sleep(50) }
+    }
+
+    @Test fun copiesFollowRenamesMadeElsewhereAndLeftoversGo() {
+        val music = Files.createTempDirectory("onda-music").toFile()
+        val copies = Files.createTempDirectory("onda-copies").toFile()
+        val band = File(music, "Band").apply { mkdirs() }
+        listOf("a" to 800, "b" to 900, "c" to 1000, "d" to 1100).forEach { (n, size) -> File(band, "$n.wav").writeBytes(wav(size)) }
+        val s = onUi { AppState(CoroutineScope(ui)) }
+        val folders = s.settings.folders
+        val copyDir = s.settings.copyDir
+        fun copied() = File(copies, "Band").list()!!.sorted()
+        try {
+            onUi { s.addFolder(music.path); s.rescanNow(); s.setCopyDir(copies.path, everything = true) }
+            waitFor("all copied") { s.copyNote?.startsWith("Checked") == true }
+            Thread.sleep(200)
+            assertEquals(listOf("a.wav", "b.wav", "c.wav", "d.wav"), copied())
+
+            // a: renamed in another app; its copy follows in place.
+            Files.move(File(band, "a.wav").toPath(), File(band, "A song.wav").toPath())
+            // b: renamed and copied again under its new name (what older Ondas did): the copy left behind goes.
+            Files.move(File(band, "b.wav").toPath(), File(band, "B song.wav").toPath())
+            File(copies, "Band/b.wav").copyTo(File(copies, "Band/B song.wav")).setLastModified(File(copies, "Band/b.wav").lastModified())
+            // c: deleted here; its copy stays. d: renamed, but a different file already has its new name there: both stay.
+            File(band, "c.wav").delete()
+            Files.move(File(band, "d.wav").toPath(), File(band, "D song.wav").toPath())
+            File(copies, "Band/D song.wav").writeBytes(wav(1100).also { it[it.size - 1] = 7 })
+            File(copies, "Band/D song.wav").setLastModified(File(copies, "Band/d.wav").lastModified())
+            onUi { s.rescanNow(); s.copyNewSongs() }
+            assertEquals(listOf("A song.wav", "B song.wav", "D song.wav", "c.wav", "d.wav"), copied())
+        } finally {
+            onUi { s.setCopyDir(copyDir); s.removeFolder(music.path); folders.filter { it !in s.settings.folders }.forEach(s::addFolder) }
+            music.deleteRecursively(); copies.deleteRecursively()
+        }
     }
 
     @Test fun aRenameReachesTheCopyFolderAndThePhonesNewerRenameIsDoneHere() {

@@ -32,6 +32,7 @@ object Renamer {
         val failed = ArrayList<String>()
         withContext(Dispatchers.IO) {
             for (r in plan) {
+                if (taken(context, Uri.parse(r.id), r.to)) { failed += r.from; continue }
                 val newUri = try {
                     DocumentsContract.renameDocument(context.contentResolver, Uri.parse(r.id), r.to)
                 } catch (_: Exception) {
@@ -52,4 +53,18 @@ object Renamer {
         SongCopy.renamed(context, moved)
         return Result(moved.size, failed, undo)
     }
+
+    /**
+     * Android names a file renamed onto a taken name "name (1)", a second copy of the song. Taken means the song is there under
+     * that name already (your backup brought it), so the old file is left for the backup to remove.
+     */
+    private fun taken(context: Context, doc: Uri, name: String): Boolean = runCatching {
+        val id = sibling(DocumentsContract.getDocumentId(doc), name) ?: return false
+        context.contentResolver.query(DocumentsContract.buildDocumentUriUsingTree(doc, id), arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)
+            ?.use { it.moveToFirst() } == true
+    }.getOrDefault(false)
+
+    /** The file called [name] next to document [id], where ids are paths ("primary:Music/a.mp3", the phone's storage); else null. */
+    internal fun sibling(id: String, name: String): String? =
+        maxOf(id.lastIndexOf('/'), id.lastIndexOf(':')).takeIf { it >= 0 }?.let { id.substring(0, it + 1) + name }
 }
