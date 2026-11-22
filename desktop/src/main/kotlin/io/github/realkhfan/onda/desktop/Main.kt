@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+
 package io.github.realkhfan.onda.desktop
 
 import androidx.compose.runtime.CompositionLocalProvider
@@ -31,7 +33,9 @@ import kotlinx.coroutines.withContext
 
 /** Errors also go to ~/.cache/onda/onda.log (this start only), so a window that never shows can be looked into. */
 private fun startLog() = runCatching {
-    val out = java.io.FileOutputStream(java.io.File(Store.cache.apply { mkdirs() }, "onda.log"))
+    val log = java.io.File(Store.cache.apply { mkdirs() }, "onda.log")
+    log.renameTo(java.io.File(Store.cache, "onda-previous.log")) // the last start's, so an error survives restarting Onda once
+    val out = java.io.FileOutputStream(log)
     val err = System.err
     System.setErr(java.io.PrintStream(object : java.io.OutputStream() {
         override fun write(b: Int) { err.write(b); out.write(b) }
@@ -98,6 +102,20 @@ fun main(args: Array<String>) {
             player?.close()
             exitApplication()
         }
+        // Compose's own error box comes out squashed and unreadable on KDE: this one names the problem and where its details are.
+        val onError = remember {
+            androidx.compose.ui.window.WindowExceptionHandlerFactory { w ->
+                androidx.compose.ui.window.WindowExceptionHandler { e ->
+                    System.err.println("Onda: error in the window"); e.printStackTrace()
+                    javax.swing.SwingUtilities.invokeLater {
+                        val what = "${e.javaClass.simpleName}: ${e.message.orEmpty().take(400)}".chunked(90).joinToString("\n")
+                        javax.swing.JOptionPane.showMessageDialog(w, "Onda ran into a problem and has to close.\n\n$what\n\n" +
+                            "The details are in ~/.cache/onda/onda.log (onda-previous.log after Onda starts again).", "Onda", javax.swing.JOptionPane.ERROR_MESSAGE)
+                        quit()
+                    }
+                }
+            }
+        }
         fun keys(e: KeyEvent): Boolean {
             if (e.type != KeyEventType.KeyDown || player == null) return false
             when {
@@ -134,6 +152,7 @@ fun main(args: Array<String>) {
             }
         }
         val mainWindow = arrayOfNulls<java.awt.Frame>(1)
+        CompositionLocalProvider(androidx.compose.ui.window.LocalWindowExceptionHandlerFactory provides onError) {
         if (state.mini && player != null) Window(
             onCloseRequest = { state.mini = false }, title = "Onda mini player", icon = appIcon, alwaysOnTop = true, resizable = false,
             state = rememberWindowState(width = 440.dp, height = 150.dp, position = WindowPosition(Alignment.BottomEnd)), onKeyEvent = ::keys,
@@ -208,6 +227,7 @@ fun main(args: Array<String>) {
             }
             val base = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(base.density * state.settings.zoom, base.fontScale)) { OndaDesktop(state, player) }
+        }
         }
     }
 }

@@ -219,6 +219,11 @@ class FeaturesTest {
         }
     }
 
+    @Test fun aSongTwiceInAListGetsTwoRowKeys() {
+        // Same keys twice crash the list the moment both rows show (a big imported playlist, scrolled down).
+        assertEquals(listOf("a", "b", "a#2", "a#3", "c"), rowKeys(listOf("a", "b", "a", "a", "c")))
+    }
+
     @Test fun mixPreviewsThatWereNeverSavedStillPlay() {
         val s = onUi { AppState(CoroutineScope(ui)) }
         val shown = io.github.realkhfan.onda.core.RemoteTrack(626262, "Sombrero", "Night Kites", "Dunes", null, null, 180)

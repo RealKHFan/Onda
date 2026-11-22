@@ -576,7 +576,7 @@ private fun Section(text: String) = Text(text, color = TextMain, fontWeight = Fo
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun SongRow(
-    n: Int?, title: String, artist: String, album: String, durMs: Long, art: String?, playing: Boolean,
+    n: Int?, title: String, artist: String, album: String, durMs: Long, art: String?, playing: Boolean, of: Int = 0,
     note: String? = null, trailing: (@Composable () -> Unit)? = null, selected: Boolean = false, dim: Boolean = false,
     onCtrlClick: (() -> Unit)? = null, onShiftClick: (() -> Unit)? = null, onClick: () -> Unit,
 ) {
@@ -590,7 +590,8 @@ private fun SongRow(
         .onClick(keyboardModifiers = { !isCtrlPressed && !isShiftPressed }, onClick = onClick)
         .alpha(if (dim) 0.4f else 1f)
         .padding(start = 24.dp, end = 12.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (n != null) Text("$n", color = TextDim, modifier = Modifier.width(36.dp))
+        // As wide as the list's biggest number, so 1000+ fits on one line and every row of the list lines up.
+        if (n != null) Text("$n", color = TextDim, maxLines = 1, softWrap = false, modifier = Modifier.width(maxOf(36, 10 * maxOf(n, of).toString().length + 6).dp))
         Art(art, 40)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1.4f)) {
@@ -686,7 +687,7 @@ private fun TrackRow(
     val missing = LinkSync.isMissing(t.id)
     ContextMenuArea(items = { trackMenu(ctx, list, t, inPlaylist, selected) }) {
         // A song only on your phone: greyed out and not played, but its right-click menu works.
-        SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id,
+        SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id, of = list.size,
             note = if (missing) "Not on this PC" else if (s.isPreviewRow(t)) "Preview" else null, selected = t.id in selected, dim = missing,
             onCtrlClick = onSelect?.let { f -> { f(i, true, false) } }, onShiftClick = onSelect?.let { f -> { f(i, false, true) } },
             trailing = {
@@ -797,7 +798,7 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
             add(ContextMenuItem(if (linked) "Copy link" else "Copy song name") { ctx.copy(shareText(r.title, r.artist, r.takeIf { linked }), if (linked) "Link" else "Song name") })
         }
     }) {
-        SongRow(if (numbered) i + 1 else null, r.title, r.artist, r.album, r.durationSec * 1000L, r.cover, ctx.player?.current?.id == r.key,
+        SongRow(if (numbered) i + 1 else null, r.title, r.artist, r.album, r.durationSec * 1000L, r.cover, ctx.player?.current?.id == r.key, of = list.size,
             note = if (r.source.full) "Full · ${r.source.label}" else "Preview",
             trailing = {
                 IconButton(onClick = { s.toggleWant(r) }) {
@@ -1123,6 +1124,7 @@ private fun SongList(
         selected = select(selected, shown, anchor, i, ctrl, shift)
         if (!shift) anchor = i
     }
+    val keys = remember(shown) { rowKeys(shown.map { it.id }) }
     LazyColumn(Modifier.fillMaxSize()) {
         item {
             val total = tracks.sumOf { it.durationMs } / 60_000
@@ -1166,7 +1168,8 @@ private fun SongList(
         }
         above?.invoke(this)
         if (tracks.isEmpty() && above == null) item { Note("Nothing here yet. Right-click a song to add it.") }
-        items(shown.size, key = { shown[it].id }) { i ->
+        // A song can be in a list twice (added twice, or two catalog versions that are the same song of yours): each row its own key.
+        items(shown.size, key = { keys[it] }) { i ->
             // Dragging moves songs only in the list's own order.
             if (onMove == null || sort != Sort.CUSTOM) TrackRow(ctx, shown, i, numbered = true, inPlaylist = inPlaylist, selected = selected, onSelect = onSelect)
             else Row(Modifier.reorderRow(reorder, i, shown.size), verticalAlignment = Alignment.CenterVertically) {
@@ -1176,6 +1179,12 @@ private fun SongList(
         }
         below?.invoke(this)
     }
+}
+
+/** Unique keys for list rows: an id's second appearance gets "#2", and so on. */
+internal fun rowKeys(ids: List<String>): List<String> {
+    val seen = HashMap<String, Int>()
+    return ids.map { id -> val n = seen.merge(id, 1, Int::plus)!!; if (n == 1) id else "$id#$n" }
 }
 
 @Composable
@@ -2789,7 +2798,7 @@ private fun StatsPage(ctx: Ctx) {
             item { Section("Top songs") }
             items(songs.size) { i ->
                 val (t, n) = songs[i]
-                SongRow(i + 1, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id, note = "$n plays") { ctx.play(playable, i) }
+                SongRow(i + 1, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id, of = songs.size, note = "$n plays") { ctx.play(playable, i) }
             }
         }
     }
