@@ -724,6 +724,8 @@ fun OndaApp(player: PlayerState?) {
                             onDownload = downloadAll(likedTracks),
                             more = getMissing(likedShown),
                             onAddTo = { addSongs(it) }, onEdit = { editMany = it },
+                            // Your own order (Custom): drag to move, as in a playlist; the order syncs.
+                            onMove = { from, to -> PlaylistStore.setLiked(Grouping.moved(liked, likedShown.map { it.id }, from, to)) },
                             onRemove = { list ->
                                 val before = liked
                                 PlaylistStore.setLiked(before - list.map { it.id }.toSet())

@@ -219,6 +219,16 @@ class FeaturesTest {
         }
     }
 
+    @Test fun aSubmenuOpensBesideItsEntryAndStaysInTheWindow() {
+        val p = OndaMenus.Beside(8)
+        val entry = androidx.compose.ui.unit.IntRect(600, 460, 866, 498)
+        val window = androidx.compose.ui.unit.IntSize(1280, 820)
+        fun at(w: Int, h: Int) = p.calculatePosition(entry, window, androidx.compose.ui.unit.LayoutDirection.Ltr, androidx.compose.ui.unit.IntSize(w, h))
+        assertEquals(androidx.compose.ui.unit.IntOffset(870, 452), at(180, 200)) // right of it, first row level with it
+        assertEquals(androidx.compose.ui.unit.IntOffset(870, 320), at(180, 500)) // tall: moved up to fit
+        assertEquals(androidx.compose.ui.unit.IntOffset(176, 452), at(420, 200)) // no room on the right: left of the menu
+    }
+
     @Test fun aSongTwiceInAListGetsTwoRowKeys() {
         // Same keys twice crash the list the moment both rows show (a big imported playlist, scrolled down).
         assertEquals(listOf("a", "b", "a#2", "a#3", "c"), rowKeys(listOf("a", "b", "a", "a", "c")))

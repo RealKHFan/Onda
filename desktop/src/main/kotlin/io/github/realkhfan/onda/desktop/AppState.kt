@@ -1005,6 +1005,9 @@ class AppState(private val scope: CoroutineScope) {
     })))
 
     /** [from] / [to] are positions as shown (songs that can't be shown right now are skipped there). */
+    /** A drag in Liked Songs' own order (Custom); it syncs like the likes themselves. */
+    fun moveLiked(from: Int, to: Int) = change(collection.copy(liked = Grouping.moved(collection.liked, collection.liked.filter { listed(it) != null }, from, to)))
+
     fun movePlaylistTrack(id: String, from: Int, to: Int) = change(collection.copy(playlists = collection.playlists.map { pl ->
         if (pl.id != id) pl else pl.copy(trackIds = Grouping.moved(pl.trackIds, pl.trackIds.filter { listed(it) != null }, from, to))
     }))
@@ -1027,6 +1030,8 @@ class AppState(private val scope: CoroutineScope) {
     fun serverPlaylistTracks(p: Subsonic.Playlist): List<Track> = p.songIds.mapNotNull { byId[Navidrome.PREFIX + it] }
 
     fun isWanted(r: RemoteTrack) = collection.want.any { it.key == r.key }
+    /** Several at once (one save): those not in Want to listen yet go on top. */
+    fun wantAll(rs: List<RemoteTrack>) = change(collection.copy(want = rs.filterNot(::isWanted).distinctBy { it.key }.map { it.copy(preview = null) } + collection.want))
     fun toggleWant(r: RemoteTrack) = change(collection.copy(want =
         if (isWanted(r)) collection.want.filterNot { it.key == r.key } else listOf(r.copy(preview = null)) + collection.want))
 

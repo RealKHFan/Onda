@@ -18,7 +18,6 @@ import androidx.compose.material.icons.rounded.OpenInFull
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.LocalContextMenuRepresentation
-import androidx.compose.foundation.DefaultContextMenuRepresentation
 import androidx.compose.foundation.ContextMenuArea
 import androidx.compose.foundation.ContextMenuItem
 import androidx.compose.foundation.background
@@ -55,6 +54,8 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.automirrored.rounded.VolumeDown
+import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddCircleOutline
@@ -257,7 +258,7 @@ private enum class Panel { NONE, QUEUE, LYRICS }
 @Composable
 fun OndaDesktop(state: AppState, player: Player?) {
     MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Raised, onPrimary = Color.Black)) {
-      CompositionLocalProvider(LocalContextMenuRepresentation provides DefaultContextMenuRepresentation(Raised, TextMain, Color(0xFF2E2E38))) {
+      CompositionLocalProvider(LocalContextMenuRepresentation provides OndaMenus) {
         val stack = remember { mutableStateListOf<View>(View.Home) }
         // Each page keeps its scroll while others are open on top of it; a page that's closed starts fresh next time.
         val pages = rememberSaveableStateHolder()
@@ -344,7 +345,7 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         View.Settings -> SettingsPage(ctx)
                         View.Match -> MatchPage(ctx, back)
                         View.Rename -> RenamePage(ctx, back)
-                        View.Liked -> SongList(ctx, "Liked Songs", "Playlist", state.likedTracks, back = back) { GetFromPhone(ctx, state.likedTracks) }
+                        View.Liked -> SongList(ctx, "Liked Songs", "Playlist", state.likedTracks, back = back, onMove = state::moveLiked) { GetFromPhone(ctx, state.likedTracks) }
                         View.Want -> WantPage(ctx, back)
                         is View.Playlist -> {
                             val pl = state.collection.playlists.firstOrNull { it.id == v.id }
@@ -619,11 +620,12 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
                 add(ContextMenuItem("Add to queue") { here.forEach { p.enqueue(s.item(it)) } })
             }
         }
-        val canLike = many.filter { s.canSave(it.id) }
+        val previews = many.filter(s::isPreviewRow).mapNotNull { s.catalogSong(it.id) }
+        if (previews.any { !s.isWanted(it) }) add(ContextMenuItem("Add ${previews.count { !s.isWanted(it) }} to Want to listen") { s.wantAll(previews) })
+        val canLike = many.filter { s.canSave(it.id) && !s.isPreviewRow(it) }
         if (canLike.any { !s.isLiked(it.id) }) add(ContextMenuItem("Add $n to Liked Songs") { canLike.filterNot { s.isLiked(it.id) }.forEach { s.toggleLike(it.id) } })
         else if (canLike.isNotEmpty()) add(ContextMenuItem("Remove $n from Liked Songs") { canLike.forEach { s.toggleLike(it.id) } })
-        s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add $n to “${pl.name}”") { many.forEach { s.addToPlaylist(pl.id, it.id) } }) }
-        add(ContextMenuItem("Add $n to new playlist…") { ctx.dialog(Naming.New(null, many.map { it.id })) })
+        add(playlistMenu(s, "Add $n to playlist", inPlaylist, { ctx.dialog(Naming.New(null, many.map { it.id })) }) { pl -> many.forEach { s.addToPlaylist(pl.id, it.id) } })
         if (inPlaylist != null) add(ContextMenuItem("Remove $n from this playlist") { ctx.removeFromPlaylist(inPlaylist, many.map { it.id }) })
         many.mapNotNull { Downloads.forTrack(it, s.settings.server) }.takeIf { it.isNotEmpty() }?.let { d -> add(ContextMenuItem("Download ${d.size}") { ctx.download(d) }) }
         val editable = here.filterNot(s::isPreviewRow)
@@ -638,13 +640,15 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
             add(ContextMenuItem("Add to queue") { p.enqueue(s.item(t)) })
             add(ContextMenuItem("Start radio") { ctx.radio(s.item(t), t.artist) })
         }
-        add(ContextMenuItem(if (s.isLiked(t.id)) "Remove from Liked Songs" else "Add to Liked Songs") {
+        // A preview is saved to Want to listen, to get later (as everywhere else); liking is for your own songs.
+        val catalog = if (s.isPreviewRow(t)) s.catalogSong(t.id) else null
+        if (catalog != null) add(ContextMenuItem(if (s.isWanted(catalog)) "Remove from Want to listen" else "Add to Want to listen") { s.toggleWant(catalog) })
+        if (catalog == null || s.isLiked(t.id)) add(ContextMenuItem(if (s.isLiked(t.id)) "Remove from Liked Songs" else "Add to Liked Songs") {
             val was = s.isLiked(t.id)
             s.toggleLike(t.id)
             if (was) ctx.undoable("Removed from Liked Songs") { s.toggleLike(t.id) }
         })
-        s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.addToPlaylist(pl.id, t.id) }) }
-        add(ContextMenuItem("Add to new playlist…") { ctx.dialog(Naming.New(t.id)) })
+        add(playlistMenu(s, "Add to playlist", inPlaylist, { ctx.dialog(Naming.New(t.id)) }) { pl -> s.addToPlaylist(pl.id, t.id) })
         if (inPlaylist != null) add(ContextMenuItem("Remove from this playlist") { ctx.removeFromPlaylist(inPlaylist, listOf(t.id)) })
         add(ContextMenuItem("Go to album") {
             Grouping.albums(s.library).firstOrNull { it.key == t.albumKey }?.let { a -> ctx.push(View.LocalList(a.title, "Album · ${a.artist}", a.artUri, a.tracks)) }
@@ -660,6 +664,12 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
     }
 }
 
+/** "Add to playlist ›": your playlists (not [except], the one you're in) on hover, "New playlist…" first when [new] is given. */
+private fun playlistMenu(s: AppState, label: String, except: String?, new: (() -> Unit)?, add: (Store.Playlist) -> Unit) = SubMenu(label) {
+    listOfNotNull(new?.let { ContextMenuItem("New playlist…", it) }) +
+        s.collection.playlists.filter { it.id != except }.map { pl -> ContextMenuItem(pl.name) { add(pl) } }
+}
+
 /** The right-click menu of a song that's only on your phone: find it here, or tidy the list. */
 private fun missingMenu(ctx: Ctx, t: Track, inPlaylist: String?): List<ContextMenuItem> = buildList {
     val s = ctx.state
@@ -671,7 +681,7 @@ private fun missingMenu(ctx: Ctx, t: Track, inPlaylist: String?): List<ContextMe
     add(ContextMenuItem("Search for it") { s.searchFor = "${t.artist} ${t.title}"; ctx.push(View.Search) })
     ctx.player?.let { add(ContextMenuItem("Start radio") { ctx.artistRadio(t.artist) }) }
     if (s.isLiked(t.id)) add(ContextMenuItem("Remove from Liked Songs") { s.toggleLike(t.id); ctx.undoable("Removed from Liked Songs") { s.toggleLike(t.id) } })
-    s.collection.playlists.filter { it.id != inPlaylist }.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.addToPlaylist(pl.id, t.id) }) }
+    add(playlistMenu(s, "Add to playlist", inPlaylist, null) { pl -> s.addToPlaylist(pl.id, t.id) })
     if (inPlaylist != null) add(ContextMenuItem("Remove from this playlist") { ctx.removeFromPlaylist(inPlaylist, listOf(t.id)) })
     add(ContextMenuItem("Copy song name") { ctx.copy("${t.title} — ${t.artist}", "Song name") })
 }
@@ -691,8 +701,10 @@ private fun TrackRow(
             note = if (missing) "Not on this PC" else if (s.isPreviewRow(t)) "Preview" else null, selected = t.id in selected, dim = missing,
             onCtrlClick = onSelect?.let { f -> { f(i, true, false) } }, onShiftClick = onSelect?.let { f -> { f(i, false, true) } },
             trailing = {
+                val catalog = if (s.isPreviewRow(t)) s.catalogSong(t.id) else null
+                if (catalog != null) WantButton(s, catalog)
                 // The heart of a liked song takes the like away (with Undo), like Spotify's.
-                if (s.isLiked(t.id)) Tip("Remove from Liked Songs") {
+                else if (s.isLiked(t.id)) Tip("Remove from Liked Songs") {
                     IconButton(onClick = { s.toggleLike(t.id); ctx.undoable("Removed from Liked Songs") { s.toggleLike(t.id) } }) {
                         Icon(Icons.Rounded.Favorite, "Remove from Liked Songs", tint = Accent)
                     }
@@ -786,8 +798,7 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
             }
             // Saving a catalog song is Want to listen (as on the phone); one liked before can still be taken out.
             if (s.isLiked(r.key)) add(ContextMenuItem("Remove from Liked Songs") { s.toggleLike(r.key) })
-            s.collection.playlists.forEach { pl -> add(ContextMenuItem("Add to “${pl.name}”") { s.remember(r); s.addToPlaylist(pl.id, r.key) }) }
-            add(ContextMenuItem("Add to new playlist…") { s.remember(r); ctx.dialog(Naming.New(r.key)) })
+            add(playlistMenu(s, "Add to playlist", null, { s.remember(r); ctx.dialog(Naming.New(r.key)) }) { pl -> s.remember(r); s.addToPlaylist(pl.id, r.key) })
             add(ContextMenuItem(if (wanted) "Remove from Want to listen" else "Add to Want to listen") { s.toggleWant(r) })
             add(ContextMenuItem(if (s.isHidden(r.key)) "Suggest this song again" else "Not interested in this song") { s.toggleHidden(r.key) })
             add(ContextMenuItem(if (s.isBlocked(r.artist)) "Suggest ${r.artist} again" else "Don't suggest ${r.artist}") { s.toggleBlocked(r.artist) })
@@ -800,12 +811,19 @@ private fun RemoteRow(ctx: Ctx, list: List<RemoteTrack>, i: Int, numbered: Boole
     }) {
         SongRow(if (numbered) i + 1 else null, r.title, r.artist, r.album, r.durationSec * 1000L, r.cover, ctx.player?.current?.id == r.key, of = list.size,
             note = if (r.source.full) "Full · ${r.source.label}" else "Preview",
-            trailing = {
-                IconButton(onClick = { s.toggleWant(r) }) {
-                    Icon(if (wanted) Icons.Rounded.CheckCircle else Icons.Rounded.AddCircleOutline,
-                        if (wanted) "Remove from Want to listen" else "Add to Want to listen", tint = if (wanted) Accent else TextDim)
-                }
-            }) { ctx.playRemote(list, i) }
+            trailing = { WantButton(s, r) }) { ctx.playRemote(list, i) }
+    }
+}
+
+/** + saves a catalog song to Want to listen (to get later); ✓ takes it off again. */
+@Composable
+private fun WantButton(s: AppState, r: RemoteTrack) {
+    val wanted = s.isWanted(r)
+    Tip(if (wanted) "Remove from Want to listen" else "Add to Want to listen") {
+        IconButton(onClick = { s.toggleWant(r) }) {
+            Icon(if (wanted) Icons.Rounded.CheckCircle else Icons.Rounded.AddCircleOutline,
+                if (wanted) "Remove from Want to listen" else "Add to Want to listen", tint = if (wanted) Accent else TextDim)
+        }
     }
 }
 
@@ -865,12 +883,12 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
             Tip("New folder") { IconButton(onClick = { dialog(Naming.NewFolder()) }, Modifier.size(32.dp)) { Icon(Icons.Rounded.CreateNewFolder, "New folder", tint = TextDim) } }
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Entry(View.Liked, "Liked Songs", Icons.Rounded.Favorite) // the one you open most, first
             Entry(View.Songs, "Songs", Icons.Rounded.MusicNote)
             Entry(View.Albums, "Albums", Icons.Rounded.Album)
             Entry(View.Artists, "Artists", Icons.Rounded.Person)
             if (state.settings.folders.isNotEmpty()) Entry(View.Folder(null), "Folders", Icons.Rounded.Folder)
             Spacer(Modifier.height(8.dp))
-            Entry(View.Liked, "Liked Songs", Icons.Rounded.Favorite)
             Entry(View.Smart, "Smart playlists", Icons.Rounded.AutoAwesome)
             Entry(View.Want, "Want to listen", Icons.Rounded.Bookmark)
             // Pinned playlists first (newest pin on top), then the rest; right-click to pin or unpin.
@@ -885,8 +903,10 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
                 Box(drag) { ContextMenuArea(items = {
                     buildList {
                         add(ContextMenuItem(if (pl.id in pins) "Unpin" else "Pin to the top") { state.togglePin(pl.id) })
-                        folders.filter { it.id != pl.folder }.forEach { f -> add(ContextMenuItem("Move to “${f.name}”") { state.moveToFolder(pl.id, f.id) }) }
-                        add(ContextMenuItem("Move to a new folder…") { dialog(Naming.NewFolder(pl.id)) })
+                        add(SubMenu("Move to folder") {
+                            listOf(ContextMenuItem("New folder…") { dialog(Naming.NewFolder(pl.id)) }) +
+                                folders.filter { it.id != pl.folder }.map { f -> ContextMenuItem(f.name) { state.moveToFolder(pl.id, f.id) } }
+                        })
                         if (pl.folder != null) add(ContextMenuItem("Take out of the folder") { state.moveToFolder(pl.id, null) })
                     }
                 }) {
@@ -2081,8 +2101,10 @@ private fun LyricsLines(state: AppState, player: Player, ls: LyricsState, big: B
         list.animateScrollBy((item.offset - target).toFloat(), tween(550, easing = FastOutSlowInEasing))
     }
     val k = state.settings.lyricsScale
-    // One size for every line, so nothing below moves when the line changes; the sung one grows a little on top.
+    // One layout for every line, so nothing below moves when the line changes; the sung one grows on top, about as much as
+    // on the phone. Lines wrap at the width the grown line needs, and the gaps take its extra height.
     val size = if (big) (34 * k).sp else (22 * k).sp
+    val grown = 1.35f
     val l = ls.lyrics
     val hint = when {
         l == null || l.instrumental -> null
@@ -2103,10 +2125,10 @@ private fun LyricsLines(state: AppState, player: Player, ls: LyricsState, big: B
             itemsIndexed(lines) { i, l ->
                 // Like the phone: sung white, sung before dim, still to come in between; fading, not switching.
                 val color by animateColorAsState(when { i == active -> TextMain; i < active -> TextMain.copy(alpha = 0.45f); else -> TextMain.copy(alpha = 0.7f) }, tween(300))
-                val grow by animateFloatAsState(if (i == active) 1.06f else 1f, tween(300))
+                val grow by animateFloatAsState(if (i == active) grown else 1f, tween(300))
                 Text(l.text.ifBlank { "♪" }, color = color, fontSize = size, fontWeight = FontWeight.Bold, lineHeight = size * 1.25f,
-                    modifier = Modifier.fillMaxWidth().graphicsLayer { scaleX = grow; scaleY = grow; transformOrigin = TransformOrigin(0f, 0.5f) }
-                        .clip(RoundedCornerShape(6.dp)).clickable { player.seek(l.timeMs - ls.shift) }.padding(vertical = if (big) 10.dp else 6.dp, horizontal = 4.dp))
+                    modifier = Modifier.fillMaxWidth(1f / grown).graphicsLayer { scaleX = grow; scaleY = grow; transformOrigin = TransformOrigin(0f, 0.5f) }
+                        .clip(RoundedCornerShape(6.dp)).clickable { player.seek(l.timeMs - ls.shift) }.padding(vertical = if (big) 14.dp else 9.dp, horizontal = 4.dp))
             }
         }
         ls.lyrics.plain != null -> Text(ls.lyrics.plain, color = TextMain, fontSize = if (big) (28 * k).sp else (18 * k).sp,
@@ -2265,7 +2287,20 @@ private fun PlayerBar(ctx: Ctx, panel: Panel, toggle: (Panel) -> Unit) {
             Tip("Mini player") { IconButton(onClick = { state.mini = !state.mini }) { Icon(Icons.Rounded.PictureInPictureAlt, "Mini player", tint = if (state.mini) Accent else TextDim) } }
             Tip("Lyrics") { IconButton(onClick = { toggle(Panel.LYRICS) }) { Icon(Icons.Rounded.Lyrics, "Lyrics", tint = if (panel == Panel.LYRICS) Accent else TextDim) } }
             Tip("Queue") { IconButton(onClick = { toggle(Panel.QUEUE) }) { Icon(Icons.AutoMirrored.Rounded.QueueMusic, "Queue", tint = if (panel == Panel.QUEUE) Accent else TextDim) } }
-            Icon(Icons.AutoMirrored.Rounded.VolumeUp, null, tint = TextDim)
+            // Mute and back to where it was (the slider still works while muted).
+            var unmuted by remember { mutableStateOf(0.8) }
+            val vol = player?.volume ?: 0.8
+            Tip(if (vol == 0.0) "Unmute" else "Mute") {
+                IconButton(onClick = {
+                    player?.let { p ->
+                        if (p.volume > 0.0) { unmuted = p.volume; p.changeVolume(0.0) } else p.changeVolume(unmuted.takeIf { it > 0.0 } ?: 0.8)
+                        state.setVolume(p.volume)
+                    }
+                }) {
+                    Icon(when { vol == 0.0 -> Icons.AutoMirrored.Rounded.VolumeOff; vol < 0.5 -> Icons.AutoMirrored.Rounded.VolumeDown; else -> Icons.AutoMirrored.Rounded.VolumeUp },
+                        if (vol == 0.0) "Unmute" else "Mute", tint = if (vol == 0.0) Accent else TextDim)
+                }
+            }
             ThinSlider((player?.volume ?: 0.8).toFloat(), "Volume", { player?.changeVolume(it.toDouble()) },
                 onDone = { player?.let { state.setVolume(it.volume) } }, modifier = Modifier.width(120.dp).padding(start = 8.dp),
                 onWheel = { dy -> player?.let { it.changeVolume((it.volume - dy * 0.05).coerceIn(0.0, 1.0)); state.setVolume(it.volume) } })
