@@ -49,6 +49,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -1351,7 +1352,9 @@ internal fun LibraryScreen(
     onMovePlaylist: (shown: List<String>, from: Int, to: Int) -> Unit = { _, _, _ -> },
 ) {
     var chip by rememberSaveable { mutableIntStateOf(0) }
-    val reorder = rememberReorder()
+    val listState = rememberLazyListState()
+    val scroller = rememberDragScroller(listState) // a dragged row scrolls the list at its edges
+    val reorder = rememberReorder(scroller)
     var ordering by remember { mutableStateOf(false) }
     var searching by rememberSaveable { mutableStateOf(false) }
     var q by rememberSaveable { mutableStateOf("") }
@@ -1391,7 +1394,7 @@ internal fun LibraryScreen(
                 listOf("Playlists", "Albums", "Artists", "Folders").forEachIndexed { i, l -> Chip(l, chip == i) { chip = i } }
             }
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize().dragScrollArea(scroller), state = listState) {
             if (searching) {
                 when {
                     ql.isEmpty() -> item {
@@ -1518,7 +1521,9 @@ internal fun TrackListScreen(
     below: (LazyListScope.() -> Unit)? = null,
     onEdit: ((List<Track>) -> Unit)? = null,
 ) {
-    val reorder = rememberReorder()
+    val listState = rememberLazyListState()
+    val scroller = rememberDragScroller(listState) // a dragged row scrolls the list at its edges
+    val reorder = rememberReorder(scroller)
     // Sort and find, like the desktop's list header.
     var sort by remember(title) { mutableStateOf(Smart.Sort.CUSTOM) }
     var filter by remember(title) { mutableStateOf<String?>(null) }
@@ -1573,7 +1578,7 @@ internal fun TrackListScreen(
                 }
             }
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize().dragScrollArea(scroller), state = listState) {
             item {
                 Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (tile != null) IconTile(tile, 96.dp) else Art(art, 96.dp, round = round)
@@ -1659,13 +1664,15 @@ private fun QueueScreen(player: PlayerState?, recent: List<Track>, onSave: () ->
     val now = items.firstOrNull { it.isCurrent }
     val queued = items.filter { it.queued && !it.isCurrent }
     val rest = items.filter { !it.queued && !it.isCurrent }
-    val reorderQueued = rememberReorder()
-    val reorderRest = rememberReorder()
+    val listState = rememberLazyListState()
+    val scroller = rememberDragScroller(listState) // a dragged row scrolls the list at its edges
+    val reorderQueued = rememberReorder(scroller)
+    val reorderRest = rememberReorder(scroller)
     Column(Modifier.fillMaxSize()) {
         BackTopBar("Queue", onBack) {
             if (now != null) IconButton(onClick = onSave) { Icon(Icons.Rounded.Save, "Save the queue as a playlist", tint = TextDim) }
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize().dragScrollArea(scroller), state = listState) {
             if (now == null) item { Text("Nothing is playing.", color = TextDim, modifier = Modifier.padding(24.dp)) }
             if (now != null) {
                 item { SectionLabel("Now playing") }

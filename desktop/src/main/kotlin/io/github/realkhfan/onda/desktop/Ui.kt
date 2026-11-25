@@ -9,6 +9,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.material.icons.rounded.DragHandle
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.zIndex
 import io.github.realkhfan.onda.core.NewReleases
@@ -45,6 +46,13 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -882,7 +890,9 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
             Tip("New playlist") { IconButton(onClick = newPlaylist, Modifier.size(32.dp)) { Icon(Icons.Rounded.Add, "New playlist", tint = TextDim) } }
             Tip("New folder") { IconButton(onClick = { dialog(Naming.NewFolder()) }, Modifier.size(32.dp)) { Icon(Icons.Rounded.CreateNewFolder, "New folder", tint = TextDim) } }
         }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+        val sideScroll = rememberScrollState()
+        val scroller = rememberDragScroller(sideScroll) // a dragged playlist scrolls the sidebar at its edges
+        Column(Modifier.weight(1f).dragScrollArea(scroller).verticalScroll(sideScroll)) {
             Entry(View.Liked, "Liked Songs", Icons.Rounded.Favorite) // the one you open most, first
             Entry(View.Songs, "Songs", Icons.Rounded.MusicNote)
             Entry(View.Albums, "Albums", Icons.Rounded.Album)
@@ -933,13 +943,13 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
                 }
                 if (open) Column(Modifier.padding(start = if (compact) 0.dp else 14.dp)) {
                     val inside = state.sidebarPlaylists.filter { it.folder == f.id }
-                    val reorder = remember(f.id) { ReorderState() }
+                    val reorder = remember(f.id, scroller) { ReorderState(scroller) }
                     inside.forEach { PlaylistEntry(it, inside, reorder) }
                 }
             }
             val folderIds = folders.map { it.id }.toSet()
             val loose = state.sidebarPlaylists.filter { it.folder == null || it.folder !in folderIds }
-            val reorder = remember { ReorderState() }
+            val reorder = remember(scroller) { ReorderState(scroller) }
             loose.forEach { PlaylistEntry(it, loose, reorder) }
             state.serverPlaylists.forEach { Entry(View.ServerPlaylist(it), it.name, Icons.Rounded.Dns) }
         }
@@ -1132,7 +1142,9 @@ private fun SongList(
     below: (androidx.compose.foundation.lazy.LazyListScope.() -> Unit)? = null, actions: @Composable () -> Unit = {},
 ) {
     var filter by remember(title) { mutableStateOf<String?>(null) }
-    val reorder = remember { ReorderState() }
+    val listState = rememberLazyListState()
+    val scroller = rememberDragScroller(listState) // a dragged song scrolls the list at its edges
+    val reorder = remember(scroller) { ReorderState(scroller) }
     var sort by remember(title) { mutableStateOf(Sort.CUSTOM) }
     var selected by remember(title) { mutableStateOf(emptySet<String>()) }
     var anchor by remember(title) { mutableIntStateOf(-1) }
@@ -1145,7 +1157,7 @@ private fun SongList(
         if (!shift) anchor = i
     }
     val keys = remember(shown) { rowKeys(shown.map { it.id }) }
-    LazyColumn(Modifier.fillMaxSize()) {
+    LazyColumn(Modifier.fillMaxSize().dragScrollArea(scroller), state = listState) {
         item {
             val total = tracks.sumOf { it.durationMs } / 60_000
             val length = if (total >= 60) "${total / 60} h ${total % 60} min" else "$total min"
@@ -1933,8 +1945,10 @@ private fun PanelFrame(title: String, onClose: () -> Unit, content: @Composable 
 @Composable
 private fun QueuePanel(player: Player, recent: List<Player.Item>, onClear: () -> Unit, onSave: () -> Unit, onClose: () -> Unit) = PanelFrame("Queue", onClose) {
     val upcoming = player.upcoming()
-    val reorder = remember { ReorderState() }
-    LazyColumn {
+    val listState = rememberLazyListState()
+    val scroller = rememberDragScroller(listState)
+    val reorder = remember(scroller) { ReorderState(scroller) }
+    LazyColumn(Modifier.dragScrollArea(scroller), state = listState) {
         // What played before, to go back to (it plays now; the queue after it stays).
         if (recent.isNotEmpty()) {
             item { Section("Recently played") }
@@ -1963,8 +1977,10 @@ private fun PhoneQueuePanel(n: Link.PhoneNow, onClose: () -> Unit) = PanelFrame(
     fun item(o: org.json.JSONObject) = Player.Item(o.optString("key"), o.optString("title"), o.optString("artist"), o.optString("album"),
         o.optString("art").takeIf { it.startsWith("http") }, "", durationMs = o.optLong("dur"))
     val next = n.s.optJSONArray("next")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) } }.orEmpty()
-    val reorder = remember { ReorderState() }
-    LazyColumn {
+    val listState = rememberLazyListState()
+    val scroller = rememberDragScroller(listState)
+    val reorder = remember(scroller) { ReorderState(scroller) }
+    LazyColumn(Modifier.dragScrollArea(scroller), state = listState) {
         item { Section("Now playing") }
         item { QueueRow(item(n.s), true, onClick = {}) }
         if (next.isNotEmpty()) item {
@@ -2633,47 +2649,95 @@ private fun MixPage(ctx: Ctx, kind: Discovery.Kind, back: (() -> Unit)?) {
     }
 }
 
+/** The list a dragged row scrolls when the pointer nears its top or bottom ([dragScrollArea] tells it where that is). */
+private class DragScroller(val list: androidx.compose.foundation.gestures.ScrollableState) {
+    var top = 0f
+    var bottom = 0f
+
+    /** Scrolls while [s] drags; the row stays under the pointer. Ends when the drag does. */
+    suspend fun follow(s: ReorderState, zone: Float, max: Float) {
+        while (true) {
+            val v = io.github.realkhfan.onda.core.DragScroll.speed(s.pointerY, top, bottom, zone, max)
+            if (v != 0f) s.offset += list.scrollBy(v)
+            kotlinx.coroutines.delay(16)
+        }
+    }
+}
+
+@Composable
+private fun rememberDragScroller(list: androidx.compose.foundation.gestures.ScrollableState) = remember(list) { DragScroller(list) }
+
+/** On the list itself: where its edges are in the window. */
+private fun Modifier.dragScrollArea(d: DragScroller) =
+    onGloballyPositioned { val b = it.boundsInRoot(); d.top = b.top; d.bottom = b.bottom }
+
 /** Drag-to-reorder: the dragged row follows the pointer, the rows it passes make room. */
-private class ReorderState {
+private class ReorderState(val scroller: DragScroller? = null) {
     var dragging by mutableIntStateOf(-1)
     var offset by mutableFloatStateOf(0f)
     var rowPx = 0f
+    // In the window: the pointer, where it holds the row, and where the list has the dragged row now. The row is drawn under
+    // the pointer from these, since a list that scrolled its place away keeps it just outside the view.
+    var pointerY by mutableFloatStateOf(Float.NaN)
+    var grab = Float.NaN
+    var rowTop by mutableFloatStateOf(Float.NaN)
+    val tops = HashMap<Int, Float>()
+    fun lift(index: Int) { grab = pointerY - (tops[index] ?: Float.NaN); rowTop = tops[index] ?: Float.NaN }
     fun target(count: Int) = if (rowPx <= 0f) dragging else (dragging + kotlin.math.round(offset / rowPx).toInt()).coerceIn(0, count - 1)
 }
 
 private fun Modifier.reorderRow(s: ReorderState, index: Int, count: Int): Modifier = this
     .zIndex(if (index == s.dragging) 1f else 0f)
     .onSizeChanged { if (s.rowPx == 0f || index == s.dragging) s.rowPx = it.height.toFloat() }
+    .onGloballyPositioned { val y = it.positionInRoot().y; s.tops[index] = y; if (index == s.dragging) s.rowTop = y }
     .graphicsLayer {
         val d = s.dragging
         translationY = when {
             d < 0 -> 0f
-            index == d -> s.offset
+            index == d -> (s.pointerY - s.grab - s.rowTop).takeUnless { it.isNaN() } ?: s.offset
             else -> s.target(count).let { t -> if (d < t && index in d + 1..t) -s.rowPx else if (t < d && index in t until d) s.rowPx else 0f }
         }
     }
+    .drawBehind { if (index == s.dragging) drawRect(Raised) } // the lifted row is solid, readable over the rows it passes
 
 @Composable
 private fun DragHandle(s: ReorderState, index: Int, count: Int, label: String, onMove: (Int, Int) -> Unit) {
     Icon(Icons.Rounded.DragHandle, "Move $label", tint = TextDim, modifier = Modifier.size(40.dp).padding(8.dp).dragToMove(s, index, count, onMove))
 }
 
-/** Drag this (a handle, or a whole row in the sidebar) to move its row; screen readers get "Move up" / "Move down". */
+/**
+ * Drag this (a handle, or a whole row in the sidebar) to move its row; screen readers get "Move up" / "Move down". Near the
+ * list's top or bottom it scrolls the list, and the row is pinned meanwhile: a lazy list would otherwise drop it (and the
+ * drag) once its place scrolls away.
+ */
 @Composable
 private fun Modifier.dragToMove(s: ReorderState, index: Int, count: Int, onMove: (Int, Int) -> Unit): Modifier {
     val move by rememberUpdatedState(onMove) // the gesture outlives recompositions; a move must see the list as it is now
-    return semantics {
+    val pins = androidx.compose.ui.layout.LocalPinnableContainer.current
+    val density = LocalDensity.current
+    val where = remember { arrayOfNulls<androidx.compose.ui.layout.LayoutCoordinates>(1) }
+    val pin = remember { arrayOfNulls<androidx.compose.ui.layout.PinnableContainer.PinnedHandle>(1) }
+    DisposableEffect(Unit) { onDispose { pin[0]?.release(); pin[0] = null } }
+    return onGloballyPositioned { where[0] = it }.semantics {
         customActions = listOfNotNull(
             if (index > 0) CustomAccessibilityAction("Move up") { move(index, index - 1); true } else null,
             if (index < count - 1) CustomAccessibilityAction("Move down") { move(index, index + 1); true } else null,
         )
-    }.pointerInput(index, count) {
-        detectDragGestures(
-            onDragStart = { s.dragging = index; s.offset = 0f },
-            onDrag = { c, d -> c.consume(); s.offset += d.y },
-            onDragEnd = { val f = s.dragging; val t = s.target(count); s.dragging = -1; s.offset = 0f; if (f >= 0 && t != f) move(f, t) },
-            onDragCancel = { s.dragging = -1; s.offset = 0f },
-        )
+    }.pointerInput(index, count, s) {
+        kotlinx.coroutines.coroutineScope {
+            var scrolling: kotlinx.coroutines.Job? = null
+            fun at(p: Offset) = where[0]?.takeIf { it.isAttached }?.localToRoot(p)?.y ?: Float.NaN
+            fun stop() { scrolling?.cancel(); scrolling = null; pin[0]?.release(); pin[0] = null }
+            detectDragGestures(
+                onDragStart = { p ->
+                    s.dragging = index; s.offset = 0f; s.pointerY = at(p); s.lift(index); pin[0] = pins?.pin()
+                    s.scroller?.let { d -> scrolling = launch { with(density) { d.follow(s, zone = 56.dp.toPx(), max = 18.dp.toPx()) } } }
+                },
+                onDrag = { c, d -> c.consume(); s.offset += d.y; s.pointerY = at(c.position) },
+                onDragEnd = { stop(); val f = s.dragging; val t = s.target(count); s.dragging = -1; s.offset = 0f; s.pointerY = Float.NaN; if (f >= 0 && t != f) move(f, t) },
+                onDragCancel = { stop(); s.dragging = -1; s.offset = 0f; s.pointerY = Float.NaN },
+            )
+        }
     }
 }
 

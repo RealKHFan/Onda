@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -447,7 +448,9 @@ internal fun FolderScreen(
     onMove: ((shown: List<String>, from: Int, to: Int) -> Unit)? = null,
 ) {
     var open by remember { mutableStateOf(false) }
-    val reorder = rememberReorder()
+    val listState = rememberLazyListState()
+    val scroller = rememberDragScroller(listState) // a dragged row scrolls the list at its edges
+    val reorder = rememberReorder(scroller)
     val movable = onMove != null && playlists.size > 1
     Column(Modifier.fillMaxSize()) {
         BackTopBar(f.name, onBack) {
@@ -459,7 +462,7 @@ internal fun FolderScreen(
                 }
             }
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize().dragScrollArea(scroller), state = listState) {
             if (playlists.isEmpty()) item {
                 Text("No playlists here yet. In a playlist's ⋮ menu, choose Move to a folder.", color = TextDim, modifier = Modifier.padding(24.dp))
             }
