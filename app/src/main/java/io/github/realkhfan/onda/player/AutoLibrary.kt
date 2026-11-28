@@ -155,11 +155,11 @@ class AutoLibrary(private val context: Context, private val scope: CoroutineScop
             parent == AutoTree.LIKED -> PlaylistStore.liked.value.mapNotNull { ids[it] }
             parent == AutoTree.ALL -> library().shuffled()
             parent.startsWith("pl:") -> PlaylistStore.playlists.value.firstOrNull { it.id == parent.removePrefix("pl:") }
-                ?.trackIds?.mapNotNull { ids[it] ?: PlaylistStore.remote.value[it]?.takeIf { r -> r.toPreviewItem() != null } }
+                ?.trackIds?.mapNotNull { ids[it] ?: PlaylistStore.remote.value[it]?.takeIf { r -> r.toPreviewItem(saved = true) != null } }
             parent.startsWith("spl:") -> Server.playlists.value.firstOrNull { it.id == parent.removePrefix("spl:") }
                 ?.songIds?.mapNotNull { ids[Server.PREFIX + it] }
             parent.startsWith("mix:") -> Discovery.Kind.entries.firstOrNull { it.name == parent.removePrefix("mix:") }
-                ?.let { Mixes.mixes.value[it]?.tracks?.filter { r -> r.toPreviewItem() != null } }
+                ?.let { Mixes.mixes.value[it]?.tracks?.filter { r -> r.toPreviewItem(saved = true) != null } }
             parent.startsWith("al:") -> Grouping.albums(library()).firstOrNull { it.key == parent.removePrefix("al:") }?.tracks
             parent.startsWith("ar:") -> Grouping.artists(library()).firstOrNull { it.name.lowercase() == parent.removePrefix("ar:") }?.tracks
             parent.startsWith("search:") -> AutoTree.search(library(), parent.removePrefix("search:"))
@@ -238,7 +238,7 @@ class AutoLibrary(private val context: Context, private val scope: CoroutineScop
     private fun playable(songs: List<Any>): List<MediaItem> = songs.mapNotNull { s ->
         when (s) {
             is Track -> s.toMediaItem()
-            is RemoteTrack -> s.toPreviewItem()
+            is RemoteTrack -> s.toPreviewItem(saved = true) // only saved ones here (playlists, mixes)
             else -> null
         }
     }

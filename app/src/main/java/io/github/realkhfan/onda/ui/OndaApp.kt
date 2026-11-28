@@ -187,6 +187,7 @@ import io.github.realkhfan.onda.data.Server
 import io.github.realkhfan.onda.player.PlayerState
 import io.github.realkhfan.onda.player.QueueItem
 import io.github.realkhfan.onda.player.toMediaItem
+import io.github.realkhfan.onda.player.savedPlayable
 import io.github.realkhfan.onda.player.toPreviewItem
 import io.github.realkhfan.onda.scan.MusicLibrary
 import io.github.realkhfan.onda.core.M3u
@@ -450,10 +451,10 @@ fun OndaApp(player: PlayerState?) {
     }
     /** Plays a catalog list (album, popular songs) as a queue: owned songs in full, the rest as previews.
      *  [index] -1 starts at the first playable song. */
-    fun playRemoteList(list: List<RemoteTrack>, index: Int, kind: String, label: String) {
+    fun playRemoteList(list: List<RemoteTrack>, index: Int, kind: String, label: String, saved: Boolean = false) {
         val p = player ?: return
         val playable = list.mapIndexedNotNull { i, t ->
-            (localFor(t)?.toMediaItem() ?: t.toPreviewItem())?.let { i to it }
+            (localFor(t)?.toMediaItem() ?: t.toPreviewItem(saved))?.let { i to it }
         }
         val start = if (index < 0) 0 else playable.indexOfFirst { it.first == index }
         if (playable.isEmpty() || start < 0) {
@@ -656,7 +657,7 @@ fun OndaApp(player: PlayerState?) {
                         is MixRoute -> MixScreen(
                             d.kind, mixes[d.kind], d.kind in mixesBuilding, mixesProblem, noTaste = taste.seeds.isEmpty(),
                             row = rowCtx, onBack = { pop() },
-                            onPlayList = { list, i -> playRemoteList(list, i, "Playlist", d.kind.label) },
+                            onPlayList = { list, i -> playRemoteList(list, i, "Playlist", d.kind.label, saved = true) },
                             onRetry = { Mixes.refresh(taste) },
                             onMenu = { remoteMenu = it },
                         )
@@ -780,7 +781,7 @@ fun OndaApp(player: PlayerState?) {
                                     description = pl.description, art = playlistArt(pl),
                                     tracks = owned, kind = "Playlist", sourceId = pl.id, player = player,
                                     previews = previews, row = rowCtx,
-                                    onPlayPreview = { i -> playRemoteList(previews, i, "Playlist", pl.name) },
+                                    onPlayPreview = { i -> playRemoteList(previews, i, "Playlist", pl.name, saved = true) },
                                     onPreviewMenu = { remoteMenu = it; remoteMenuPlaylist = pl.id },
                                     emptyText = "This playlist is empty. Add songs with Add to playlist in any song's ⋮ menu.",
                                     onBack = { pop() }, onMenu = { menuFor = MenuFor(it, pl.id, false) }, onQueue = ::queue,
@@ -1585,7 +1586,9 @@ internal fun TrackListScreen(
                     Spacer(Modifier.width(16.dp))
                     Column(Modifier.weight(1f)) {
                         if (description.isNotBlank()) Text(description, color = TextMain, fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                        Text(subtitle + if (tracks.any { it.durationMs > 0 }) " · ${Smart.length(tracks)}" else "", color = TextDim, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        // The whole list's length: your songs and the previews (by their full length).
+                        val ms = tracks.sumOf { it.durationMs } + previews.sumOf { it.durationSec * 1000L }
+                        Text(subtitle + if (ms > 0) " · ${Smart.length(ms)}" else "", color = TextDim, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.height(10.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
@@ -1630,7 +1633,7 @@ internal fun TrackListScreen(
             }
             if (previews.isNotEmpty() && row != null) {
                 item { SectionLabel("Previews · not in your library") }
-                itemsIndexed(previews) { i, r -> RemoteRow(r, row, onPlay = { onPlayPreview(i) }, onMenu = { onPreviewMenu(r) }) }
+                itemsIndexed(previews) { i, r -> RemoteRow(r, row, onPlay = { onPlayPreview(i) }, onMenu = { onPreviewMenu(r) }, available = r.savedPlayable) }
             }
             below?.invoke(this)
         }

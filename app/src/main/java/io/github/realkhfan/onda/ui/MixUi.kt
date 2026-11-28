@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.realkhfan.onda.core.Discovery
 import io.github.realkhfan.onda.core.RemoteTrack
+import io.github.realkhfan.onda.player.savedPlayable
 import io.github.realkhfan.onda.data.Mixes
 
 private fun subtitle(kind: Discovery.Kind) =
@@ -147,7 +148,7 @@ internal fun MixScreen(
                     Text("Nothing new to suggest right now. Try again tomorrow.", color = TextDim, modifier = Modifier.padding(24.dp))
                 }
             }
-            itemsIndexed(list) { i, t -> RemoteRow(t, row, onPlay = { onPlayList(list, i) }, number = i + 1, onMenu = { onMenu(t) }) }
+            itemsIndexed(list) { i, t -> RemoteRow(t, row, onPlay = { onPlayList(list, i) }, number = i + 1, onMenu = { onMenu(t) }, available = t.savedPlayable) }
         }
     }
 }

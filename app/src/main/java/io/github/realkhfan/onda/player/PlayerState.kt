@@ -55,10 +55,15 @@ fun RemoteTrack.toMediaItem(previewUrl: String): MediaItem =
  * (fresh link at play time); Apple's links don't expire, so they're used as they are.
  */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-fun RemoteTrack.toPreviewItem(): MediaItem? {
-    val p = preview ?: FreeCatalogs.stream(this) ?: return null
-    return if (source == Source.DEEZER) toMediaItem(PreviewResolver.uriFor(id)) else toMediaItem(p)
+fun RemoteTrack.toPreviewItem(saved: Boolean = false): MediaItem? {
+    // A song from Deezer itself without a link isn't streamed in your country; a saved one (playlists, Liked, mixes, songs
+    // from the PC) has none because links expire, and gets a fresh one when it plays.
+    if (source == Source.DEEZER && (preview != null || saved)) return toMediaItem(PreviewResolver.uriFor(id))
+    return (preview ?: FreeCatalogs.stream(this))?.let { toMediaItem(it) }
 }
+
+/** For a saved song's row: a Deezer one can play (see [toPreviewItem]); null lets the row decide from what it has. */
+val RemoteTrack.savedPlayable: Boolean? get() = if (source == Source.DEEZER) true else null
 
 internal fun MediaItem.markQueued(): MediaItem =
     buildUpon()

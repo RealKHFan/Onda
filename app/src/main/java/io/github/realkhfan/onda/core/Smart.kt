@@ -43,8 +43,9 @@ object Smart {
     }
 
     /** "48 min", "1 h 12 min". */
-    fun length(tracks: List<Track>): String {
-        val min = tracks.sumOf { it.durationMs } / 60_000
+    fun length(tracks: List<Track>): String = length(tracks.sumOf { it.durationMs })
+    fun length(ms: Long): String {
+        val min = ms / 60_000
         return if (min >= 60) "${min / 60} h ${min % 60} min" else "$min min"
     }
 
