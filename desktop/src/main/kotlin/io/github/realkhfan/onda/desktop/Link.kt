@@ -287,10 +287,10 @@ object Link {
                 JSONObject()
             }
             // Songs and covers: only files of your library (found by the song), never a path the phone names.
-            "/v1/file/stat" -> runBlocking(Dispatchers.Swing) { fileOf(LinkSync.songFromJson(req.getJSONObject("song"))) }
+            "/v1/file/stat" -> fileOf(LinkSync.songFromJson(req.getJSONObject("song")))
                 .let { f -> JSONObject().put("found", f != null).put("size", f?.length() ?: 0).put("ext", f?.extension?.lowercase() ?: "") }
             "/v1/file/read" -> {
-                val f = runBlocking(Dispatchers.Swing) { fileOf(LinkSync.songFromJson(req.getJSONObject("song"))) } ?: return ex.sendResponseHeaders(404, -1)
+                val f = fileOf(LinkSync.songFromJson(req.getJSONObject("song"))) ?: return ex.sendResponseHeaders(404, -1)
                 val offset = req.optLong("offset").coerceAtLeast(0)
                 val length = req.optInt("length").coerceIn(0, 4 * 1024 * 1024)
                 java.io.RandomAccessFile(f, "r").use { r ->
@@ -382,10 +382,11 @@ object Link {
     }
 
     /** A song's file on this PC (your music folders only; server songs aren't files here). */
+    /** Found on the UI thread; a Proton Drive song is then downloaded here (or was before) and read like your files. */
     private fun fileOf(song: LinkSync.Song): File? {
-        val lib = LinkSync.Library(state.library, state.rawTracks, emptyMap())
-        val t = state.byId[lib.id(song)] ?: return null
-        return t.id.takeIf { it.startsWith("file:") }?.let { runCatching { File(java.net.URI(it)) }.getOrNull() }?.takeIf { it.isFile }
+        val id = runBlocking(Dispatchers.Swing) { state.byId[LinkSync.Library(state.library, state.rawTracks, emptyMap()).id(song)]?.id } ?: return null
+        if (id.startsWith(Proton.PREFIX)) return runCatching { state.protonFile(id) }.getOrNull()
+        return id.takeIf { it.startsWith("file:") }?.let { runCatching { File(java.net.URI(it)) }.getOrNull() }?.takeIf { it.isFile }
     }
 
     /** A song the phone sends ("Get from your phone"), piece by piece, into "Onda from phone" in your first music folder. */

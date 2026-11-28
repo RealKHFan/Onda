@@ -390,7 +390,8 @@ class Player(private val scope: CoroutineScope, audioSink: String? = null) {
         if (crossing != null || crossStarting || crossTarget() != null) return null // this change crossfades instead
         val pos = order.indexOf(index)
         val next = order.getOrNull(pos + 1) ?: return null // a new round (repeat all) reshuffles first
-        return next.takeIf { queue.getOrNull(it)?.let { i -> !i.preview && i.deezerId <= 0 && i.uri.isNotEmpty() } == true }
+        // Previews and Proton songs are fetched when they start, so they can't be handed over early.
+        return next.takeIf { queue.getOrNull(it)?.let { i -> !i.preview && i.deezerId <= 0 && i.uri.isNotEmpty() && !i.uri.startsWith(Proton.PREFIX) } == true }
     }
 
     /** Whether the song loaded last has started; a start after that is the gapless hand-over. */

@@ -17,3 +17,9 @@ so mount the share once (replace 10.0.0.3, SHARE and YOURNAME with yours):
   echo "//10.0.0.3/SHARE /var/mnt/nas cifs credentials=/etc/samba/nas-credentials,uid=$(id -u),gid=$(id -g),_netdev,nofail,x-systemd.automount,x-systemd.mount-timeout=10 0 0" | sudo tee -a /etc/fstab
   sudo systemctl daemon-reload && sudo systemctl restart remote-fs.target
 Then choose a folder inside /var/mnt/nas in Onda. It reconnects by itself after a restart.
+
+Proton Drive: Onda lists songs from the Drive folders you choose and downloads each one when it plays,
+through Proton's official Drive tool (it signs you in in your browser; Onda never sees your password).
+Get "proton-drive" for Linux from https://proton.me/download/drive/cli/index.html, then in Onda:
+Settings → Proton Drive → Choose the downloaded file → Sign in with Proton → Add a Drive folder.
+If it crashes with "Illegal instruction", take the linux/x64-baseline build instead.

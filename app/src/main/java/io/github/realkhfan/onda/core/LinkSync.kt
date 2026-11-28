@@ -100,6 +100,8 @@ object LinkSync {
         val restores: Map<String, Long>? = null,
         /** Files renamed in Onda, by the same key as [edits]. */
         val names: Map<String, Name>? = null,
+        /** The songs in the PC's Proton Drive folders (the PC's list, sent to the phone, which plays them through the PC). */
+        val proton: List<Song>? = null,
     )
 
     fun idOf(artist: String, title: String) = "~" + Match.norm(artist) + "|" + Match.norm(title)
@@ -350,6 +352,7 @@ object LinkSync {
         .apply { s.last?.let { put("last", JSONObject().put("queue", queueToJson(it.queue)).put("at", it.at)) } }
         .apply { s.restores?.let { put("restores", JSONObject(it)) } }
         .apply { s.names?.let { n -> put("names", JSONObject().apply { n.forEach { (k, v) -> put(k, JSONObject().put("n", v.stem).put("al", v.album).put("at", v.at)) } }) } }
+        .apply { s.proton?.let { put("proton", JSONArray(it.map(::song))) } }
         .apply {
             s.mixes?.let { m ->
                 put("mixes", JSONArray(m.map { JSONObject().put("kind", it.kind).put("period", it.period).put("tracks", JSONArray(it.tracks.map(::track))).put("basedOn", JSONArray(it.basedOn)) }))
@@ -389,6 +392,7 @@ object LinkSync {
             m.keys().asSequence().associateWith { k -> m.getJSONObject(k).let { Name(it.optString("n"), it.optString("al"), it.optLong("at")) } }
                 .filterValues { it.stem.isNotBlank() }
         },
+        proton = if (!o.has("proton")) null else objects(o.optJSONArray("proton")).map(::songFromJson),
         mixes = if (!o.has("mixes")) null else objects(o.optJSONArray("mixes")).map {
             Mix(it.optString("kind"), it.optString("period"), objects(it.optJSONArray("tracks")).map(::track), strings(it.optJSONArray("basedOn")))
         },

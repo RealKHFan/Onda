@@ -38,6 +38,11 @@ object Link {
 
     private val _pc = MutableStateFlow<Pc?>(null)
     val pc: StateFlow<Pc?> = _pc.asStateFlow()
+
+    /** The songs in your PC's Proton Drive folders, as of the last sync (kept, so the list shows away from home too). */
+    private val _proton = MutableStateFlow<List<LinkSync.Song>>(emptyList())
+    val proton: StateFlow<List<LinkSync.Song>> = _proton.asStateFlow()
+    private fun protonFile() = File(dir, "link-proton.json")
     /** The last sync: when, and how it went. */
     val status = MutableStateFlow<String?>(null)
     val syncing = MutableStateFlow(false)
@@ -61,6 +66,7 @@ object Link {
         val addr = prefs.getString("address", null)
         if (token != null && addr != null) _pc.value = Pc(addr, prefs.getString("pc", "")!!, prefs.getString("name", "Your PC")!!)
         status.value = prefs.getString("status", null)
+        if (token != null) _proton.value = runCatching { LinkSync.fromJson(org.json.JSONObject(protonFile().readText())).proton }.getOrNull().orEmpty()
         watch()
     }
 
@@ -105,6 +111,7 @@ object Link {
 
     fun unlink() {
         token = null; _pc.value = null; status.value = null
+        _proton.value = emptyList(); runCatching { protonFile().delete() }
         prefs.edit().remove("token").remove("address").remove("pc").remove("name").remove("status").apply()
         File(dir, "link-base.json").delete()
     }
@@ -163,6 +170,10 @@ object Link {
                 val before = fingerprint() // runs on the main thread: nothing changes between these two
                 val takenAt = System.currentTimeMillis()
                 val theirs = LinkSync.fromJson(got.getJSONObject("snapshot"))
+                theirs.proton?.let { list ->
+                    _proton.value = list
+                    withContext(Dispatchers.IO) { runCatching { protonFile().writeText(LinkSync.toJson(LinkSync.Snapshot(proton = list)).toString()) } }
+                }
                 val merged = withContext(Dispatchers.Default) { LinkSync.merge(base, mine, theirs) }
                 if (!swapCovers(merged, theirs)) return done("Couldn't send a playlist cover to ${_pc.value?.name ?: "your PC"}.")
                 val picture = swapPicture(merged, theirs) ?: return done("Couldn't send your profile picture to ${_pc.value?.name ?: "your PC"}.")
@@ -376,7 +387,8 @@ object Link {
 
     /** A song's file on the PC: its size and extension, or null when the PC doesn't have it as a file. */
     fun stat(song: LinkSync.Song): Pair<Long, String>? =
-        callNow("/v1/file/stat", JSONObject().put("song", LinkSync.songToJson(song)), 10_000)?.json
+        // Long enough for the PC to fetch a Proton Drive song first.
+        callNow("/v1/file/stat", JSONObject().put("song", LinkSync.songToJson(song)), 120_000)?.json
             ?.takeIf { it.optBoolean("found") }?.let { it.getLong("size") to it.optString("ext", "mp3") }
 
     /** Up to [length] bytes of the song's file from [offset] (the player's loading thread and downloads call this). */

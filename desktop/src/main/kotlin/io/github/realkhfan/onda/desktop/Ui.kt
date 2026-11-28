@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -69,6 +70,9 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddCircleOutline
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
@@ -240,6 +244,7 @@ private sealed interface View {
     data object Settings : View
     data object Liked : View
     data object Want : View
+    data object Proton : View
     data class Playlist(val id: String) : View
     data class ServerPlaylist(val p: Subsonic.Playlist) : View
     data class LocalList(val title: String, val subtitle: String, val art: String?, val tracks: List<Track>) : View
@@ -355,6 +360,9 @@ fun OndaDesktop(state: AppState, player: Player?) {
                         View.Rename -> RenamePage(ctx, back)
                         View.Liked -> SongList(ctx, "Liked Songs", "Playlist", state.likedTracks, back = back, onMove = state::moveLiked) { GetFromPhone(ctx, state.likedTracks) }
                         View.Want -> WantPage(ctx, back)
+                        View.Proton -> SongList(ctx, "Proton Drive", "Your Drive folders · downloaded when they play", state.protonLibrary, back = back) {
+                            ProtonStatus(ctx)
+                        }
                         is View.Playlist -> {
                             val pl = state.collection.playlists.firstOrNull { it.id == v.id }
                             if (pl == null) LaunchedEffect(Unit) { go(View.Songs) } else {
@@ -470,9 +478,9 @@ private class Ctx(
         java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(java.awt.datatransfer.StringSelection(text), null)
         toast("$what copied")
     }
-    /** Songs that aren't on this PC (only on your phone) are skipped. */
+    /** Songs that can't play here (only on your phone, or on Proton Drive while it's out of reach) are skipped. */
     fun play(list: List<Track>, i: Int) {
-        val here = list.filterNot { LinkSync.isMissing(it.id) }
+        val here = list.filterNot(state::unplayable)
         if (here.isNotEmpty()) player?.play(here.map(state::item), here.indexOf(list.getOrNull(i)).coerceAtLeast(0))
     }
     fun playRemote(list: List<RemoteTrack>, i: Int) {
@@ -620,7 +628,7 @@ private fun trackMenu(ctx: Ctx, list: List<Track>, t: Track, inPlaylist: String?
     if (many == null && LinkSync.isMissing(t.id)) return missingMenu(ctx, t, inPlaylist)
     return if (many != null) buildList {
         val n = many.size
-        val here = many.filterNot { LinkSync.isMissing(it.id) }
+        val here = many.filterNot(ctx.state::unplayable)
         ctx.player?.let { p ->
             if (here.isNotEmpty()) {
                 add(ContextMenuItem("Play ${here.size} songs") { ctx.play(here, 0) })
@@ -703,10 +711,17 @@ private fun TrackRow(
     val t = list[i]
     val s = ctx.state
     val missing = LinkSync.isMissing(t.id)
+    val off = s.protonOff(t.id)
     ContextMenuArea(items = { trackMenu(ctx, list, t, inPlaylist, selected) }) {
-        // A song only on your phone: greyed out and not played, but its right-click menu works.
+        // A song only on your phone, or on Proton Drive while it's out of reach: greyed out and not played; its menu works.
         SongRow(if (numbered) i + 1 else null, t.title, t.artist, t.album, t.durationMs, t.artUri, ctx.player?.current?.id == t.id, of = list.size,
-            note = if (missing) "Not on this PC" else if (s.isPreviewRow(t)) "Preview" else null, selected = t.id in selected, dim = missing,
+            note = when {
+                missing -> "Not on this PC"
+                off -> "Proton Drive · out of reach"
+                t.id.startsWith(Proton.PREFIX) -> "Proton Drive"
+                s.isPreviewRow(t) -> "Preview"
+                else -> null
+            }, selected = t.id in selected, dim = missing || off,
             onCtrlClick = onSelect?.let { f -> { f(i, true, false) } }, onShiftClick = onSelect?.let { f -> { f(i, false, true) } },
             trailing = {
                 val catalog = if (s.isPreviewRow(t)) s.catalogSong(t.id) else null
@@ -719,8 +734,138 @@ private fun TrackRow(
                 }
             }) {
             onSelect?.invoke(i, false, false)
-            if (!missing) ctx.play(list, i)
+            if (!missing && !off) ctx.play(list, i)
         }
+    }
+}
+
+/**
+ * Proton Drive through Proton's own Drive tool: get it, sign in in your browser (Onda never sees your password), choose the
+ * Drive folders whose songs Onda lists.
+ */
+@Composable
+private fun ProtonSettings(ctx: Ctx) {
+    val state = ctx.state
+    val scope = rememberCoroutineScope()
+    var link by remember { mutableStateOf<String?>(null) }
+    var browsing by remember { mutableStateOf(false) }
+    var typed by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { if (state.protonSignedIn == null) state.protonCheck() }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Songs in the Proton Drive folders you choose, listed by their file and folder names (“Artist - Title”, or " +
+            "Artist/Album/Title). A song is downloaded when it plays and kept for next time; your phone plays them through this PC. " +
+            "Onda uses Proton's official Drive tool: you sign in with it in your browser, Onda never sees your password.",
+            color = TextDim, fontSize = 13.sp)
+        val cli = state.protonCli
+        when {
+            cli == null -> {
+                Text("First get Proton's Drive tool for Linux (proton-drive), then choose the file you downloaded.", color = TextMain)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { runCatching { ProcessBuilder("xdg-open", Proton.DOWNLOAD_PAGE).start() } }) { Text("Open the download page") }
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            when (val r = FolderPicker.file(false, System.getProperty("user.home") + "/Downloads", "Proton's Drive tool (proton-drive)")) {
+                                is FolderPicker.Result.Picked -> state.setProtonCli(r.path)
+                                FolderPicker.Result.NoPicker -> note = "No file picker found on this system. Type the file's path below."
+                                FolderPicker.Result.Cancelled -> {}
+                                is FolderPicker.Result.Remote -> note = r.message
+                            }
+                        }
+                    }) { Text("Choose the downloaded file") }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextBox(typed, { typed = it }, label = { Text("Or type its path") }, placeholder = { Text("~/Downloads/proton-drive") },
+                        singleLine = true, modifier = Modifier.width(420.dp))
+                    OutlinedButton(onClick = {
+                        val f = File(typed.trim().replaceFirst(Regex("^~"), System.getProperty("user.home")))
+                        if (f.isFile) { state.setProtonCli(f.path); typed = ""; note = null } else note = "There's no file there."
+                    }, enabled = typed.isNotBlank()) { Text("Use") }
+                }
+            }
+            state.protonBusy && state.protonSignedIn != true -> {
+                Text("Sign in in your browser; Onda waits here until you're done.", color = TextMain)
+                link?.let { l ->
+                    Text("If no browser opened, open this address (another device works too):", color = TextDim, fontSize = 13.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(l, color = TextMain, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                        OutlinedButton(onClick = { ctx.copy(l, "Sign-in address") }) { Text("Copy") }
+                    }
+                }
+                TextButton(onClick = { state.protonCancelSignIn() }) { Text("Cancel", color = TextDim) }
+            }
+            state.protonSignedIn == false -> {
+                Text("Not signed in to Proton Drive.", color = TextMain)
+                Button(onClick = { link = null; state.protonSignIn { link = it } }) { Text("Sign in with Proton") }
+            }
+            else -> {
+                val p = state.proton
+                Text(if (state.protonSignedIn == true) "Signed in · ${p.songs.size} songs in ${p.folders.size} folder${if (p.folders.size == 1) "" else "s"}" else "Checking Proton Drive…", color = TextMain)
+                state.protonProblem?.let { Text("Proton Drive can't be reached right now: $it Songs played before still play.", color = ErrorRed, fontSize = 13.sp) }
+                p.folders.forEach { f ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(f.removePrefix(Proton.ROOT).ifEmpty { "/" }, color = TextMain, modifier = Modifier.weight(1f))
+                        Tip("Stop listing $f") { IconButton(onClick = { state.removeProtonFolder(f) }) { Icon(Icons.Rounded.Close, "Stop listing $f", tint = TextDim) } }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { browsing = true }, enabled = state.protonSignedIn == true) { Text("Add a Drive folder") }
+                    OutlinedButton(onClick = { state.protonScan() }, enabled = !state.protonBusy && p.folders.isNotEmpty()) {
+                        Text(if (state.protonBusy) "Looking for songs…" else "Look for new songs")
+                    }
+                    TextButton(onClick = { state.protonSignOut() }) { Text("Sign out", color = TextDim) }
+                }
+            }
+        }
+        note?.let { Text(it, color = TextDim, fontSize = 13.sp) }
+    }
+    if (browsing) ProtonFolderDialog(state, onPick = { state.addProtonFolder(it); browsing = false }, onClose = { browsing = false })
+}
+
+/** Your Drive's folders, one level at a time, to choose one Onda lists songs from (folders inside it too). */
+@Composable
+private fun ProtonFolderDialog(state: AppState, onPick: (String) -> Unit, onClose: () -> Unit) {
+    var path by remember { mutableStateOf(Proton.ROOT) }
+    var folders by remember { mutableStateOf<List<Proton.Node>?>(null) }
+    var problem by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(path) {
+        folders = null; problem = null
+        state.protonFolders(path).onSuccess { folders = it.sortedBy { f -> f.name.lowercase() } }.onFailure { problem = it.message ?: "Couldn't open this folder." }
+    }
+    AlertDialog(onDismissRequest = onClose,
+        title = { Text(if (path == Proton.ROOT) "My files" else path.substringAfterLast('/')) },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                if (path != Proton.ROOT) TextButton(onClick = { path = path.substringBeforeLast('/') }) { Text("↑ Up", color = Accent) }
+                when {
+                    problem != null -> Text(problem!!, color = ErrorRed)
+                    folders == null -> Text("Opening…", color = TextDim)
+                    folders!!.isEmpty() -> Text("No folders in here.", color = TextDim)
+                    else -> folders!!.forEach { f ->
+                        Row(Modifier.fillMaxWidth().clickable { path = "$path/${f.name}" }.padding(vertical = 10.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Folder, null, tint = TextDim)
+                            Spacer(Modifier.width(12.dp))
+                            Text(f.name, color = TextMain)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onPick(path) }, enabled = path != Proton.ROOT) { Text("Use this folder", color = Accent) } },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel", color = TextDim) } })
+}
+
+/** The Proton Drive page's buttons: look for new songs, and why its songs are greyed out when they are. */
+@Composable
+private fun ProtonStatus(ctx: Ctx) {
+    val state = ctx.state
+    val off = state.protonCli == null || state.protonSignedIn == false || state.protonProblem != null
+    if (off) Tip(state.protonProblem?.let { "Proton Drive can't be reached right now: $it" } ?: "Set up Proton Drive in Settings") {
+        IconButton(onClick = { ctx.push(View.Settings) }) { Icon(Icons.Rounded.CloudOff, "Proton Drive is out of reach", tint = ErrorRed) }
+    }
+    Tip(if (state.protonBusy) "Looking for songs…" else "Look for new songs") {
+        IconButton(onClick = { state.protonScan() }, enabled = !state.protonBusy) { Icon(Icons.Rounded.Refresh, "Look for new songs", tint = TextDim) }
     }
 }
 
@@ -898,6 +1043,7 @@ private fun Sidebar(state: AppState, top: View, go: (View) -> Unit, dialog: (Nam
             Entry(View.Albums, "Albums", Icons.Rounded.Album)
             Entry(View.Artists, "Artists", Icons.Rounded.Person)
             if (state.settings.folders.isNotEmpty()) Entry(View.Folder(null), "Folders", Icons.Rounded.Folder)
+            if (state.proton.folders.isNotEmpty()) Entry(View.Proton, "Proton Drive", Icons.Rounded.Cloud)
             Spacer(Modifier.height(8.dp))
             Entry(View.Smart, "Smart playlists", Icons.Rounded.AutoAwesome)
             Entry(View.Want, "Want to listen", Icons.Rounded.Bookmark)
@@ -1166,7 +1312,7 @@ private fun SongList(
                 actions()
                 if (tracks.isNotEmpty() && ctx.player != null) Tip("Add all to the queue") {
                     IconButton(onClick = {
-                        val here = shown.filterNot { LinkSync.isMissing(it.id) }
+                        val here = shown.filterNot(ctx.state::unplayable)
                         here.forEach { ctx.player.enqueue(ctx.state.item(it)) }; ctx.toast("${here.size} songs added to the queue")
                     }) {
                         Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "Add all to the queue", tint = TextDim)
@@ -1644,6 +1790,8 @@ private fun SettingsPage(ctx: Ctx) {
                 }
             }
         }
+        item { Section("Proton Drive") }
+        item { ProtonSettings(ctx) }
         item { Section("Match metadata online") }
         item {
             val m by Matcher.state.collectAsState()
@@ -2951,7 +3099,9 @@ private fun DuplicatesPage(ctx: Ctx, back: (() -> Unit)?) {
         groups.forEach { g ->
             item { Section("${g[0].title} — ${g[0].artist}") }
             items(g) { t ->
-                val where = if (t.id.startsWith("file:")) runCatching { java.io.File(java.net.URI(t.id)).path }.getOrDefault(t.fileName) else "On your music server"
+                val where = if (t.id.startsWith("file:")) runCatching { java.io.File(java.net.URI(t.id)).path }.getOrDefault(t.fileName)
+                    else if (t.id.startsWith(Proton.PREFIX)) "Proton Drive: " + (state.proton.songs.firstOrNull { Proton.PREFIX + it.uid == t.id }?.path ?: t.fileName)
+                    else "On your music server"
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) {
                         ContextMenuArea(items = { listOf(ContextMenuItem("Hide this copy") { state.toggleHidden(t.id); ctx.undoable("Hidden: ${t.title}") { state.toggleHidden(t.id) } }) + trackMenu(ctx, g, t, null, emptySet()) }) {

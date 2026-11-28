@@ -69,6 +69,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddCircleOutline
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
@@ -224,6 +225,7 @@ private sealed interface Route
 private data class PlaylistRoute(val id: String) : Route
 private data object LikedRoute : Route
 private data object WantRoute : Route
+private data object ProtonRoute : Route
 private data class TracksRoute(
     val title: String, val subtitle: String, val art: String?, val tracks: List<Track>, val kind: String,
     val round: Boolean = false,
@@ -299,6 +301,7 @@ fun OndaApp(player: PlayerState?) {
     var newFolder by remember { mutableStateOf(false) }
     val playlistFolders by PlaylistStore.folders.collectAsState()
     val linkedPc by Link.pc.collectAsState()
+    val protonSongs by Link.proton.collectAsState()
     var editMany by remember { mutableStateOf<List<Track>?>(null) }
     val keptWant = remember { mutableSetOf<String>() }
     var exporting by remember { mutableStateOf<PlaylistStore.Playlist?>(null) }
@@ -735,6 +738,11 @@ fun OndaApp(player: PlayerState?) {
                             },
                         )
                         WantRoute -> WantScreen(want, rowCtx, onBack = { pop() }, onPlay = { playRemote(it, "Playlist", "Want to listen") })
+                        ProtonRoute -> ProtonScreen(
+                            protonSongs, tracks, linkedPc, player, onBack = { pop() },
+                            onMenu = { menuFor = MenuFor(it, null, false) }, onQueue = ::queue,
+                            onGetAll = { list -> download(list.mapNotNull(Downloads::forMissing)) },
+                        )
                         is RemoteArtistRoute -> {
                             val mine = remember(artists, d.artist.name) { artists.firstOrNull { Match.norm(it.name) == Match.norm(d.artist.name) } }
                             RemoteArtistScreen(
@@ -889,7 +897,7 @@ fun OndaApp(player: PlayerState?) {
                                 onImport = { importFile.launch(arrayOf("*/*")) },
                                 playlistFolders = playlistFolders, onOpenPlaylistFolder = { push(FolderRoute(it)) }, onNewPlaylistFolder = { newFolder = true },
                                 onMovePlaylist = movePlaylist,
-                                likedCount = likedShown.size, wantCount = want.size,
+                                likedCount = likedShown.size, wantCount = want.size, protonCount = protonSongs.size, onOpenProton = { push(ProtonRoute) },
                                 albums = albums, artists = artists, folders = folderGroups, songs = songs,
                                 savedAlbums = savedAlbums, followed = followed,
                                 serverPlaylists = serverPlaylists,
@@ -1328,6 +1336,8 @@ internal fun LibraryScreen(
     onOpenLiked: () -> Unit,
     onOpenWant: () -> Unit,
     onOpenSmart: () -> Unit,
+    protonCount: Int = 0,
+    onOpenProton: () -> Unit = {},
     onOpenPlaylist: (String) -> Unit,
     onOpenAlbum: (Album) -> Unit,
     onOpenArtist: (ArtistGroup) -> Unit,
@@ -1427,6 +1437,9 @@ internal fun LibraryScreen(
                             GroupRow("Want to listen", "Previews · ${songCount(wantCount)}", onOpenWant) {
                                 IconTile(Icons.Rounded.Bookmark, 52.dp, WantBg, Accent)
                             }
+                        }
+                        if (protonCount > 0) item {
+                            GroupRow("Proton Drive", "On your PC · ${songCount(protonCount)}", onOpenProton) { IconTile(Icons.Rounded.Cloud, 52.dp, CardBg, Accent) }
                         }
                         item { GroupRow("Smart playlists", "Most played, On repeat, Never played, Forgotten favourites", onOpenSmart) { IconTile(Icons.Rounded.AutoAwesome, 52.dp, CardBg, Accent) } }
                         if (playlists.size > 1) item {

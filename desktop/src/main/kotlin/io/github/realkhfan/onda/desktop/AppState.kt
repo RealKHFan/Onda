@@ -81,12 +81,38 @@ class AppState(private val scope: CoroutineScope) {
 
     private val serverTracks by derivedStateOf { Navidrome.tracks(serverSongs, settings.server, settings.kbps) }
 
-    /** Your files and server songs; a local copy wins. */
-    /** Hidden songs (duplicates you hid) stay out of the library; playlists that hold them still play them. */
-    val library by derivedStateOf { Overrides.apply(Match.mergeLibrary(local, serverTracks), meta).filterNot { it.id in collection.hidden } }
+    // Proton Drive (Proton.kt): the songs in your chosen Drive folders, by name, downloaded when they play.
+    var proton by mutableStateOf(Proton.load()); private set
+    /** The Drive tool (null: not found); whether you're signed in with it (null: not known yet). */
+    var protonCli by mutableStateOf(Proton.cli(proton.cli)); private set
+    var protonSignedIn by mutableStateOf<Boolean?>(null); private set
+    /** Why Proton Drive can't be reached now, in words; null when it can (or isn't set up). */
+    var protonProblem by mutableStateOf<String?>(null); private set
+    var protonBusy by mutableStateOf(false); private set
+    private val protonTracks by derivedStateOf { proton.songs.map(Proton::track) }
+    val protonLibrary by derivedStateOf { Overrides.apply(protonTracks, meta) }
 
-    /** Every song by id, server copies of your files included, so saved ids always resolve. */
-    val byId by derivedStateOf { Overrides.apply(serverTracks + local, meta).associateBy { it.id } }
+    init {
+        // A quiet check a little after start (the tool and the network take a moment), again every 30 minutes, every 2 while
+        // Drive is out of reach (its songs are greyed out until it's back); the list itself is refreshed every 6 hours.
+        scope.launch {
+            kotlinx.coroutines.delay(8_000)
+            while (true) {
+                if (proton.folders.isNotEmpty()) {
+                    protonCheck().join()
+                    if (protonSignedIn == true && protonProblem == null && System.currentTimeMillis() - proton.scanned > 6 * 3_600_000L) protonScan().join()
+                }
+                kotlinx.coroutines.delay(if (protonProblem != null) 120_000L else 30 * 60_000L)
+            }
+        }
+    }
+
+    /** Your files, server songs and Proton Drive songs; a local copy wins. */
+    /** Hidden songs (duplicates you hid) stay out of the library; playlists that hold them still play them. */
+    val library by derivedStateOf { Overrides.apply(Match.mergeLibrary(local, serverTracks + protonTracks), meta).filterNot { it.id in collection.hidden } }
+
+    /** Every song by id, server and Drive copies of your files included, so saved ids always resolve. */
+    val byId by derivedStateOf { Overrides.apply(serverTracks + protonTracks + local, meta).associateBy { it.id } }
 
     /** Albums from your folders, newest files first. */
     val recentlyAdded by derivedStateOf {
@@ -613,7 +639,7 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     /** Your files and server songs with their own tags (no edits). */
-    val rawTracks: List<Track> get() = serverTracks + local
+    val rawTracks: List<Track> get() = serverTracks + protonTracks + local
 
     /** Your collection as the phone can read it ([foreign]: the edits agreed last time; only a restore here removes one). */
     fun linkSnapshot(foreign: Map<String, LinkSync.Edit>, known: MutableMap<String, LinkSync.Song>): LinkSync.Snapshot {
@@ -637,6 +663,8 @@ class AppState(private val scope: CoroutineScope) {
             mixes = mixes.values.map { LinkSync.Mix(it.kind.name, it.period, it.tracks) },
             restores = Overrides.restoresForSync(rawTracks),
             names = Overrides.names.value,
+            // Your Proton Drive songs, for the phone to list and play through this PC.
+            proton = protonLibrary.take(20_000).map { LinkSync.Song(null, it.title, it.artist, it.album, it.durationMs) },
         ).also { known += lib.learned }
     }
 
@@ -1075,7 +1103,106 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     /** For the player: a Deezer song plays as a free full copy when the artist's own account has one, else a fresh preview. */
+    /** A Proton song that can't play now: not downloaded before, and Proton Drive out of reach. */
+    fun protonOff(id: String) = id.startsWith(Proton.PREFIX) && (protonCli == null || protonSignedIn == false || protonProblem != null) && !SongCache.has(id)
+
+    /** Greyed out, not played: a song only on your phone, or a Proton song out of reach. */
+    fun unplayable(t: Track) = LinkSync.isMissing(t.id) || protonOff(t.id)
+
+    private suspend fun saveProton(s: Proton.Saved) { proton = s; withContext(Dispatchers.IO) { runCatching { Proton.save(s) } } }
+
+    private fun protonFailed(e: Throwable) {
+        if ((e as? Proton.Failed)?.signedOut == true) { protonSignedIn = false; protonProblem = null }
+        else protonProblem = e.message ?: "Proton Drive can't be reached."
+    }
+
+    /** Looks for the Drive tool and asks it whether you're signed in (in the background). */
+    fun protonCheck() = launch {
+        val cli = Proton.cli(proton.cli).also { protonCli = it } ?: run { protonSignedIn = null; protonProblem = null; return@launch }
+        withContext(Dispatchers.IO) { runCatching { Proton.list(cli, Proton.ROOT) } }
+            .onSuccess { protonSignedIn = true; protonProblem = null }.onFailure(::protonFailed)
+    }
+
+    /** The Drive tool you downloaded (made runnable, since a download isn't). */
+    fun setProtonCli(path: String) = launch {
+        withContext(Dispatchers.IO) { runCatching { java.io.File(path).setExecutable(true) } }
+        saveProton(proton.copy(cli = path))
+        protonCheck().join()
+    }
+
+    private var protonLogin: Process? = null
+
+    /** Signs in with the Drive tool: it opens your browser; [onLink] gets the address too, for another device. */
+    fun protonSignIn(onLink: (String) -> Unit) = launch {
+        val cli = protonCli ?: return@launch
+        if (protonBusy) return@launch
+        protonBusy = true
+        try {
+            withContext(Dispatchers.IO) {
+                val p = ProcessBuilder(cli.path, "auth", "login", "--json").redirectErrorStream(true)
+                    .redirectInput(ProcessBuilder.Redirect.from(java.io.File("/dev/null"))).start().also { protonLogin = it }
+                p.inputStream.bufferedReader().forEachLine { line ->
+                    runCatching { org.json.JSONObject(line.trim()).optString("signInUrl") }.getOrNull()?.takeIf { it.startsWith("https://") }
+                        ?.let { link -> scope.launch { onLink(link) } }
+                }
+                if (!p.waitFor(15, java.util.concurrent.TimeUnit.MINUTES)) p.destroyForcibly()
+            }
+        } finally { protonLogin = null; protonBusy = false }
+        protonCheck().join()
+        if (protonSignedIn == true && proton.folders.isNotEmpty()) protonScan()
+    }
+
+    fun protonCancelSignIn() { protonLogin?.destroy() }
+
+    fun protonSignOut() = launch {
+        val cli = protonCli ?: return@launch
+        withContext(Dispatchers.IO) { runCatching { Proton.run(cli, 60, "auth", "logout") } }
+        protonSignedIn = false
+    }
+
+    /** A Drive folder's folders, for choosing which ones Onda lists. */
+    suspend fun protonFolders(path: String): Result<List<Proton.Node>> {
+        val cli = protonCli ?: return Result.failure(IOException("The Proton Drive tool isn't set up."))
+        return withContext(Dispatchers.IO) { runCatching { Proton.list(cli, path).filter { it.folder } } }.onFailure(::protonFailed)
+    }
+
+    fun addProtonFolder(path: String) = launch {
+        if (path in proton.folders) return@launch
+        saveProton(proton.copy(folders = proton.folders + path))
+        protonScan()
+    }
+
+    fun removeProtonFolder(path: String) = launch {
+        saveProton(proton.copy(folders = proton.folders - path, songs = proton.songs.filterNot { it.path.startsWith("$path/") }))
+    }
+
+    /** Lists the songs in your Drive folders again (names only; nothing is downloaded). */
+    fun protonScan() = launch {
+        val cli = protonCli ?: return@launch
+        if (protonBusy || proton.folders.isEmpty()) return@launch
+        protonBusy = true
+        try {
+            withContext(Dispatchers.IO) { runCatching { Proton.scan(cli, proton.folders) } }
+                .onSuccess { songs -> saveProton(proton.copy(songs = songs, scanned = System.currentTimeMillis())); protonSignedIn = true; protonProblem = null }
+                .onFailure(::protonFailed)
+        } finally { protonBusy = false }
+    }
+
+    /** A Proton song's file: kept from before, or downloaded now. Blocks: call it off the UI thread. */
+    fun protonFile(id: String): java.io.File {
+        SongCache.get(id)?.let { return it }
+        val song = proton.songs.firstOrNull { Proton.PREFIX + it.uid == id } ?: throw IOException("This song isn't in your Proton Drive folders any more.")
+        val cli = protonCli ?: throw IOException("Onda needs Proton's Drive tool for this song: see Settings → Proton Drive.")
+        return try {
+            Proton.fetch(cli, song).also { if (protonProblem != null || protonSignedIn != true) scope.launch { protonProblem = null; protonSignedIn = true } }
+        } catch (e: Exception) {
+            scope.launch { protonFailed(e) }
+            throw e
+        }
+    }
+
     suspend fun resolve(i: Player.Item): Player.Resolved = coroutineScope {
+        if (i.id.startsWith(Proton.PREFIX)) return@coroutineScope Player.Resolved(protonFile(i.id).toURI().toString())
         if (i.id.startsWith(Navidrome.PREFIX) && settings.cache) {
             SongCache.get(i.id)?.let { return@coroutineScope Player.Resolved(it.toURI().toString()) }
             SongCache.keep(scope, i.id, i.uri) // streams now; kept for next time
@@ -1090,6 +1217,7 @@ class AppState(private val scope: CoroutineScope) {
 
     /** The next song's link is looked up while this one plays, so it starts at once. */
     fun prefetch(i: Player.Item) {
+        if (i.id.startsWith(Proton.PREFIX)) { scope.launch(Dispatchers.IO) { runCatching { protonFile(i.id) } }; return }
         if (i.deezerId <= 0) return
         scope.launch(Dispatchers.IO) { runCatching { fullCopy(i.deezerId).await(); previewLink(i.deezerId) } }
     }

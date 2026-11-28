@@ -424,6 +424,19 @@ object SongCache {
     /** The kept copy, touched so it counts as recently used. */
     fun get(id: String): File? = File(dir, name(id)).takeIf { it.isFile && it.length() > 0 }?.also { it.setLastModified(System.currentTimeMillis()) }
 
+    /** Whether a copy is kept (without counting as used): a Proton song that plays without the internet. */
+    fun has(id: String): Boolean = File(dir, name(id)).let { it.isFile && it.length() > 0 }
+
+    /** Keeps [file] (moved in) as [id]'s copy, as the newest one. */
+    fun put(id: String, file: File): File {
+        dir.mkdirs()
+        val to = File(dir, name(id))
+        Files.move(file.toPath(), to.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        to.setLastModified(System.currentTimeMillis()) // a download keeps the song's own date, which would make it the first to go
+        synchronized(this) { trim() }
+        return to
+    }
+
     /** Fetches [url] in the background (one song at a time) unless it's kept or on its way already. */
     fun keep(scope: kotlinx.coroutines.CoroutineScope, id: String, url: String) {
         if (get(id) != null || !busy.add(id)) return
